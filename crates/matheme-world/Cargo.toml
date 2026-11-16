@@ -1,0 +1,15 @@
+[package]
+name = "matheme-world"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+typst = "=0.15.1"
+typst-kit = { version = "=0.15.1", features = [
+  "scan-fonts",
+  "system-files",
+] }
+# Windows native-tls uses schannel; avoids typst-kit/system-downloader's
+# non-Windows openssl dependency, which is unavailable in this registry index.
+ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }

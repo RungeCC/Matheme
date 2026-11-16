@@ -1,7 +1,8 @@
 mod wl;
-mod world;
 
 use std::path::PathBuf;
+
+use matheme_world as world;
 
 use typst::diag::{Severity, SourceDiagnostic};
 use typst::foundations::Dict;
