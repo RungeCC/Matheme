@@ -1404,8 +1404,10 @@ dependencies = [
 name = "matheme-world"
 version = "0.1.0"
 dependencies = [
+ "comemo",
  "typst",
  "typst-kit",
+ "typst-layout",
  "ureq",
 ]
 

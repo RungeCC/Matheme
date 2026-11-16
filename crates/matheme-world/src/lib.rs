@@ -6,8 +6,11 @@ pub mod loader;
 pub mod packages;
 pub mod world;
 
-pub use fonts::{font_cache, reload_fonts, FontCache};
-pub use packages::{package_status, reload_packages, set_downloads_allowed, PackageStatus};
+pub use fonts::{font_cache, reload_fonts, warmup_fonts, FontCache};
+pub use packages::{
+    package_status, prefetch_universe_index, reload_packages, set_downloads_allowed,
+    warmup_packages, PackageStatus,
+};
 pub use world::{MathemeWorld, MAIN_SOURCE_NAME};
 
 // Re-exported so the WSTP bridge can render diagnostics with the same

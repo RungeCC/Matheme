@@ -36,11 +36,17 @@ fn fonts_slot() -> &'static RwLock<Arc<FontCache>> {
 }
 
 /// Get the current font snapshot without holding the lock across a compilation.
+/// This also triggers the lazy font scan on first use.
 pub fn font_cache() -> Arc<FontCache> {
     fonts_slot()
         .read()
         .expect("font cache lock poisoned")
         .clone()
+}
+
+/// Eagerly initialize the font cache and return the number of fonts found.
+pub fn warmup_fonts() -> usize {
+    font_cache().fonts.len()
 }
 
 /// Rescan system fonts and return the new font count.

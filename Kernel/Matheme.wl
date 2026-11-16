@@ -5,6 +5,7 @@ MathemeToGraphics::usage = "MathemeToGraphics[source, inputs] compiles Typst sou
 MathemeVersion::usage = "MathemeVersion[] returns version information, package directories and the download setting.";
 MathemeReloadFonts::usage = "MathemeReloadFonts[] rescans system fonts and returns the number of fonts found.";
 MathemeReloadPackages::usage = "MathemeReloadPackages[] drops the cached Universe index and returns package cache information.";
+MathemeWarmup::usage = "MathemeWarmup[] eagerly initializes the font cache, package loader and Universe index so the first MathemeCompile is fast. Options: \"Fonts\", \"Packages\", \"PackageIndex\" (all True by default). Returns per-stage timings; PackageIndex needs network access. The library is loaded if needed.";
 MathemeClose::usage = "MathemeClose[] closes the WSTP LinkObjects, unloads the LibraryFunctions and releases the DLL file handle. The library is reloaded automatically on the next call.";
 
 Begin["`Private`"];
@@ -23,17 +24,20 @@ $library = Module[{found = Quiet[FindLibrary["matheme"]]},
 $functions = <||>;
 $links = {};
 
+$expectedFunctions = 5;
+
 loadFunctions[] := Module[{before, loaded, good},
-  If[Length[$functions] == 4, Return[True]];
+  If[Length[$functions] == $expectedFunctions, Return[True]];
   before = Links[];
   loaded = <|
     "compile" -> LibraryFunctionLoad[$library, "matheme_compile", LinkObject, LinkObject],
     "version" -> LibraryFunctionLoad[$library, "matheme_version", LinkObject, LinkObject],
     "reloadFonts" -> LibraryFunctionLoad[$library, "matheme_reload_fonts", LinkObject, LinkObject],
-    "reloadPackages" -> LibraryFunctionLoad[$library, "matheme_reload_packages", LinkObject, LinkObject]
+    "reloadPackages" -> LibraryFunctionLoad[$library, "matheme_reload_packages", LinkObject, LinkObject],
+    "warmup" -> LibraryFunctionLoad[$library, "matheme_warmup", LinkObject, LinkObject]
   |>;
   good = Select[Values[loaded], Head[#] === LibraryFunction &];
-  If[Length[good] === 4,
+  If[Length[good] === $expectedFunctions,
     $functions = loaded;
     $links = Complement[Links[], before];
     Return[True]
@@ -116,6 +120,13 @@ MathemeToGraphics[source_String, inputs_Association, opts : OptionsPattern[]] :=
 MathemeVersion[] := callFunction["version"];
 MathemeReloadFonts[] := callFunction["reloadFonts"];
 MathemeReloadPackages[] := callFunction["reloadPackages"];
+
+Options[MathemeWarmup] = {"Fonts" -> True, "Packages" -> True, "PackageIndex" -> True};
+MathemeWarmup[opts : OptionsPattern[]] := callFunction["warmup", <|
+  "Fonts" -> TrueQ[OptionValue["Fonts"]],
+  "Packages" -> TrueQ[OptionValue["Packages"]],
+  "PackageIndex" -> TrueQ[OptionValue["PackageIndex"]]
+|>];
 
 End[];
 

@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use typst::syntax::package::VersionlessPackageSpec;
 use typst_kit::downloader::Downloader;
 use typst_kit::packages::SystemPackages;
 
@@ -86,6 +87,37 @@ pub fn set_downloads_allowed(allowed: bool) {
     package_runtime()
         .allowed
         .store(allowed, Ordering::Relaxed);
+}
+
+/// Initialize the process-wide package loader and report its status without
+/// compiling anything. This is the eager counterpart of the lazy `OnceLock`
+/// initialization that otherwise happens on the first `MathemeWorld::new`.
+pub fn warmup_packages() -> PackageStatus {
+    package_status()
+}
+
+/// Eagerly fetch and cache the Universe index (the `OnceCell` inside
+/// `UniversePackages`) without compiling a document. Downloads are temporarily
+/// enabled for this call and the previous gate value is restored afterwards,
+/// so this works even though the default compile path is offline.
+///
+/// Returns the resolved version of a well-known package on success, or the
+/// error message on failure (e.g. no network / proxy misconfigured).
+pub fn prefetch_universe_index() -> Result<String, String> {
+    let runtime = package_runtime();
+    let spec: VersionlessPackageSpec = "@preview/cetz"
+        .parse()
+        .expect("valid versionless package spec");
+    let previous = runtime.allowed.load(Ordering::Relaxed);
+    runtime.allowed.store(true, Ordering::Relaxed);
+    let result = runtime
+        .packages
+        .universe()
+        .latest_version(&spec)
+        .map(|version| version.to_string())
+        .map_err(|err| err.to_string());
+    runtime.allowed.store(previous, Ordering::Relaxed);
+    result
 }
 
 /// Rebuild the loader (drops the cached Universe index) while preserving the

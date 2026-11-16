@@ -14,3 +14,7 @@ typst-kit = { version = "=0.15.1", features = [
 # Windows native-tls uses schannel; avoids typst-kit/system-downloader's
 # non-Windows openssl dependency, which is unavailable in this registry index.
 ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }
+
+[dev-dependencies]
+typst-layout = "=0.15.1"
+comemo = "0.5.1"

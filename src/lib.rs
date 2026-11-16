@@ -205,6 +205,103 @@ fn matheme_version(link: &mut Link) {
     link.put_expr(&result).expect("failed to write version");
 }
 
+/// Eagerly initialize the process-wide caches (fonts, package loader and,
+/// optionally, the Universe index) without compiling a document. Accepts an
+/// optional Association with keys "Fonts", "Packages", "PackageIndex" (all
+/// booleans, defaulting to True) so callers can warm only what they need.
+#[export(wstp)]
+fn matheme_warmup(link: &mut Link) {
+    let args = wl::read_args(link);
+    assert!(
+        args.is_empty() || args.len() == 1,
+        "matheme_warmup takes no arguments or one Association"
+    );
+
+    let mut fonts = true;
+    let mut packages = true;
+    let mut package_index = true;
+    let mut diag = Vec::new();
+
+    if let Some(arg) = args.first() {
+        match wl::as_assoc(arg) {
+            Some(entries) => {
+                for entry in entries {
+                    let key = wl::as_string(&entry.key).unwrap_or("");
+                    let target = match key {
+                        "Fonts" => &mut fonts,
+                        "Packages" => &mut packages,
+                        "PackageIndex" => &mut package_index,
+                        other => {
+                            diag.push(diagnostics::warning(format!(
+                                "unknown warmup option: {other}"
+                            )));
+                            continue;
+                        }
+                    };
+                    match wl::as_bool(&entry.value) {
+                        Some(value) => *target = value,
+                        None => diag.push(diagnostics::warning(format!(
+                            "warmup option {key} must be True or False"
+                        ))),
+                    }
+                }
+            }
+            None => diag.push(diagnostics::warning(
+                "warmup options must be an Association; using defaults",
+            )),
+        }
+    }
+
+    let mut entries = vec![wl::rule("Status", wl::string("Success"))];
+
+    if fonts {
+        let start = std::time::Instant::now();
+        let count = world::warmup_fonts();
+        entries.push(wl::rule("Fonts", wl::integer(count as i64)));
+        entries.push(wl::rule(
+            "FontsMs",
+            wl::integer(start.elapsed().as_millis() as i64),
+        ));
+    }
+
+    if packages {
+        let start = std::time::Instant::now();
+        let status = world::warmup_packages();
+        entries.extend(package_entries(&status));
+        entries.push(wl::rule(
+            "PackagesMs",
+            wl::integer(start.elapsed().as_millis() as i64),
+        ));
+    }
+
+    if package_index {
+        let start = std::time::Instant::now();
+        match world::prefetch_universe_index() {
+            Ok(version) => entries.push(wl::rule("PackageIndex", wl::string(version))),
+            Err(err) => {
+                entries.push(wl::rule("PackageIndex", wl::null()));
+                diag.push(diagnostics::warning(format!(
+                    "failed to prefetch Universe index: {err}"
+                )));
+            }
+        }
+        entries.push(wl::rule(
+            "PackageIndexMs",
+            wl::integer(start.elapsed().as_millis() as i64),
+        ));
+    }
+
+    if !diag.is_empty() {
+        entries.push(wl::rule(
+            "Diagnostics",
+            wl::list(diag.iter().map(diagnostics::expr).collect()),
+        ));
+    }
+
+    let result = wl::assoc(entries);
+    link.put_expr(&result).expect("failed to write warmup result");
+}
+
 #[export(wstp)]
 fn matheme_reload_fonts(link: &mut Link) {
     let args = wl::read_args(link);
