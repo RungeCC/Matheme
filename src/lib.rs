@@ -1,17 +1,39 @@
 mod diagnostics;
-mod wl;
 
 use std::path::PathBuf;
 
+// Keep the old `crate::wl` spelling working for diagnostics while the bridge
+// now lives in its own crate.
+use matheme_wl as wl;
 use matheme_world as world;
 
 use typst::diag::SourceDiagnostic;
 use typst::foundations::Dict;
 use typst_layout::PagedDocument;
 use typst_pdf::PdfOptions;
-use wolfram_library_link::{export, expr::ExprKind, wstp::Link};
+use wolfram_library_link::{
+    export,
+    expr::{Expr, ExprKind, Symbol},
+    wstp::Link,
+};
 
 use world::MathemeWorld;
+
+/// Read the WSTP argument list, resolving Wolfram 15's context-free symbol
+/// names (e.g. `List`, `True`) into their `System\`` forms.
+fn read_args(link: &mut Link) -> Vec<Expr> {
+    let expr = link
+        .get_expr_with_resolver(&mut |name: &str| {
+            let full = format!("System`{}", name);
+            Some(Symbol::new(&full))
+        })
+        .expect("failed to read WSTP arguments");
+
+    match expr.kind() {
+        ExprKind::Normal(n) if n.has_head(&Symbol::new("System`List")) => n.elements().to_vec(),
+        _ => panic!("expected an argument list"),
+    }
+}
 
 fn maybe_offline_hint(diagnostics: &mut Vec<diagnostics::Diagnostic>, allow_downloads: bool) {
     if allow_downloads {
@@ -57,7 +79,7 @@ fn put_result(
 
 #[export(wstp)]
 fn matheme_compile(link: &mut Link) {
-    let args = wl::read_args(link);
+    let args = read_args(link);
     assert_eq!(args.len(), 1, "matheme_compile expects a single Association");
 
     let entries = match wl::as_assoc(&args[0]) {
@@ -192,14 +214,39 @@ fn package_entries(
 
 #[export(wstp)]
 fn matheme_version(link: &mut Link) {
-    let args = wl::read_args(link);
+    let args = read_args(link);
     assert!(args.is_empty(), "matheme_version takes no arguments");
 
+    // Typst itself derives this from its build-time TYPST_VERSION env var
+    // (see typst_utils::version), so bumping the pinned dependency can never
+    // leave a stale hard-coded number here.
+    let typst_version = typst::utils::version();
     let mut entries = vec![
         wl::rule("Status", wl::string("Success")),
         wl::rule("Matheme", wl::string(env!("CARGO_PKG_VERSION"))),
-        wl::rule("Typst", wl::string("0.15.1")),
+        wl::rule("Typst", wl::string(typst_version.raw())),
+        wl::rule(
+            "TypstCommit",
+            typst_version
+                .commit()
+                .map(|sha| wl::string(sha))
+                .unwrap_or_else(wl::null),
+        ),
     ];
+    let wolfram_font_dirs = world::wolfram_font_dirs();
+    entries.push(wl::rule(
+        "WolframFontDirs",
+        wl::list(
+            wolfram_font_dirs
+                .iter()
+                .map(|path| wl::string(path.display().to_string()))
+                .collect(),
+        ),
+    ));
+    entries.push(wl::rule(
+        "WolframFontFiles",
+        wl::integer(world::wolfram_font_file_count() as i64),
+    ));
     entries.extend(package_entries(&world::package_status()));
     let result = wl::assoc(entries);
     link.put_expr(&result).expect("failed to write version");
@@ -211,7 +258,7 @@ fn matheme_version(link: &mut Link) {
 /// booleans, defaulting to True) so callers can warm only what they need.
 #[export(wstp)]
 fn matheme_warmup(link: &mut Link) {
-    let args = wl::read_args(link);
+    let args = read_args(link);
     assert!(
         args.is_empty() || args.len() == 1,
         "matheme_warmup takes no arguments or one Association"
@@ -304,7 +351,7 @@ fn matheme_warmup(link: &mut Link) {
 
 #[export(wstp)]
 fn matheme_reload_fonts(link: &mut Link) {
-    let args = wl::read_args(link);
+    let args = read_args(link);
     assert!(args.is_empty(), "matheme_reload_fonts takes no arguments");
 
     let count = world::reload_fonts();
@@ -317,7 +364,7 @@ fn matheme_reload_fonts(link: &mut Link) {
 
 #[export(wstp)]
 fn matheme_reload_packages(link: &mut Link) {
-    let args = wl::read_args(link);
+    let args = read_args(link);
     assert!(args.is_empty(), "matheme_reload_packages takes no arguments");
 
     let status = world::reload_packages();

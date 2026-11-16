@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/matheme-world"]
+members = ["crates/matheme-world", "crates/matheme-wl"]
 resolver = "2"
 
 [package]
@@ -14,6 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 matheme-world = { path = "crates/matheme-world" }
+matheme-wl = { path = "crates/matheme-wl" }
 wolfram-library-link = "=0.6.1"
 typst = "=0.15.1"
 typst-pdf = "=0.15.1"

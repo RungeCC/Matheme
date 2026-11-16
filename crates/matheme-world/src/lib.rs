@@ -6,7 +6,9 @@ pub mod loader;
 pub mod packages;
 pub mod world;
 
-pub use fonts::{font_cache, reload_fonts, warmup_fonts, FontCache};
+pub use fonts::{
+    font_cache, reload_fonts, warmup_fonts, wolfram_font_dirs, wolfram_font_file_count, FontCache,
+};
 pub use packages::{
     package_status, prefetch_universe_index, reload_packages, set_downloads_allowed,
     warmup_packages, PackageStatus,

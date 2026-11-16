@@ -1,0 +1,11 @@
+[package]
+name = "matheme-wl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+typst = "=0.15.1"
+# Only the pure expression types are needed here. Leaving out the `wstp`
+# feature keeps this crate linkable in unit tests (no WSTP static library).
+wolfram-library-link = { version = "=0.6.1", default-features = false }

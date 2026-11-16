@@ -17,12 +17,15 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 | Path | Role |
 |---|---|
 | `crates/matheme-world/` | Typst dependency: `World`, font & package caches, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
-| `src/` | WSTP bridge: exported functions, WL ↔ Typst value conversion, diagnostic expressions. |
+| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion, including both WXF and WSTP forms of `ByteArray` → `bytes`. No WSTP dependency. |
+| `src/` | WSTP bridge: exported functions, argument reading, diagnostic expressions. |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. |
 | `scripts/` | WSTP SDK setup and one-shot build. |
 
 Versions are pinned: `typst`/`typst-kit` `=0.15.1`, `wolfram-library-link`
-`=0.6.1` (see `Cargo.lock`).
+`=0.6.1` (see `Cargo.lock`). `MathemeVersion[]` reports the Typst version from
+Typst's own build-time `TYPST_VERSION` environment variable
+(`typst::utils::version()`), not a hard-coded literal.
 
 ## Build
 
@@ -35,15 +38,16 @@ bash scripts/build.sh
 
 The script:
 
-1. runs `scripts/setup-wstp.sh`, which hard-links Wolfram 15's
-   `ml64i4s.lib` to the `wstp64i4s.lib` name that `wstp-sys` expects;
+1. runs `scripts/setup-wstp.sh`, which copies Wolfram 15's genuine
+   `wstp64i4s.lib` (WS* symbols) from the **WSTP DeveloperKit** into `.tmp/`;
 2. `cargo build --release`;
 3. copies the DLL to `LibraryResources/Windows-x86-64/matheme.dll`.
 
-Two Wolfram-15-specific workarounds are baked in and must be rechecked if you
-change Wolfram version: the `wstp64i4s.lib` alias above, and the `ML*`→`WS*`
-linker `/alternatename` shims in `build.rs` (Wolfram 15 ships `ML*` symbols
-while the `wstp` crate binds `WS*`). Both are guarded for MSVC only.
+Wolfram ships two SDKs: the MathLink one only has `ml64i4s.lib` (ML* symbols),
+which used to require a library alias plus 23 `/alternatename` linker shims.
+Using the WSTP DeveloperKit library removes both workarounds and lets
+`cargo test --workspace` link normally. Override the SDK location with
+`WSTP_SDK_DIR` if Wolfram is installed elsewhere.
 
 ## Load
 
@@ -87,8 +91,16 @@ Options:
 | `"BasePath"` | `Directory[]` | Root for `#include` / `#image` relative paths. |
 | `"AllowDownloads"` | `False` | If `True`, missing Universe packages may be downloaded. |
 
-`Inputs` accepts strings, integers, reals, `True`/`False`/`Null`, lists and
-nested associations; unsupported values become warnings in `Diagnostics`.
+`Inputs` accepts strings, integers, reals, `True`/`False`/`Null`, lists,
+nested associations and `ByteArray` (mapped to Typst `bytes`); unsupported
+values become warnings in `Diagnostics`.
+
+```wolfram
+res = MathemeCompile[
+  "#let raw = sys.inputs.blob\nRaw bytes: #raw.len()",
+  <|"blob" -> ByteArray[{0, 1, 2, 255}]|>
+];
+```
 
 ### Compile to vector Graphics
 
@@ -131,6 +143,18 @@ and the in-memory source is `<typst source>`.
   an explicit proxy; this overrides the process proxy, which is sometimes
   broken. Windows uses schannel via `native-tls`, so no OpenSSL DLL is needed.
 - Fonts are discovered by scanning the system once, then cached process-wide.
+- **Wolfram's bundled fonts are included.** The WL package points the Rust
+  scanner at `$InstallationDirectory/SystemFiles/Fonts/TrueType` (Mathematica
+  Sans/Mono, Alegreya, Source Sans, Clear Sans, …); these are not OS-registered
+  fonts, so they would otherwise be invisible to Typst. On this machine that
+  adds 149 font files / 149 faces (1069 → 1218 total). Bundled fonts are
+  searched before system fonts; family names follow the font metadata, e.g.
+  `"MathematicaSans"` and `"MathematicaMono"` (no space).
+  Override discovery with `MATHEME_WOLFRAM_DIR` (installation root) or
+  `MATHEME_WOLFRAM_FONTS` (explicit path list); set the latter to an empty
+  string to disable bundled fonts. Without those, the newest versioned
+  directory under `Program Files\Wolfram Research\Wolfram` (or the macOS /
+  Linux equivalents) is used.
 
 ### Eager warmup
 
@@ -151,8 +175,8 @@ a failure is reported in `Diagnostics` and leaves the other caches warmed.
 
 | Function | Effect |
 |---|---|
-| `MathemeVersion[]` | Version, typst version, package dirs/count, download flag. |
-| `MathemeReloadFonts[]` | Rescan system fonts (e.g. after installing fonts). |
+| `MathemeVersion[]` | Matheme/Typst versions (with commit), Wolfram font dirs/count, package dirs/count, download flag. |
+| `MathemeReloadFonts[]` | Rescan system **and** Wolfram fonts (e.g. after installing fonts). |
 | `MathemeReloadPackages[]` | Drop the cached Universe index. |
 | `MathemeClose[]` | Close WSTP `LinkObject`s and unload the library functions. |
 
@@ -179,7 +203,9 @@ cargo run --release -p matheme-world --example bench
 
 It compiles a deliberately heavy multi-page document many times. Every
 document's content is made unique, so comemo's memoization cannot flatter later
-iterations. Representative results (1069 fonts, release build):
+iterations. Representative results (measured with the pre-Wolfram-font
+system set of 1069 faces; the current build has 1218, with no material change
+to these ratios):
 
 | Strategy | Per compile |
 |---|---|
