@@ -1,0 +1,21 @@
+[package]
+name = "matheme"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "matheme"
+crate-type = ["cdylib"]
+
+[dependencies]
+wolfram-library-link = "=0.6.1"
+typst = "=0.15.1"
+typst-pdf = "=0.15.1"
+typst-kit = { version = "=0.15.1", features = ["scan-fonts"] }
+typst-layout = "=0.15.1"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true

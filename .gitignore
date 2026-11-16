@@ -1,0 +1,25 @@
+# Rust build output
+/target/
+
+# Local scratch space: probe scripts, logs, WSTP SDK alias (see scripts/setup-wstp.sh)
+/.tmp/
+
+# Compiler and library artifacts (produced by scripts/build.sh, never committed)
+*.dll
+*.pdb
+*.exp
+*.lib
+*.ilk
+*.dylib
+*.so
+*.a
+
+# Local editor / agent state
+.workbuddy/
+.vscode/
+.idea/
+*.swp
+
+# OS cruft
+.DS_Store
+Thumbs.db

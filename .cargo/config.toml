@@ -1,0 +1,4 @@
+[env]
+# Resolved relative to the directory containing .cargo/ (the project root).
+# scripts/setup-wstp.sh creates this directory with the renamed WSTP archive.
+WSTP_COMPILER_ADDITIONS_DIRECTORY = { value = ".tmp/wstp-compiler-additions", relative = true, force = false }
