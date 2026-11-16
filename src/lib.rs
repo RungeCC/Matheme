@@ -1,69 +1,19 @@
+mod diagnostics;
 mod wl;
 
 use std::path::PathBuf;
 
 use matheme_world as world;
 
-use typst::diag::{Severity, SourceDiagnostic};
+use typst::diag::SourceDiagnostic;
 use typst::foundations::Dict;
-use typst::World;
-use typst::WorldExt;
 use typst_layout::PagedDocument;
 use typst_pdf::PdfOptions;
 use wolfram_library_link::{export, expr::ExprKind, wstp::Link};
 
 use world::MathemeWorld;
 
-#[derive(Debug)]
-struct Diagnostic {
-    severity: &'static str,
-    message: String,
-    file: Option<String>,
-    line: Option<i64>,
-    column: Option<i64>,
-    range: Option<(usize, usize)>,
-    hints: Vec<String>,
-}
-
-fn diagnostic_from(diag: &SourceDiagnostic, w: &MathemeWorld) -> Diagnostic {
-    let range = w.range(diag.span);
-    let source = diag.span.id().and_then(|id| w.source(id).ok());
-    let line_column = source.and_then(|src| {
-        range
-            .clone()
-            .and_then(|r| src.lines().byte_to_line_column(r.start))
-    });
-
-    Diagnostic {
-        severity: match diag.severity {
-            Severity::Error => "Error",
-            Severity::Warning => "Warning",
-        },
-        message: diag.message.to_string(),
-        file: diag
-            .span
-            .id()
-            .map(|id| format!("{:?}", id).trim_matches('"').to_string()),
-        line: line_column.map(|(line, _)| line as i64 + 1),
-        column: line_column.map(|(_, column)| column as i64 + 1),
-        range: range.map(|r| (r.start, r.end)),
-        hints: diag.hints.iter().map(|h| h.v.to_string()).collect(),
-    }
-}
-
-fn warning(message: String) -> Diagnostic {
-    Diagnostic {
-        severity: "Warning",
-        message,
-        file: None,
-        line: None,
-        column: None,
-        range: None,
-        hints: vec![],
-    }
-}
-
-fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, allow_downloads: bool) {
+fn maybe_offline_hint(diagnostics: &mut Vec<diagnostics::Diagnostic>, allow_downloads: bool) {
     if allow_downloads {
         return;
     }
@@ -71,38 +21,10 @@ fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, allow_downloads: bool) 
         .iter()
         .any(|d| d.severity == "Error" && d.message.to_lowercase().contains("package"))
     {
-        diagnostics.push(warning(
-            "Package downloads are disabled; pass \"AllowDownloads\" -> True to use Typst Universe."
-                .into(),
+        diagnostics.push(diagnostics::warning(
+            "Package downloads are disabled; pass \"AllowDownloads\" -> True to use Typst Universe.",
         ));
     }
-}
-
-fn diagnostic_expr(diag: &Diagnostic) -> wolfram_library_link::expr::Expr {
-    let file = diag
-        .file
-        .as_ref()
-        .map(|s| wl::string(s.as_str()))
-        .unwrap_or_else(wl::null);
-    let line = diag.line.map(wl::integer).unwrap_or_else(wl::null);
-    let column = diag.column.map(wl::integer).unwrap_or_else(wl::null);
-    let range = diag
-        .range
-        .map(|(a, b)| wl::list(vec![wl::integer(a as i64), wl::integer(b as i64)]))
-        .unwrap_or_else(wl::null);
-
-    wl::assoc(vec![
-        wl::rule("Severity", wl::string(diag.severity)),
-        wl::rule("Message", wl::string(diag.message.as_str())),
-        wl::rule("File", file),
-        wl::rule("Line", line),
-        wl::rule("Column", column),
-        wl::rule("Range", range),
-        wl::rule(
-            "Hints",
-            wl::list(diag.hints.iter().map(|h| wl::string(h.as_str())).collect()),
-        ),
-    ])
 }
 
 fn put_result(
@@ -110,7 +32,8 @@ fn put_result(
     status: &str,
     pdf: Option<Vec<u8>>,
     pages: i64,
-    diagnostics: &[Diagnostic],
+    diagnostics: &[diagnostics::Diagnostic],
+    formatted: &str,
 ) {
     let pdf_expr = match pdf {
         Some(bytes) => wolfram_library_link::expr::Expr::new(ExprKind::ByteArray(bytes)),
@@ -123,8 +46,9 @@ fn put_result(
         wl::rule("Pages", wl::integer(pages)),
         wl::rule(
             "Diagnostics",
-            wl::list(diagnostics.iter().map(diagnostic_expr).collect()),
+            wl::list(diagnostics.iter().map(diagnostics::expr).collect()),
         ),
+        wl::rule("Formatted", wl::string(formatted)),
     ]);
 
     link.put_expr(&result)
@@ -139,8 +63,11 @@ fn matheme_compile(link: &mut Link) {
     let entries = match wl::as_assoc(&args[0]) {
         Some(entries) => entries,
         None => {
-            let debug = warning(format!("expected an Association argument, got: {}", args[0]));
-            put_result(link, "Error", None, 0, &[debug]);
+            let debug = diagnostics::warning(format!(
+                "expected an Association argument, got: {}",
+                args[0]
+            ));
+            put_result(link, "Error", None, 0, &[debug], "Invalid argument\n");
             return;
         }
     };
@@ -149,14 +76,14 @@ fn matheme_compile(link: &mut Link) {
     let mut inputs = Dict::new();
     let mut base_path: Option<PathBuf> = None;
     let mut allow_downloads = false;
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut diagnostics: Vec<diagnostics::Diagnostic> = Vec::new();
 
     for entry in entries {
         let key = wl::as_string(&entry.key).unwrap_or("");
         match key {
             "Source" => match wl::as_string(&entry.value) {
                 Some(s) => source = Some(s.to_owned()),
-                None => diagnostics.push(warning("Source must be a String".into())),
+                None => diagnostics.push(diagnostics::warning("Source must be a String")),
             },
             "Inputs" => match wl::as_assoc(&entry.value) {
                 Some(rules) => {
@@ -172,9 +99,9 @@ fn matheme_compile(link: &mut Link) {
                             }
                         }
                     }
-                    diagnostics.extend(extra_warnings.into_iter().map(warning));
+                    diagnostics.extend(extra_warnings.into_iter().map(diagnostics::warning));
                 }
-                None => diagnostics.push(warning("Inputs must be an Association".into())),
+                None => diagnostics.push(diagnostics::warning("Inputs must be an Association")),
             },
             "BasePath" => match wl::as_string(&entry.value) {
                 Some(path) => {
@@ -187,51 +114,62 @@ fn matheme_compile(link: &mut Link) {
                             .join(path)
                     });
                 }
-                None => diagnostics.push(warning("BasePath must be a String".into())),
+                None => diagnostics.push(diagnostics::warning("BasePath must be a String")),
             },
             "AllowDownloads" => match wl::as_bool(&entry.value) {
                 Some(value) => allow_downloads = value,
-                None => diagnostics.push(warning("AllowDownloads must be True or False".into())),
+                None => diagnostics
+                    .push(diagnostics::warning("AllowDownloads must be True or False")),
             },
-            other => diagnostics.push(warning(format!("unknown input key: {}", other))),
+            other => diagnostics.push(diagnostics::warning(format!("unknown input key: {}", other))),
         }
     }
 
     let source = match source {
         Some(s) => s,
         None => {
-            put_result(link, "Error", None, 0, &diagnostics);
+            put_result(link, "Error", None, 0, &diagnostics, "Missing Source\n");
             return;
         }
     };
 
-    let base_path = base_path.unwrap_or_else(|| {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    });
+    let base_path = base_path
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     world::set_downloads_allowed(allow_downloads);
     let world = MathemeWorld::new(source, inputs, base_path);
     let warned = typst::compile::<PagedDocument>(&world);
 
-    diagnostics.extend(warned.warnings.iter().map(|d| diagnostic_from(d, &world)));
+    let mut typst_diags: Vec<SourceDiagnostic> = warned.warnings.iter().cloned().collect();
+    diagnostics.extend(
+        warned
+            .warnings
+            .iter()
+            .map(|d| diagnostics::from_typst(d, &world)),
+    );
 
-    match warned.output {
+    let (status, pdf, pages) = match warned.output {
         Ok(document) => {
             let pages = document.pages().len() as i64;
             match typst_pdf::pdf(&document, &PdfOptions::default()) {
-                Ok(bytes) => put_result(link, "Success", Some(bytes), pages, &diagnostics),
+                Ok(bytes) => ("Success", Some(bytes), pages),
                 Err(errors) => {
-                    diagnostics.extend(errors.iter().map(|d| diagnostic_from(d, &world)));
+                    typst_diags.extend(errors.iter().cloned());
+                    diagnostics.extend(errors.iter().map(|d| diagnostics::from_typst(d, &world)));
                     maybe_offline_hint(&mut diagnostics, allow_downloads);
-                    put_result(link, "Error", None, pages, &diagnostics);
+                    ("Error", None, pages)
                 }
             }
         }
         Err(errors) => {
-            diagnostics.extend(errors.iter().map(|d| diagnostic_from(d, &world)));
+            typst_diags.extend(errors.iter().cloned());
+            diagnostics.extend(errors.iter().map(|d| diagnostics::from_typst(d, &world)));
             maybe_offline_hint(&mut diagnostics, allow_downloads);
-            put_result(link, "Error", None, 0, &diagnostics);
+            ("Error", None, 0)
         }
-    }
+    };
+
+    let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
+    put_result(link, status, pdf, pages, &diagnostics, &formatted);
 }
 
 fn package_entries(

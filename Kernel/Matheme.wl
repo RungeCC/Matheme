@@ -1,10 +1,11 @@
 BeginPackage["Matheme`"];
 
-MathemeCompile::usage = "MathemeCompile[source, inputs] compiles Typst source to PDF and returns an Association with Status, PDF, Pages and Diagnostics. Options: \"Inputs\", \"BasePath\" (default: current directory), \"AllowDownloads\" (default: False).";
+MathemeCompile::usage = "MathemeCompile[source, inputs] compiles Typst source to PDF and returns an Association with Status, PDF, Pages, Diagnostics and Formatted (typst-cli style report). Each diagnostic has a Location with File, 1-based Line/Column, byte Range and source Text. Options: \"Inputs\", \"BasePath\" (default: current directory), \"AllowDownloads\" (default: False).";
 MathemeToGraphics::usage = "MathemeToGraphics[source, inputs] compiles Typst source and imports the PDF pages as vector Graphics. Accepts the same options as MathemeCompile.";
 MathemeVersion::usage = "MathemeVersion[] returns version information, package directories and the download setting.";
 MathemeReloadFonts::usage = "MathemeReloadFonts[] rescans system fonts and returns the number of fonts found.";
 MathemeReloadPackages::usage = "MathemeReloadPackages[] drops the cached Universe index and returns package cache information.";
+MathemeClose::usage = "MathemeClose[] closes the WSTP LinkObjects, unloads the LibraryFunctions and releases the DLL file handle. The library is reloaded automatically on the next call.";
 
 Begin["`Private`"];
 
@@ -16,12 +17,61 @@ $library = Module[{found = Quiet[FindLibrary["matheme"]]},
   ]
 ];
 
-$compile = LibraryFunctionLoad[$library, "matheme_compile", LinkObject, LinkObject];
-$version = LibraryFunctionLoad[$library, "matheme_version", LinkObject, LinkObject];
-$reloadFonts = LibraryFunctionLoad[$library, "matheme_reload_fonts", LinkObject, LinkObject];
-$reloadPackages = LibraryFunctionLoad[$library, "matheme_reload_packages", LinkObject, LinkObject];
+(* LibraryFunctionLoad with LinkObject creates an extra LinkObject that keeps
+   the DLL open. Load lazily so MathemeClose can release it and later calls
+   can transparently load the library again. *)
+$functions = <||>;
+$links = {};
 
-compileWith[source_, inputs_, base_, allowDownloads_] := $compile[<|
+loadFunctions[] := Module[{before, loaded, good},
+  If[Length[$functions] == 4, Return[True]];
+  before = Links[];
+  loaded = <|
+    "compile" -> LibraryFunctionLoad[$library, "matheme_compile", LinkObject, LinkObject],
+    "version" -> LibraryFunctionLoad[$library, "matheme_version", LinkObject, LinkObject],
+    "reloadFonts" -> LibraryFunctionLoad[$library, "matheme_reload_fonts", LinkObject, LinkObject],
+    "reloadPackages" -> LibraryFunctionLoad[$library, "matheme_reload_packages", LinkObject, LinkObject]
+  |>;
+  good = Select[Values[loaded], Head[#] === LibraryFunction &];
+  If[Length[good] === 4,
+    $functions = loaded;
+    $links = Complement[Links[], before];
+    Return[True]
+  ];
+  (* Partial failure: release whatever was loaded. *)
+  Scan[Quiet[LibraryFunctionUnload[#]] &, good];
+  $functions = <||>;
+  $links = {};
+  False
+];
+
+callFunction[name_String, args___] := Module[{},
+  If[!loadFunctions[],
+    Return[<|"Status" -> "Error", "PDF" -> Null, "Pages" -> 0,
+      "Diagnostics" -> {}, "Formatted" -> "Failed to load matheme library\n"|>]
+  ];
+  $functions[name][args]
+];
+
+MathemeClose[] := Module[{before, funcs, unloaded = 0, links = $links},
+  before = Links[];
+  Do[
+    If[Head[f] === LibraryFunction, Quiet[LibraryFunctionUnload[f]]; unloaded++],
+    {f, Values[$functions]}
+  ];
+  (* LibraryFunctionUnload normally closes the link already; the explicit
+     close keeps the frontend's own LinkObject references from lingering. *)
+  Scan[Quiet[LinkClose[#]] &, links];
+  $functions = <||>;
+  $links = {};
+  <|
+    "Status" -> "Success",
+    "Unloaded" -> unloaded,
+    "LinksClosed" -> Length[Complement[before, Links[]]]
+  |>
+];
+
+compileWith[source_, inputs_, base_, allowDownloads_] := callFunction["compile", <|
   "Source" -> source,
   "Inputs" -> inputs,
   "BasePath" -> base,
@@ -63,11 +113,9 @@ MathemeToGraphics[source_String, inputs_Association, opts : OptionsPattern[]] :=
   Join[result, <|"Graphics" -> ImportByteArray[pdf, {"PDF", "PageGraphics"}]|>]
 ];
 
-MathemeVersion[] := $version[];
-
-MathemeReloadFonts[] := $reloadFonts[];
-
-MathemeReloadPackages[] := $reloadPackages[];
+MathemeVersion[] := callFunction["version"];
+MathemeReloadFonts[] := callFunction["reloadFonts"];
+MathemeReloadPackages[] := callFunction["reloadPackages"];
 
 End[];
 
