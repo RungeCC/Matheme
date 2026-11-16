@@ -53,6 +53,14 @@ pub fn as_string(expr: &Expr) -> Option<&str> {
     }
 }
 
+pub fn as_bool(expr: &Expr) -> Option<bool> {
+    match expr.kind() {
+        ExprKind::Symbol(s) if s.as_str() == "System`True" => Some(true),
+        ExprKind::Symbol(s) if s.as_str() == "System`False" => Some(false),
+        _ => None,
+    }
+}
+
 /// Extract association entries. WSTP 15 sends associations as
 /// `System`Association[System`Rule[k, v], ...]`, while `ExprKind::Association`
 /// is produced by other transports, so support both.

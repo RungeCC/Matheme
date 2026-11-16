@@ -1,6 +1,8 @@
 mod wl;
 mod world;
 
+use std::path::PathBuf;
+
 use typst::diag::{Severity, SourceDiagnostic};
 use typst::foundations::Dict;
 use typst::World;
@@ -57,6 +59,21 @@ fn warning(message: String) -> Diagnostic {
         column: None,
         range: None,
         hints: vec![],
+    }
+}
+
+fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, allow_downloads: bool) {
+    if allow_downloads {
+        return;
+    }
+    if diagnostics
+        .iter()
+        .any(|d| d.severity == "Error" && d.message.to_lowercase().contains("package"))
+    {
+        diagnostics.push(warning(
+            "Package downloads are disabled; pass \"AllowDownloads\" -> True to use Typst Universe."
+                .into(),
+        ));
     }
 }
 
@@ -129,6 +146,8 @@ fn matheme_compile(link: &mut Link) {
 
     let mut source: Option<String> = None;
     let mut inputs = Dict::new();
+    let mut base_path: Option<PathBuf> = None;
+    let mut allow_downloads = false;
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     for entry in entries {
@@ -156,6 +175,23 @@ fn matheme_compile(link: &mut Link) {
                 }
                 None => diagnostics.push(warning("Inputs must be an Association".into())),
             },
+            "BasePath" => match wl::as_string(&entry.value) {
+                Some(path) => {
+                    let path = PathBuf::from(path);
+                    base_path = Some(if path.is_absolute() {
+                        path
+                    } else {
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| PathBuf::from("."))
+                            .join(path)
+                    });
+                }
+                None => diagnostics.push(warning("BasePath must be a String".into())),
+            },
+            "AllowDownloads" => match wl::as_bool(&entry.value) {
+                Some(value) => allow_downloads = value,
+                None => diagnostics.push(warning("AllowDownloads must be True or False".into())),
+            },
             other => diagnostics.push(warning(format!("unknown input key: {}", other))),
         }
     }
@@ -168,7 +204,11 @@ fn matheme_compile(link: &mut Link) {
         }
     };
 
-    let world = MathemeWorld::new(source, inputs);
+    let base_path = base_path.unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    });
+    world::set_downloads_allowed(allow_downloads);
+    let world = MathemeWorld::new(source, inputs, base_path);
     let warned = typst::compile::<PagedDocument>(&world);
 
     diagnostics.extend(warned.warnings.iter().map(|d| diagnostic_from(d, &world)));
@@ -180,15 +220,35 @@ fn matheme_compile(link: &mut Link) {
                 Ok(bytes) => put_result(link, "Success", Some(bytes), pages, &diagnostics),
                 Err(errors) => {
                     diagnostics.extend(errors.iter().map(|d| diagnostic_from(d, &world)));
+                    maybe_offline_hint(&mut diagnostics, allow_downloads);
                     put_result(link, "Error", None, pages, &diagnostics);
                 }
             }
         }
         Err(errors) => {
             diagnostics.extend(errors.iter().map(|d| diagnostic_from(d, &world)));
+            maybe_offline_hint(&mut diagnostics, allow_downloads);
             put_result(link, "Error", None, 0, &diagnostics);
         }
     }
+}
+
+fn package_entries(
+    status: &world::PackageStatus,
+) -> Vec<wolfram_library_link::expr::RuleEntry> {
+    let path_or_null = |value: &Option<String>| match value {
+        Some(path) => wl::string(path.as_str()),
+        None => wl::null(),
+    };
+    vec![
+        wl::rule("Packages", wl::integer(status.count as i64)),
+        wl::rule("PackageData", path_or_null(&status.data)),
+        wl::rule("PackageCache", path_or_null(&status.cache)),
+        wl::rule(
+            "DownloadsAllowed",
+            wl::symbol(if status.downloads { "System`True" } else { "System`False" }),
+        ),
+    ]
 }
 
 #[export(wstp)]
@@ -196,11 +256,13 @@ fn matheme_version(link: &mut Link) {
     let args = wl::read_args(link);
     assert!(args.is_empty(), "matheme_version takes no arguments");
 
-    let result = wl::assoc(vec![
+    let mut entries = vec![
         wl::rule("Status", wl::string("Success")),
         wl::rule("Matheme", wl::string(env!("CARGO_PKG_VERSION"))),
         wl::rule("Typst", wl::string("0.15.1")),
-    ]);
+    ];
+    entries.extend(package_entries(&world::package_status()));
+    let result = wl::assoc(entries);
     link.put_expr(&result).expect("failed to write version");
 }
 
@@ -215,4 +277,17 @@ fn matheme_reload_fonts(link: &mut Link) {
         wl::rule("Fonts", wl::integer(count as i64)),
     ]);
     link.put_expr(&result).expect("failed to write reload result");
+}
+
+#[export(wstp)]
+fn matheme_reload_packages(link: &mut Link) {
+    let args = wl::read_args(link);
+    assert!(args.is_empty(), "matheme_reload_packages takes no arguments");
+
+    let status = world::reload_packages();
+    let mut entries = vec![wl::rule("Status", wl::string("Success"))];
+    entries.extend(package_entries(&status));
+    let result = wl::assoc(entries);
+    link.put_expr(&result)
+        .expect("failed to write package reload result");
 }

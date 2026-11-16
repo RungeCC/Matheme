@@ -12,7 +12,13 @@ crate-type = ["cdylib"]
 wolfram-library-link = "=0.6.1"
 typst = "=0.15.1"
 typst-pdf = "=0.15.1"
-typst-kit = { version = "=0.15.1", features = ["scan-fonts"] }
+typst-kit = { version = "=0.15.1", features = [
+  "scan-fonts",
+  "system-files",
+] }
+# Windows native-tls uses schannel; avoids typst-kit/system-downloader's
+# non-Windows openssl dependency, which is unavailable in this registry index.
+ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }
 typst-layout = "=0.15.1"
 
 [profile.release]
