@@ -9,9 +9,7 @@
 
 use std::ops::Range;
 
-use matheme_world::{
-    emit_diagnostics, termcolor, DiagnosticFormat, DiagnosticWorld, MathemeWorld,
-};
+use matheme_world::{emit_diagnostics, termcolor, DiagnosticFormat, DiagnosticWorld, MathemeWorld};
 use typst::diag::{Severity, SourceDiagnostic};
 use typst::syntax::{DiagSpan, DiagSpanKind, FileId, Spanned};
 use typst::World;
@@ -70,9 +68,7 @@ fn location(id: FileId, range: Range<usize>, world: &MathemeWorld) -> Option<Loc
     let source = world.source(id).ok()?;
     let lines = source.lines();
     let (line, column) = lines.byte_to_line_column(range.start)?;
-    let line_range = lines
-        .line_to_range(line)
-        .unwrap_or_else(|| range.clone());
+    let line_range = lines.line_to_range(line).unwrap_or_else(|| range.clone());
     let text = lines
         .text()
         .get(line_range)
@@ -89,7 +85,10 @@ fn location(id: FileId, range: Range<usize>, world: &MathemeWorld) -> Option<Loc
     })
 }
 
-fn hint_location(hint: &Spanned<typst::diag::EcoString, DiagSpan>, world: &MathemeWorld) -> Option<Location> {
+fn hint_location(
+    hint: &Spanned<typst::diag::EcoString, DiagSpan>,
+    world: &MathemeWorld,
+) -> Option<Location> {
     let (id, range) = resolve_span(hint.span, world)?;
     location(id, range, world)
 }
@@ -103,7 +102,8 @@ fn trace_location(
 }
 
 pub fn from_typst(diag: &SourceDiagnostic, world: &MathemeWorld) -> Diagnostic {
-    let location = resolve_span(diag.span, world).and_then(|(id, range)| location(id, range, world));
+    let location =
+        resolve_span(diag.span, world).and_then(|(id, range)| location(id, range, world));
 
     Diagnostic {
         severity: match diag.severity {
@@ -153,7 +153,11 @@ pub fn warning(message: impl Into<String>) -> Diagnostic {
 
 /// Render Typst diagnostics with the CLI's codespan formatter, then append our
 /// own bridge warnings as plain `hint:` lines.
-pub fn format(world: &MathemeWorld, typst_diags: &[SourceDiagnostic], all: &[Diagnostic]) -> String {
+pub fn format(
+    world: &MathemeWorld,
+    typst_diags: &[SourceDiagnostic],
+    all: &[Diagnostic],
+) -> String {
     let mut buffer = termcolor::Buffer::no_color();
     if let Err(err) = emit_diagnostics(
         &mut buffer,

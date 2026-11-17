@@ -294,14 +294,25 @@ fn main() {
     let fx = fixed_pages.lock().unwrap();
     let unique_equal = *fp == *up;
     let fixed_equal = *fp == *fx;
-    println!("fresh (id,pages) first 8        : {:?}", &fp[..fp.len().min(8)]);
-    println!("unique (id,pages) first 8       : {:?}", &up[..up.len().min(8)]);
-    println!("fixed (id,pages) first 8        : {:?}", &fx[..fx.len().min(8)]);
+    println!(
+        "fresh (id,pages) first 8        : {:?}",
+        &fp[..fp.len().min(8)]
+    );
+    println!(
+        "unique (id,pages) first 8       : {:?}",
+        &up[..up.len().min(8)]
+    );
+    println!(
+        "fixed (id,pages) first 8        : {:?}",
+        &fx[..fx.len().min(8)]
+    );
     println!("unique-name output == fresh     : {unique_equal}");
     println!("fixed-name  output == fresh     : {fixed_equal}");
     println!("\n--- why fixed-name is fast ---");
-    println!("reuse fixed + evict per call: {:.3?}/call (vs fresh ~5ms)",
-        reuse_fixed_evict.as_secs_f64() / (ids.len() - WARMUP) as f64);
+    println!(
+        "reuse fixed + evict per call: {:.3?}/call (vs fresh ~5ms)",
+        reuse_fixed_evict.as_secs_f64() / (ids.len() - WARMUP) as f64
+    );
 
     println!("\n--- ratios (lower is better) ---");
     let f = fresh.as_secs_f64();

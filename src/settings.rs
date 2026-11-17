@@ -1,129 +1,83 @@
 //! Mapping between Wolfram associations and [`matheme_world::Settings`].
 //!
-//! The bridge accepts a patch association, returns the effective settings, and
-//! keeps all knowledge of WL value shapes in this module. `Null` resets a field
-//! to its built-in default; omitting a key leaves it untouched.
+//! The bridge accepts a patch association and returns the effective settings.
+//! `Null` resets a field to its built-in default; omitting a key leaves it
+//! untouched. Argument shapes are owned by the Wolfram package, so a wrong
+//! type is a programming error handled by the standard call pipeline.
 
 use std::path::PathBuf;
 
-use matheme_wl::{Expr, Rule, Symbol};
+use matheme_wl::{Entry, Expr, Rule, Symbol};
 use matheme_world::settings::{Patch, Settings, Update};
 use matheme_world::FontCounts;
 
-/// A parsed patch plus any non-fatal complaints about individual keys.
-pub struct Parsed {
-    pub patch: Patch,
-    pub warnings: Vec<String>,
-}
+use crate::call;
 
-/// Read a patch association.
-pub fn parse(expr: &Expr) -> Result<Parsed, String> {
-    let entries = expr
-        .as_association()
-        .ok_or_else(|| "settings must be an Association".to_owned())?;
+const FIELDS: &[&str] = &[
+    "Reset",
+    "FontPaths",
+    "SystemFonts",
+    "EmbeddedFonts",
+    "PackagePath",
+    "PackageCache",
+    "Proxy",
+    "Downloads",
+];
 
-    let mut parsed = Parsed {
-        patch: Patch::default(),
-        warnings: Vec::new(),
-    };
-
+/// Read a patch from association entries.
+pub fn parse(entries: &[Entry]) -> Patch {
+    let mut patch = Patch::default();
     for entry in entries {
-        let (key, value) = match entry.pair() {
-            Ok(pair) => pair,
-            Err(reason) => {
-                parsed.warnings.push(reason);
-                continue;
-            }
-        };
-        let Some(name) = key.as_str() else {
-            parsed.warn(format!(
-                "settings key {} is not a String; entry skipped",
-                key.raw()
-            ));
-            continue;
-        };
+        let (key, value) = call::pair(entry);
+        let name = call::key(key);
+        assert!(FIELDS.contains(&name), "unknown settings key: {name}");
         match name {
-            "Reset" => match value.as_bool() {
-                Some(reset) => parsed.patch.reset = reset,
-                None => parsed.warn("Reset must be True or False"),
-            },
-            "FontPaths" => match path_list(value) {
-                Ok(update) => parsed.patch.font_paths = update,
-                Err(reason) => parsed.warn(format!("FontPaths {reason}")),
-            },
-            "SystemFonts" => match value.as_bool() {
-                Some(enabled) => parsed.patch.system_fonts = Update::Set(enabled),
-                None => parsed.warn("SystemFonts must be True or False"),
-            },
-            "EmbeddedFonts" => match value.as_bool() {
-                Some(enabled) => parsed.patch.embedded_fonts = Update::Set(enabled),
-                None => parsed.warn("EmbeddedFonts must be True or False"),
-            },
-            "PackagePath" => match optional_path(value) {
-                Ok(update) => parsed.patch.package_data = update,
-                Err(reason) => parsed.warn(format!("PackagePath {reason}")),
-            },
-            "PackageCache" => match optional_path(value) {
-                Ok(update) => parsed.patch.package_cache = update,
-                Err(reason) => parsed.warn(format!("PackageCache {reason}")),
-            },
-            "Proxy" => match optional_string(value) {
-                Ok(update) => parsed.patch.proxy = update,
-                Err(reason) => parsed.warn(format!("Proxy {reason}")),
-            },
-            "Downloads" => match value.as_bool() {
-                Some(enabled) => parsed.patch.downloads = Update::Set(enabled),
-                None => parsed.warn("Downloads must be True or False"),
-            },
-            other => parsed.warn(format!("unknown settings key: {other}")),
+            "Reset" => patch.reset = call::boolean(value),
+            "FontPaths" => patch.font_paths = path_list(value),
+            "SystemFonts" => patch.system_fonts = Update::Set(call::boolean(value)),
+            "EmbeddedFonts" => patch.embedded_fonts = Update::Set(call::boolean(value)),
+            "PackagePath" => patch.package_data = optional_path(value),
+            "PackageCache" => patch.package_cache = optional_path(value),
+            "Proxy" => patch.proxy = optional_string(value),
+            "Downloads" => patch.downloads = Update::Set(call::boolean(value)),
+            _ => unreachable!("field is in FIELDS"),
         }
     }
-
-    Ok(parsed)
+    patch
 }
 
-impl Parsed {
-    fn warn(&mut self, message: impl Into<String>) {
-        self.warnings.push(message.into());
-    }
-}
-
-fn path_list(value: &Expr) -> Result<Update<Vec<PathBuf>>, String> {
+fn path_list(value: &Expr) -> Update<Vec<PathBuf>> {
     if value.is_symbol(&Symbol::NULL) {
-        return Ok(Update::Reset);
+        return Update::Reset;
     }
     let items = value
         .as_list()
-        .ok_or_else(|| "must be a List of strings or Null".to_owned())?;
-    let mut paths = Vec::with_capacity(items.len());
-    for item in &items {
-        let path = item
-            .as_str()
-            .ok_or_else(|| "must contain only strings".to_owned())?;
-        paths.push(PathBuf::from(path));
-    }
-    Ok(Update::Set(paths))
+        .expect("FontPaths must be a List of strings or Null");
+    Update::Set(
+        items
+            .iter()
+            .map(|item| PathBuf::from(call::string(item)))
+            .collect(),
+    )
 }
 
-fn optional_path(value: &Expr) -> Result<Update<PathBuf>, String> {
+fn optional_path(value: &Expr) -> Update<PathBuf> {
     if value.is_symbol(&Symbol::NULL) {
-        return Ok(Update::Reset);
+        return Update::Reset;
     }
-    value
-        .as_str()
-        .map(|path| Update::Set(PathBuf::from(path)))
-        .ok_or_else(|| "must be a String or Null".to_owned())
+    Update::Set(PathBuf::from(call::string(value)))
 }
 
-fn optional_string(value: &Expr) -> Result<Update<String>, String> {
+fn optional_string(value: &Expr) -> Update<String> {
     if value.is_symbol(&Symbol::NULL) {
-        return Ok(Update::Reset);
+        return Update::Reset;
     }
-    match value.as_str() {
-        // An empty proxy means "no proxy", which is the same as resetting.
-        Some("") => Ok(Update::Reset),
-        Some(text) => Ok(Update::Set(text.to_owned())),
-        None => Err("must be a String or Null".to_owned()),
+    let text = call::string(value);
+    // An empty proxy means "no proxy", which is the same as resetting.
+    if text.is_empty() {
+        Update::Reset
+    } else {
+        Update::Set(text)
     }
 }
 
@@ -182,41 +136,48 @@ fn optional_str_expr(value: Option<&str>) -> Expr {
 mod tests {
     use super::*;
 
-    fn parse_settings(entries: impl IntoIterator<Item = Rule>) -> Parsed {
-        parse(&Expr::association(entries)).expect("association")
+    fn entries(rules: impl IntoIterator<Item = Rule>) -> Vec<Entry> {
+        Expr::association(rules)
+            .as_association()
+            .expect("association")
     }
 
     #[test]
     fn booleans_and_paths_are_read() {
-        let parsed = parse_settings([
+        let patch = parse(&entries([
             Rule::new("SystemFonts", false),
             Rule::new("PackagePath", "D:/typst/data"),
             Rule::new("Proxy", "http://127.0.0.1:2191"),
-        ]);
-        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
-        assert_eq!(parsed.patch.system_fonts, Update::Set(false));
+        ]));
+        assert_eq!(patch.system_fonts, Update::Set(false));
         assert_eq!(
-            parsed.patch.package_data,
+            patch.package_data,
             Update::Set(PathBuf::from("D:/typst/data"))
         );
-        assert!(matches!(parsed.patch.proxy, Update::Set(ref url) if url.ends_with("2191")));
+        assert!(matches!(patch.proxy, Update::Set(ref url) if url.ends_with("2191")));
     }
 
     #[test]
-    fn null_resets_and_unknown_keys_warn() {
-        let parsed = parse_settings([
+    fn null_resets_fields() {
+        let patch = parse(&entries([
             Rule::new("Proxy", Expr::null()),
-            Rule::new("Mystery", 1_i64),
-            Rule::new("SystemFonts", "yes"),
-        ]);
-        assert!(matches!(parsed.patch.proxy, Update::Reset));
-        assert_eq!(parsed.warnings.len(), 2);
+            Rule::new("FontPaths", Expr::null()),
+            Rule::new("Reset", true),
+        ]));
+        assert!(matches!(patch.proxy, Update::Reset));
+        assert!(matches!(patch.font_paths, Update::Reset));
+        assert!(patch.reset);
     }
 
     #[test]
-    fn font_paths_require_strings() {
-        let parsed = parse_settings([Rule::new("FontPaths", Expr::list([1_i64]))]);
-        assert_eq!(parsed.warnings.len(), 1);
-        assert!(matches!(parsed.patch.font_paths, Update::Keep));
+    #[should_panic(expected = "unknown settings key")]
+    fn unknown_keys_are_not_silently_ignored() {
+        parse(&entries([Rule::new("Mystery", 1_i64)]));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected True or False")]
+    fn wrong_types_are_not_guessed() {
+        parse(&entries([Rule::new("SystemFonts", "yes")]));
     }
 }

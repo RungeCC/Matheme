@@ -6,7 +6,6 @@
 //! install roots, and no environment variables: the only source of truth is the
 //! kernel itself.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -64,11 +63,6 @@ fn installation(link: &mut Link) -> &'static Result<PathBuf, String> {
     })
 }
 
-/// Why kernel-based font-directory discovery failed, if it did.
-pub fn installation_error(link: &mut Link) -> Option<&'static str> {
-    installation(link).as_ref().err().map(String::as_str)
-}
-
 fn bundled_font_dir(root: &Path) -> PathBuf {
     root.join("SystemFiles").join("Fonts").join("TrueType")
 }
@@ -89,32 +83,4 @@ pub fn font_dirs(link: &mut Link) -> Vec<PathBuf> {
 /// Push the discovered directories into the Wolfram-agnostic world crate.
 pub fn configure_world_fonts(link: &mut Link) {
     matheme_world::set_host_font_paths(font_dirs(link));
-}
-
-/// Number of font files in the bundled directories (status reporting only;
-/// the real number of faces loaded is returned by `warmup_fonts()`).
-pub fn font_file_count(dirs: &[PathBuf]) -> usize {
-    dirs.iter()
-        .map(|dir| {
-            std::fs::read_dir(dir)
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .filter(|entry| {
-                            entry
-                                .path()
-                                .extension()
-                                .and_then(OsStr::to_str)
-                                .is_some_and(|ext| {
-                                    matches!(
-                                        ext.to_ascii_lowercase().as_str(),
-                                        "ttf" | "otf" | "ttc" | "otc"
-                                    )
-                                })
-                        })
-                        .count()
-                })
-                .unwrap_or(0)
-        })
-        .sum()
 }

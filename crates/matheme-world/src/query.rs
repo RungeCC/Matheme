@@ -1,48 +1,19 @@
 //! Read-only queries over the process-wide metadata caches.
 //!
-//! The queryable surface is exactly what the caches hold: the font book and
-//! each face's provenance/residency, the listing of locally installed
-//! packages, and the Universe index once typst has fetched it. A query never
-//! loads font bytes, writes to disk or reaches the network; the only way to
-//! populate the Universe index is an explicit warmup (or a compilation).
+//! Fonts and packages are separate query surfaces: each answers with its own
+//! row shape, so neither needs a discriminating "target" argument. The
+//! queryable surface is exactly what the caches hold — the font book and each
+//! face's provenance/residency, the listing of locally installed packages, and
+//! the Universe index once typst has fetched it. A query never loads font
+//! bytes, writes to disk or reaches the network; the only way to populate the
+//! Universe index is an explicit opt-in (or a compilation).
 
 use typst::text::{FontFlags, FontInfo, FontStyle};
 
-use crate::fonts::{self, FontCache, FontCounts};
+use crate::fonts::{self, FontCache};
 use crate::packages;
 
 pub use crate::packages::{PackageEntry, PackageOrigin, UniverseMetadata};
-
-/// Which cache a query inspects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    /// Just the state of the caches, without listing entries.
-    Caches,
-    Fonts,
-    Packages,
-}
-
-impl Target {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Caches => "Caches",
-            Self::Fonts => "Fonts",
-            Self::Packages => "Packages",
-        }
-    }
-
-    pub fn parse(name: &str) -> Option<Self> {
-        if name.eq_ignore_ascii_case("caches") {
-            Some(Self::Caches)
-        } else if name.eq_ignore_ascii_case("fonts") {
-            Some(Self::Fonts)
-        } else if name.eq_ignore_ascii_case("packages") {
-            Some(Self::Packages)
-        } else {
-            None
-        }
-    }
-}
 
 /// Where a registered face came from. Also the priority order in which the
 /// sources are added to the font book.
@@ -286,20 +257,6 @@ impl PackageAnswer {
     }
 }
 
-/// State of the caches without initializing anything.
-#[derive(Debug, Clone)]
-pub struct CacheState {
-    pub fonts_cached: bool,
-    pub font_counts: Option<FontCounts>,
-    pub resident: usize,
-    pub packages_cached: bool,
-    /// `None` when the local listing has not been built yet.
-    pub local_packages: Option<usize>,
-    pub universe_cached: bool,
-    /// `None` when the Universe index has not been fetched yet.
-    pub universe_packages: Option<usize>,
-}
-
 pub fn fonts(filter: &FontFilter, page: &Page) -> FontAnswer {
     let cache = fonts::font_cache();
     let total = cache.len();
@@ -338,26 +295,6 @@ pub fn packages(filter: &PackageFilter, page: &Page) -> PackageAnswer {
         universe_cached: universe.is_some(),
         matched,
         entries,
-    }
-}
-
-pub fn caches() -> CacheState {
-    let font_cache = fonts::cached();
-    let runtime = packages::cached();
-    let (local_packages, universe_packages) = runtime
-        .as_ref()
-        .map(|runtime| runtime.metadata.cached_counts())
-        .unwrap_or((None, None));
-    CacheState {
-        fonts_cached: font_cache.is_some(),
-        font_counts: font_cache.as_ref().map(|cache| cache.counts),
-        resident: font_cache
-            .as_ref()
-            .map_or(0, |cache| cache.resident_count()),
-        packages_cached: runtime.is_some(),
-        local_packages,
-        universe_cached: universe_packages.is_some(),
-        universe_packages,
     }
 }
 

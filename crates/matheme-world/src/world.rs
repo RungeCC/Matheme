@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use typst::diag::{FileResult};
+use typst::diag::FileResult;
 use typst::foundations::{Bytes, Datetime, Dict, Duration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};

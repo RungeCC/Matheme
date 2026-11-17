@@ -44,9 +44,16 @@ fn report_paths(label: &str, entries: &[(FontPath, typst::text::FontInfo)]) {
     let faces = entries.len();
     let multi = by_file.iter().filter(|(_, b)| **b > 0).count();
 
-    println!("{label}: {faces} faces in {} files ({missing} unreadable)", by_file.len());
+    println!(
+        "{label}: {faces} faces in {} files ({missing} unreadable)",
+        by_file.len()
+    );
     println!("  eager resident bytes: {}", gib(total));
-    println!("  on-disk bytes:         {} (x{:.2} duplication)", gib(unique), total as f64 / unique.max(1) as f64);
+    println!(
+        "  on-disk bytes:         {} (x{:.2} duplication)",
+        gib(unique),
+        total as f64 / unique.max(1) as f64
+    );
 
     let mut top: Vec<_> = by_file.into_iter().collect();
     top.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
@@ -71,7 +78,11 @@ fn main() {
     // Embedded fonts are already-parsed `Font` values: report their data size.
     let embedded: Vec<_> = fonts::embedded().collect();
     let bytes: usize = embedded.iter().map(|(f, _)| f.data().len()).sum();
-    println!("embedded: {} faces, {} resident bytes", embedded.len(), gib(bytes as u64));
+    println!(
+        "embedded: {} faces, {} resident bytes",
+        embedded.len(),
+        gib(bytes as u64)
+    );
 
     // Control: registering faces without calling `font()` keeps memory flat.
     // Load exactly one face and show that only that file is resident.
