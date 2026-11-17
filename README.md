@@ -18,8 +18,8 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 | Path | Role |
 |---|---|
 | `crates/matheme-world/` | Typst dependency: `World`, font & package caches, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
-| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion. `Expr`/`Rule` newtypes expose `From`/`Into` and `as_*` accessors; Normal expressions (List/Association/ByteArray) live in `normal.rs`. No WSTP dependency. |
-| `src/` | WSTP bridge: exported functions, argument reading, diagnostic expressions, and Wolfram-specific discovery (`wolfram.rs`). |
+| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion. `Expr`, `Normal`, `Entry`/`Rule` and `Symbol` wrappers expose `From`/`Into` and `as_*` accessors instead of raw `ExprKind` matching. `RuleDelayed` stays distinct from `Rule`. No WSTP dependency. |
+| `src/` | WSTP bridge: exported functions, argument reading, diagnostic expressions, settings mapping (`settings.rs`) and Wolfram-specific discovery (`wolfram.rs`). |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. |
 | `scripts/` | WSTP SDK setup and one-shot build. |
 
@@ -138,25 +138,60 @@ and the in-memory source is `<typst source>`.
 
 - Packages load from the standard Typst data/cache directories and the
   Universe. **Downloads are off by default**; pass `"AllowDownloads" -> True`
-  to fetch a missing `@preview` package. An offline miss returns a clear
-  diagnostic that suggests turning downloads on.
-- Set `MATHEME_PROXY` (e.g. `http://127.0.0.1:2191`) if your environment needs
-  an explicit proxy; this overrides the process proxy, which is sometimes
-  broken. Windows uses schannel via `native-tls`, so no OpenSSL DLL is needed.
-- Fonts are discovered by scanning the system once, then cached process-wide.
-- **Wolfram's bundled fonts are included.** The bridge evaluates
-  ``System`$InstallationDirectory`` over WSTP once per process (no filesystem
-  guessing of install roots) and injects
-  `$InstallationDirectory/SystemFiles/Fonts/TrueType` into the font scanner
-  (Mathematica Sans/Mono, Alegreya, Source Sans, Clear Sans, …); these are not
-  OS-registered fonts, so they would otherwise be invisible to Typst. On this
-  machine that adds 149 font files / 149 faces (1069 → 1218 total). Bundled
-  fonts are searched before system fonts; family names follow the font
-  metadata, e.g. `"MathematicaSans"` and `"MathematicaMono"` (no space).
-  Override discovery with `MATHEME_WOLFRAM_DIR` (installation root) or
-  `MATHEME_WOLFRAM_FONTS` (explicit path list); set the latter to an empty
-  string to disable bundled fonts. The world crate itself remains agnostic:
-  callers pass extra font directories in via `set_extra_font_dirs`.
+  for one call, or set `Downloads -> True` globally with `MathemeSettings`.
+  An offline miss returns a clear diagnostic that suggests turning downloads on.
+- Font sources, in priority order (earlier wins when families tie):
+  1. `FontPaths` — explicit directories from `MathemeSettings`;
+  2. Wolfram's bundled fonts — the bridge evaluates
+     ``System`$InstallationDirectory`` over WSTP once per process (no filesystem
+     guessing) and injects `$InstallationDirectory/SystemFiles/Fonts/TrueType`
+     (Mathematica Sans/Mono, Alegreya, Source Sans, Clear Sans, …); these are
+     not OS-registered, so Typst would not see them otherwise. On this machine
+     that is 149 faces.
+  3. **Typst's embedded fonts** (`typst-assets` via `typst-kit`): Libertinus
+     Serif, New Computer Modern (+ Math) and DejaVu Sans Mono. They give a
+     sensible default rendering even with `SystemFonts -> False` and no fonts
+     installed — 17 faces here.
+  4. OS fonts, unless `SystemFonts -> False`.
+  Totals on this machine: 149 host + 17 embedded + 1069 system = **1235 faces**
+  (custom paths add on top). Family names follow the font metadata, e.g.
+  `"MathematicaSans"` / `"MathematicaMono"` (no space) and `"Libertinus Serif"`.
+- The world crate itself remains Wolfram-agnostic: the bridge supplies the
+  bundled directory through `set_host_font_paths`, and users configure paths
+  through `MathemeSettings`. No environment variables are consulted.
+
+### Settings
+
+Configuration is explicit process state, not environment variables: the caches
+read it when they are (re)built, and every change is visible from Wolfram.
+
+```wolfram
+MathemeSettings[]                                      (* report *)
+MathemeSettings[<|"SystemFonts" -> False|>]            (* patch *)
+MathemeSettings[<|"FontPaths" -> {"D:/fonts"}|>]
+MathemeSettings[<|"PackagePath" -> "D:/typst/data", "PackageCache" -> "D:/typst/cache"|>]
+MathemeSettings[<|"Proxy" -> "http://127.0.0.1:2191", "Downloads" -> True|>]
+MathemeSettings[<|"FontPaths" -> Null|>]               (* reset one field *)
+MathemeSettings[<|"Reset" -> True|>]                   (* reset everything *)
+```
+
+| Key | Type | Effect |
+|---|---|---|
+| `FontPaths` | list of strings / `Null` | Extra font directories, searched before everything else. |
+| `SystemFonts` | `True`/`False` | Scan OS fonts. |
+| `EmbeddedFonts` | `True`/`False` | Use Typst's bundled Libertinus / New CM / DejaVu families. |
+| `PackagePath` | string / `Null` | Typst package data directory (`Null` = platform default). |
+| `PackageCache` | string / `Null` | Package cache directory (`Null` = platform default). |
+| `Proxy` | string / `Null` | Explicit proxy for downloads; `Null` connects directly and ignores the process environment. |
+| `Downloads` | `True`/`False` | Global download policy; `AllowDownloads` still opts in per call. |
+| `Reset` | `True`/`False` | Restore every default before applying the rest of the patch. |
+
+Returns `Status`, `Changed` (which groups were invalidated), `FontsReloaded`,
+`PackagesRebuilt`, the effective `Settings`, `FontCounts` and package status.
+Host-provided `HostFontPaths` is reported for transparency but is not patchable.
+A null `Proxy` deliberately ignores `HTTP_PROXY`/`HTTPS_PROXY`: the process
+environment is not a configuration channel here. Windows uses schannel via
+`native-tls`, so no OpenSSL DLL is needed.
 
 ### Eager warmup
 
@@ -177,21 +212,22 @@ a failure is reported in `Diagnostics` and leaves the other caches warmed.
 
 | Function | Effect |
 |---|---|
-| `MathemeVersion[]` | Matheme/Typst versions (with commit), Wolfram font dirs/count (plus `WolframFontError` if kernel discovery failed), package dirs/count, download flag. |
-| `MathemeReloadFonts[]` | Rescan system **and** Wolfram fonts (e.g. after installing fonts). |
-| `MathemeReloadPackages[]` | Drop the cached Universe index. |
+| `MathemeVersion[]` | Matheme/Typst versions (with commit), effective settings, font counts per source, Wolfram font dirs/count (plus `WolframFontError` if kernel discovery failed), package dirs/count and download policy. |
+| `MathemeSettings[]` | Read or patch the configuration (see *Settings*). |
+| `MathemeReloadFonts[]` | Rescan all configured font sources (e.g. after installing a font). |
+| `MathemeReloadPackages[]` | Rebuild the package loader and drop the cached Universe index. |
 | `MathemeClose[]` | Close WSTP `LinkObject`s and unload the library functions. |
 
 ### Resource release
 
 `LibraryFunctionLoad[..., LinkObject, LinkObject]` creates extra `LinkObject`s
-that keep the DLL file handle open. `MathemeClose[]` unloads all five library
+that keep the DLL file handle open. `MathemeClose[]` unloads all six library
 functions and closes their links, after which the DLL can be overwritten and
 later calls transparently reload it. Use it before rebuilding the DLL in a
 running kernel.
 
 ```wolfram
-MathemeClose[]  (* <|"Status"->"Success", "Unloaded"->5, "LinksClosed"->…|> *)
+MathemeClose[]  (* <|"Status"->"Success", "Unloaded"->6, "LinksClosed"->…|> *)
 ```
 
 ## Performance: rebuild the World vs. reuse one with unique virtual files
@@ -205,9 +241,9 @@ cargo run --release -p matheme-world --example bench
 
 It compiles a deliberately heavy multi-page document many times. Every
 document's content is made unique, so comemo's memoization cannot flatter later
-iterations. Representative results (measured with the pre-Wolfram-font
-system set of 1069 faces; the current build has 1218, with no material change
-to these ratios):
+iterations. Representative results (measured with 1069 system faces; the
+current build has 1235 faces after adding host and embedded fonts, with no
+material change to these ratios):
 
 | Strategy | Per compile |
 |---|---|

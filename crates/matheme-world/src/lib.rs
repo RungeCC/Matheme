@@ -1,17 +1,23 @@
-//! Typst world, fonts and package loading. This crate knows nothing about
-//! Wolfram Language; the WSTP bridge lives in the root `matheme` crate.
+//! Typst world, fonts, package loading and configuration. This crate knows
+//! nothing about Wolfram Language; the WSTP bridge lives in the root `matheme`
+//! crate and only supplies host-specific paths (e.g. Wolfram's bundled fonts)
+//! through [`settings::set_host_font_paths`].
 
 pub mod fonts;
 pub mod loader;
 pub mod packages;
+pub mod settings;
 pub mod world;
 
 pub use fonts::{
-    extra_font_dirs, font_cache, reload_fonts, set_extra_font_dirs, warmup_fonts, FontCache,
+    cached_counts, font_cache, font_counts, reload_fonts, warmup_fonts, FontCache, FontCounts,
 };
 pub use packages::{
-    package_status, prefetch_universe_index, reload_packages, set_downloads_allowed,
-    warmup_packages, PackageStatus,
+    package_status, prefetch_universe_index, reload_packages, set_call_downloads, warmup_packages,
+    PackageStatus,
+};
+pub use settings::{
+    apply, set_host_font_paths, settings, Applied, Changes, Patch, Settings, Update,
 };
 pub use world::{MathemeWorld, MAIN_SOURCE_NAME};
 

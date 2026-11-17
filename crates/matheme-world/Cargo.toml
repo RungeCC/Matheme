@@ -10,6 +10,7 @@ typst-kit = { version = "=0.15.1", features = [
   "scan-fonts",
   "system-files",
   "emit-diagnostics",
+  "embedded-fonts",
 ] }
 # Windows native-tls uses schannel; avoids typst-kit/system-downloader's
 # non-Windows openssl dependency, which is unavailable in this registry index.

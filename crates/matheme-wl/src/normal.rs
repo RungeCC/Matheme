@@ -1,62 +1,77 @@
-//! Conversion of Wolfram "normal" expressions (`head[args…]`).
+//! Borrowed wrapper around Wolfram's `Normal` expression.
 //!
-//! Three heads are meaningful for `sys.inputs`: `List`, `Association` and
-//! `ByteArray`. `System`ByteArray[{…}]` is the WSTP wire form of a WL
-//! `ByteArray`; the WXF-only `ExprKind::ByteArray` is handled by the caller.
+//! Normal expressions (`head[args…]`) are the only composite shape WSTP sends,
+//! so instead of matching `ExprKind::Normal` and calling through to the raw
+//! type at every call site, [`Normal`] mirrors what [`crate::Expr`] does for
+//! owned expressions: it hides `ExprKind` behind head/element accessors.
 
-use typst::foundations::{Bytes, Value};
-use wolfram_library_link::expr::{Expr as RawExpr, ExprKind, Normal, Symbol};
+use wolfram_library_link::expr::{Expr as RawExpr, ExprKind, Normal as RawNormal};
 
-use crate::expr::rules_from_normal;
-use crate::typst_value::Converter;
+use crate::symbol::Symbol;
 
-/// Convert a normal expression, or return `None` if its head is unsupported.
-/// Malformed containers return `Some(Value::None)` after emitting a warning.
-pub(crate) fn convert(converter: &mut Converter, normal: &Normal) -> Option<Value> {
-    if normal.has_head(&Symbol::new("System`List")) {
-        return Some(converter.array(normal.elements()));
-    }
-
-    if normal.has_head(&Symbol::new("System`Association")) {
-        return rules_from_normal(normal).map(|rules| converter.association(rules));
-    }
-
-    if normal.has_head(&Symbol::new("System`ByteArray")) {
-        return Some(byte_array(converter, normal.elements()));
-    }
-
-    None
+/// A borrowed normal expression: a head plus its elements.
+#[derive(Debug, Clone, Copy)]
+pub struct Normal<'a> {
+    raw: &'a RawNormal,
 }
 
-fn byte_array(converter: &mut Converter, elements: &[RawExpr]) -> Value {
-    let [list] = elements else {
-        converter.warn("ByteArray expects a single List of byte integers");
-        return Value::None;
-    };
-    let ExprKind::Normal(list) = list.kind() else {
-        converter.warn("ByteArray expects a List of byte integers");
-        return Value::None;
-    };
-    if !list.has_head(&Symbol::new("System`List")) {
-        converter.warn("ByteArray expects a List of byte integers");
-        return Value::None;
+impl<'a> Normal<'a> {
+    pub(crate) fn new(raw: &'a RawNormal) -> Self {
+        Self { raw }
     }
 
-    let mut bytes = Vec::with_capacity(list.elements().len());
-    for (index, element) in list.elements().iter().enumerate() {
-        let ExprKind::Integer(value) = element.kind() else {
-            converter.warn(format!("ByteArray element {index} is not an Integer"));
-            return Value::None;
-        };
-        match u8::try_from(*value) {
-            Ok(byte) => bytes.push(byte),
-            Err(_) => {
-                converter.warn(format!(
-                    "ByteArray element {index} ({value}) is out of byte range"
-                ));
-                return Value::None;
-            }
+    /// Borrow the normal expression inside `raw`, if it is one.
+    pub(crate) fn from_expr(raw: &'a RawExpr) -> Option<Self> {
+        match raw.kind() {
+            ExprKind::Normal(normal) => Some(Self::new(normal)),
+            _ => None,
         }
     }
-    Value::Bytes(Bytes::new(bytes))
+
+    /// The underlying expression, e.g. to hand back to the WSTP layer.
+    pub fn raw(self) -> &'a RawNormal {
+        self.raw
+    }
+
+    /// Fully-qualified head name, when the head is a symbol.
+    pub fn head(&self) -> Option<&'a str> {
+        match self.raw.head().kind() {
+            ExprKind::Symbol(symbol) => Some(symbol.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether the head is exactly `head`.
+    pub fn has_head(&self, head: &Symbol) -> bool {
+        self.head() == Some(head.as_str())
+    }
+
+    /// The elements of the expression.
+    pub fn elements(&self) -> &'a [RawExpr] {
+        self.raw.elements()
+    }
+
+    pub fn len(&self) -> usize {
+        self.elements().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::Expr;
+
+    #[test]
+    fn head_and_elements_are_exposed() {
+        let expr = Expr::normal(Symbol::LIST, [1_i64, 2]);
+        let normal = expr.as_normal().expect("normal expression");
+        assert!(normal.has_head(&Symbol::LIST));
+        assert_eq!(normal.head(), Some("System`List"));
+        assert_eq!(normal.len(), 2);
+        assert_eq!(normal.elements()[0].kind(), &ExprKind::Integer(1));
+    }
 }

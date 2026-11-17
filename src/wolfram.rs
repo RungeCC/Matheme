@@ -1,24 +1,22 @@
 //! Wolfram-specific discovery for the WSTP bridge.
 //!
 //! The world crate stays agnostic about Wolfram: this module asks the running
-//! kernel for `$InstallationDirectory` and hands the resulting font directory
-//! to `matheme_world::set_extra_font_dirs`. No filesystem guessing of install
-//! roots happens in the world crate.
+//! kernel for `$InstallationDirectory` and hands the resulting font directory to
+//! `matheme_world::set_host_font_paths`. There is no filesystem guessing of
+//! install roots, and no environment variables: the only source of truth is the
+//! kernel itself.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use wolfram_library_link::{
-    expr::{Expr as RawExpr, ExprKind, Symbol},
+    expr::{Expr as RawExpr, ExprKind, Symbol as RawSymbol},
     rtl,
     wstp::Link,
 };
 
-use matheme_wl::Expr;
-
-const FONT_DIRS_VAR: &str = "MATHEME_WOLFRAM_FONTS";
-const INSTALL_DIR_VAR: &str = "MATHEME_WOLFRAM_DIR";
+use matheme_wl::{Expr, Symbol};
 
 static INSTALLATION_DIR: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
@@ -40,11 +38,11 @@ fn evaluate(link: &mut Link, query: &RawExpr) -> Result<RawExpr, String> {
     }
 
     let packet = link
-        .get_expr_with_resolver(&mut |name: &str| Some(Symbol::new(&format!("System`{name}"))))
+        .get_expr_with_resolver(&mut |name: &str| Some(RawSymbol::new(&format!("System`{name}"))))
         .map_err(|error| error.to_string())?;
     match packet.kind() {
         ExprKind::Normal(return_packet)
-            if return_packet.has_head(&Symbol::new("System`ReturnPacket"))
+            if return_packet.has_head(&RawSymbol::new(Symbol::RETURN_PACKET.as_str()))
                 && return_packet.elements().len() == 1 =>
         {
             Ok(return_packet.elements()[0].clone())
@@ -56,7 +54,7 @@ fn evaluate(link: &mut Link, query: &RawExpr) -> Result<RawExpr, String> {
 /// Ask the kernel once per process for `$InstallationDirectory`.
 fn installation(link: &mut Link) -> &'static Result<PathBuf, String> {
     INSTALLATION_DIR.get_or_init(|| {
-        let query = Expr::symbol("System`$InstallationDirectory");
+        let query = Expr::from(Symbol::INSTALLATION_DIRECTORY);
         let raw = evaluate(link, query.raw())?;
         let value = Expr::from_raw(raw);
         value
@@ -77,22 +75,10 @@ fn bundled_font_dir(root: &Path) -> PathBuf {
 
 /// Directories holding Wolfram's bundled TrueType fonts.
 ///
-/// 1. `MATHEME_WOLFRAM_FONTS` overrides with an explicit path list; an empty
-///    value disables bundled fonts.
-/// 2. `MATHEME_WOLFRAM_DIR` overrides the installation root.
-/// 3. Otherwise the running kernel's `$InstallationDirectory` is evaluated
-///    over WSTP (cached for the process).
+/// The path comes from the running kernel's `$InstallationDirectory`, evaluated
+/// over WSTP and cached for the process. Overriding it is a matter of patching
+/// the font settings (`FontPaths`), not the environment.
 pub fn font_dirs(link: &mut Link) -> Vec<PathBuf> {
-    if let Some(paths) = std::env::var_os(FONT_DIRS_VAR) {
-        return std::env::split_paths(&paths)
-            .filter(|path| !path.as_os_str().is_empty())
-            .collect();
-    }
-    if let Some(root) = std::env::var_os(INSTALL_DIR_VAR) {
-        if !root.is_empty() {
-            return vec![bundled_font_dir(Path::new(&root))];
-        }
-    }
     installation(link)
         .as_ref()
         .ok()
@@ -102,7 +88,7 @@ pub fn font_dirs(link: &mut Link) -> Vec<PathBuf> {
 
 /// Push the discovered directories into the Wolfram-agnostic world crate.
 pub fn configure_world_fonts(link: &mut Link) {
-    matheme_world::set_extra_font_dirs(font_dirs(link));
+    matheme_world::set_host_font_paths(font_dirs(link));
 }
 
 /// Number of font files in the bundled directories (status reporting only;

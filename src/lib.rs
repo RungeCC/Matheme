@@ -1,4 +1,5 @@
 mod diagnostics;
+mod settings;
 mod wolfram;
 
 use std::path::PathBuf;
@@ -11,11 +12,11 @@ use typst_layout::PagedDocument;
 use typst_pdf::PdfOptions;
 use wolfram_library_link::{
     export,
-    expr::{Expr as RawExpr, ExprKind, Symbol},
+    expr::{Expr as RawExpr, ExprKind, Symbol as RawSymbol},
     wstp::Link,
 };
 
-use matheme_wl::{to_typst_value, Expr, Rule};
+use matheme_wl::{to_typst_value, Entry, Expr, Rule};
 use world::MathemeWorld;
 
 /// Read the WSTP argument list, resolving Wolfram 15's context-free symbol
@@ -24,7 +25,7 @@ fn read_args(link: &mut Link) -> Vec<Expr> {
     let expr: Expr = link
         .get_expr_with_resolver(&mut |name: &str| {
             let full = format!("System`{}", name);
-            Some(Symbol::new(&full))
+            Some(RawSymbol::new(&full))
         })
         .expect("failed to read WSTP arguments")
         .into();
@@ -41,8 +42,16 @@ fn maybe_offline_hint(diagnostics: &mut Vec<diagnostics::Diagnostic>, allow_down
         .any(|d| d.severity == "Error" && d.message.to_lowercase().contains("package"))
     {
         diagnostics.push(diagnostics::warning(
-            "Package downloads are disabled; pass \"AllowDownloads\" -> True to use Typst Universe.",
+            "Package downloads are disabled; pass \"AllowDownloads\" -> True or set \
+             MathemeSettings[<|\"Downloads\" -> True|>].",
         ));
+    }
+}
+
+fn string_or_null(value: Option<&str>) -> Expr {
+    match value {
+        Some(value) => Expr::string(value),
+        None => Expr::null(),
     }
 }
 
@@ -74,10 +83,49 @@ fn put_result(
         .expect("failed to write result expression to WSTP link");
 }
 
+/// Read `Inputs`, reporting every entry that cannot be converted.
+fn read_inputs(entry: &Entry, inputs: &mut Dict, diagnostics: &mut Vec<diagnostics::Diagnostic>) {
+    let (_, value) = match entry.pair() {
+        Ok(pair) => pair,
+        Err(reason) => {
+            diagnostics.push(diagnostics::warning(reason));
+            return;
+        }
+    };
+    let Some(entries) = value.as_association() else {
+        diagnostics.push(diagnostics::warning("Inputs must be an Association"));
+        return;
+    };
+
+    let mut warnings = Vec::new();
+    for entry in entries {
+        let (key, value) = match entry.pair() {
+            Ok(pair) => pair,
+            Err(reason) => {
+                warnings.push(reason);
+                continue;
+            }
+        };
+        let Some(name) = key.as_str() else {
+            warnings.push("Inputs key is not a String; skipped".into());
+            continue;
+        };
+        let converted = to_typst_value(value, &mut warnings);
+        inputs.insert(typst::foundations::Str::from(name), converted);
+    }
+    diagnostics.extend(warnings.into_iter().map(diagnostics::warning));
+}
+
 #[export(wstp)]
 fn matheme_compile(link: &mut Link) {
+    // A per-call opt-in never outlives the call that set it.
+    world::set_call_downloads(false);
     let args = read_args(link);
-    assert_eq!(args.len(), 1, "matheme_compile expects a single Association");
+    assert_eq!(
+        args.len(),
+        1,
+        "matheme_compile expects a single Association"
+    );
     wolfram::configure_world_fonts(link);
 
     let entries = match args[0].as_association() {
@@ -99,30 +147,26 @@ fn matheme_compile(link: &mut Link) {
     let mut diagnostics: Vec<diagnostics::Diagnostic> = Vec::new();
 
     for entry in entries {
-        let value = entry.value();
-        match entry.key().as_str().unwrap_or("") {
+        let (key, value) = match entry.pair() {
+            Ok(pair) => pair,
+            Err(reason) => {
+                diagnostics.push(diagnostics::warning(reason));
+                continue;
+            }
+        };
+        let Some(name) = key.as_str() else {
+            diagnostics.push(diagnostics::warning(format!(
+                "input key {} is not a String; entry skipped",
+                key.raw()
+            )));
+            continue;
+        };
+        match name {
             "Source" => match value.as_str() {
                 Some(s) => source = Some(s.to_owned()),
                 None => diagnostics.push(diagnostics::warning("Source must be a String")),
             },
-            "Inputs" => match value.as_association() {
-                Some(rules) => {
-                    let mut extra_warnings = Vec::new();
-                    for rule in rules {
-                        match rule.key().as_str() {
-                            Some(name) => {
-                                let input = to_typst_value(rule.value(), &mut extra_warnings);
-                                inputs.insert(typst::foundations::Str::from(name), input);
-                            }
-                            None => {
-                                extra_warnings.push("Inputs key is not a String; skipped".into())
-                            }
-                        }
-                    }
-                    diagnostics.extend(extra_warnings.into_iter().map(diagnostics::warning));
-                }
-                None => diagnostics.push(diagnostics::warning("Inputs must be an Association")),
-            },
+            "Inputs" => read_inputs(&entry, &mut inputs, &mut diagnostics),
             "BasePath" => match value.as_str() {
                 Some(path) => {
                     let path = PathBuf::from(path);
@@ -138,10 +182,14 @@ fn matheme_compile(link: &mut Link) {
             },
             "AllowDownloads" => match value.as_bool() {
                 Some(enabled) => allow_downloads = enabled,
-                None => diagnostics
-                    .push(diagnostics::warning("AllowDownloads must be True or False")),
+                None => {
+                    diagnostics.push(diagnostics::warning("AllowDownloads must be True or False"))
+                }
             },
-            other => diagnostics.push(diagnostics::warning(format!("unknown input key: {}", other))),
+            other => diagnostics.push(diagnostics::warning(format!(
+                "unknown input key: {}",
+                other
+            ))),
         }
     }
 
@@ -153,9 +201,9 @@ fn matheme_compile(link: &mut Link) {
         }
     };
 
-    let base_path = base_path
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    world::set_downloads_allowed(allow_downloads);
+    let base_path =
+        base_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    world::set_call_downloads(allow_downloads);
     let world = MathemeWorld::new(source, inputs, base_path);
     let warned = typst::compile::<PagedDocument>(&world);
 
@@ -193,16 +241,30 @@ fn matheme_compile(link: &mut Link) {
 }
 
 fn package_entries(status: &world::PackageStatus) -> Vec<Rule> {
-    let path_or_null = |value: &Option<String>| match value {
-        Some(path) => Expr::string(path.as_str()),
-        None => Expr::null(),
-    };
     vec![
         Rule::new("Packages", status.count as i64),
-        Rule::new("PackageData", path_or_null(&status.data)),
-        Rule::new("PackageCache", path_or_null(&status.cache)),
-        Rule::new("DownloadsAllowed", Expr::boolean(status.downloads)),
+        Rule::new("PackageData", string_or_null(status.data.as_deref())),
+        Rule::new("PackageCache", string_or_null(status.cache.as_deref())),
+        Rule::new("DownloadsAllowed", status.downloads),
+        Rule::new("DownloadsActive", status.downloads_active),
+        Rule::new("Proxy", string_or_null(status.proxy.as_deref())),
+        Rule::new("ProxyError", string_or_null(status.proxy_error.as_deref())),
     ]
+}
+
+/// Font counts, optionally forcing a scan for introspection calls.
+fn font_counts_entry(scan: bool) -> Rule {
+    let counts = if scan {
+        Some(world::font_counts())
+    } else {
+        world::cached_counts()
+    };
+    Rule::new(
+        "FontCounts",
+        counts
+            .map(|counts| settings::font_counts_expr(&counts))
+            .unwrap_or_else(Expr::null),
+    )
 }
 
 #[export(wstp)]
@@ -238,14 +300,84 @@ fn matheme_version(link: &mut Link) {
     ));
     entries.push(Rule::new(
         "WolframFontError",
-        match wolfram::installation_error(link) {
-            Some(err) => Expr::string(err),
-            None => Expr::null(),
-        },
+        string_or_null(wolfram::installation_error(link)),
     ));
+    entries.push(Rule::new("Settings", settings::expr(&world::settings())));
+    entries.push(font_counts_entry(true));
     entries.extend(package_entries(&world::package_status()));
     let result = Expr::association(entries);
-    link.put_expr(result.raw()).expect("failed to write version");
+    link.put_expr(result.raw())
+        .expect("failed to write version");
+}
+
+/// Read or patch the process-wide settings.
+///
+/// `MathemeSettings[]` reports the effective configuration; passing an
+/// Association applies a patch and reports what changed. `Null` values reset a
+/// field, `"Reset" -> True` restores every default.
+#[export(wstp)]
+fn matheme_settings(link: &mut Link) {
+    let args = read_args(link);
+    assert!(
+        args.is_empty() || args.len() == 1,
+        "matheme_settings takes no arguments or one Association"
+    );
+    wolfram::configure_world_fonts(link);
+
+    let mut warnings = Vec::new();
+    let mut applied = None;
+
+    if let Some(arg) = args.first() {
+        match settings::parse(arg) {
+            Ok(parsed) => {
+                warnings.extend(parsed.warnings);
+                applied = Some(world::apply(&parsed.patch));
+            }
+            Err(reason) => {
+                let result =
+                    Expr::association([Rule::new("Status", "Error"), Rule::new("Message", reason)]);
+                link.put_expr(result.raw())
+                    .expect("failed to write settings error");
+                return;
+            }
+        }
+    }
+
+    let mut entries = vec![Rule::new("Status", "Success")];
+    if let Some(applied) = &applied {
+        entries.push(Rule::new(
+            "Changed",
+            Expr::association([
+                Rule::new("Fonts", applied.changes.fonts),
+                Rule::new("Packages", applied.changes.packages),
+                Rule::new("Downloads", applied.changes.downloads),
+            ]),
+        ));
+        entries.push(Rule::new("FontsReloaded", applied.fonts_reloaded));
+        entries.push(Rule::new("PackagesRebuilt", applied.packages_rebuilt));
+    }
+
+    let effective = applied
+        .map(|applied| applied.settings)
+        .unwrap_or_else(world::settings);
+    entries.push(Rule::new("Settings", settings::expr(&effective)));
+    entries.push(font_counts_entry(false));
+    entries.extend(package_entries(&world::package_status()));
+
+    if !warnings.is_empty() {
+        entries.push(Rule::new(
+            "Diagnostics",
+            Expr::list(
+                warnings
+                    .into_iter()
+                    .map(|message| diagnostics::expr(&diagnostics::warning(message))),
+            ),
+        ));
+    }
+
+    let result = Expr::association(entries);
+    link.put_expr(result.raw())
+        .expect("failed to write settings result");
 }
 
 /// Eagerly initialize the process-wide caches (fonts, package loader and,
@@ -254,6 +386,7 @@ fn matheme_version(link: &mut Link) {
 /// booleans, defaulting to True) so callers can warm only what they need.
 #[export(wstp)]
 fn matheme_warmup(link: &mut Link) {
+    world::set_call_downloads(false);
     let args = read_args(link);
     assert!(
         args.is_empty() || args.len() == 1,
@@ -270,8 +403,15 @@ fn matheme_warmup(link: &mut Link) {
         match arg.as_association() {
             Some(options) => {
                 for option in options {
-                    let key = option.key().as_str().unwrap_or("");
-                    let target = match key {
+                    let (key, value) = match option.pair() {
+                        Ok(pair) => pair,
+                        Err(reason) => {
+                            diag.push(diagnostics::warning(reason));
+                            continue;
+                        }
+                    };
+                    let name = key.as_str().unwrap_or("");
+                    let target = match name {
                         "Fonts" => &mut fonts,
                         "Packages" => &mut packages,
                         "PackageIndex" => &mut package_index,
@@ -282,10 +422,10 @@ fn matheme_warmup(link: &mut Link) {
                             continue;
                         }
                     };
-                    match option.value().as_bool() {
+                    match value.as_bool() {
                         Some(value) => *target = value,
                         None => diag.push(diagnostics::warning(format!(
-                            "warmup option {key} must be True or False"
+                            "warmup option {name} must be True or False"
                         ))),
                     }
                 }
@@ -303,6 +443,7 @@ fn matheme_warmup(link: &mut Link) {
         let count = world::warmup_fonts();
         entries.push(Rule::new("Fonts", count as i64));
         entries.push(Rule::new("FontsMs", start.elapsed().as_millis() as i64));
+        entries.push(font_counts_entry(false));
     }
 
     if packages {
@@ -351,6 +492,7 @@ fn matheme_reload_fonts(link: &mut Link) {
     let result = Expr::association([
         Rule::new("Status", "Success"),
         Rule::new("Fonts", count as i64),
+        font_counts_entry(false),
     ]);
     link.put_expr(result.raw())
         .expect("failed to write reload result");
@@ -359,7 +501,10 @@ fn matheme_reload_fonts(link: &mut Link) {
 #[export(wstp)]
 fn matheme_reload_packages(link: &mut Link) {
     let args = read_args(link);
-    assert!(args.is_empty(), "matheme_reload_packages takes no arguments");
+    assert!(
+        args.is_empty(),
+        "matheme_reload_packages takes no arguments"
+    );
 
     let status = world::reload_packages();
     let mut entries = vec![Rule::new("Status", "Success")];
