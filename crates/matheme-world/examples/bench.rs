@@ -111,7 +111,7 @@ impl World for ReusableWorld {
         &self.library
     }
     fn book(&self) -> &LazyHash<FontBook> {
-        &self.fonts.book
+        self.fonts.book()
     }
     fn main(&self) -> FileId {
         self.state.lock().unwrap().main
@@ -130,7 +130,7 @@ impl World for ReusableWorld {
         Ok(Bytes::from_string(source.text().to_string()))
     }
     fn font(&self, index: usize) -> Option<Font> {
-        self.fonts.fonts.get(index).cloned()
+        self.fonts.font(index)
     }
     fn today(&self, _offset: Option<TypstDuration>) -> Option<Datetime> {
         None
@@ -172,7 +172,7 @@ fn time_many<F: FnMut()>(label: &str, n: usize, mut f: F) {
 fn main() {
     // Font scan is process-wide and cached; do it once before timing, exactly
     // as MathemeWarmup[] would in the real application.
-    println!("fonts in cache: {}", font_cache().fonts.len());
+    println!("fonts in cache: {}", font_cache().len());
 
     // Sanity check: confirm the heavy document actually compiles to multiple
     // pages, so that all timings below measure a successful compilation and

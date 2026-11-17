@@ -49,7 +49,7 @@ impl World for MathemeWorld {
     }
 
     fn book(&self) -> &LazyHash<FontBook> {
-        &self.fonts.book
+        self.fonts.book()
     }
 
     fn main(&self) -> FileId {
@@ -65,7 +65,7 @@ impl World for MathemeWorld {
     }
 
     fn font(&self, index: usize) -> Option<Font> {
-        self.fonts.fonts.get(index).cloned()
+        self.fonts.font(index)
     }
 
     fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {

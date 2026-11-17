@@ -513,3 +513,24 @@ fn matheme_reload_packages(link: &mut Link) {
     link.put_expr(result.raw())
         .expect("failed to write package reload result");
 }
+
+/// Release the memory held by the process-wide caches: the font book with its
+/// lazily loaded faces, the package loader and typst's memoized compilation
+/// results. The next call transparently rebuilds what it needs, so this is
+/// safe to call at any time.
+#[export(wstp)]
+fn matheme_close(link: &mut Link) {
+    let args = read_args(link);
+    assert!(args.is_empty(), "matheme_close takes no arguments");
+
+    world::reset_caches();
+    let result = Expr::association([
+        Rule::new("Status", "Success"),
+        Rule::new(
+            "Released",
+            Expr::list(["Fonts", "Packages", "Memoization"]),
+        ),
+    ]);
+    link.put_expr(result.raw())
+        .expect("failed to write close result");
+}

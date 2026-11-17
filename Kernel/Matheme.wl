@@ -7,7 +7,7 @@ MathemeSettings::usage = "MathemeSettings[] returns the effective compiler setti
 MathemeReloadFonts::usage = "MathemeReloadFonts[] rescans all configured font sources (custom paths, Wolfram, embedded, system) and returns the number of faces found.";
 MathemeReloadPackages::usage = "MathemeReloadPackages[] rebuilds the package loader (dropping the cached Universe index) and returns package information.";
 MathemeWarmup::usage = "MathemeWarmup[] eagerly initializes the font cache, package loader and Universe index so the first MathemeCompile is fast. Options: \"Fonts\", \"Packages\", \"PackageIndex\" (all True by default). Returns per-stage timings; PackageIndex needs network access. The library is loaded if needed.";
-MathemeClose::usage = "MathemeClose[] closes the WSTP LinkObjects, unloads the LibraryFunctions and releases the DLL file handle. The library is reloaded automatically on the next call.";
+MathemeClose::usage = "MathemeClose[] closes the WSTP LinkObjects and asks the library to drop its caches (font book, lazily loaded font faces, package loader, memoized compilation results), returning that memory to the operating system. The library itself stays mapped until the kernel exits (Wolfram 15 refuses LibraryUnload even for trivial libraries), but its caches are empty after this call. The library is reloaded automatically on the next call.";
 
 Begin["`Private`"];
 
@@ -25,7 +25,7 @@ $library = Module[{found = Quiet[FindLibrary["matheme"]]},
 $functions = <||>;
 $links = {};
 
-$expectedFunctions = 6;
+$expectedFunctions = 7;
 
 loadFunctions[] := Module[{before, loaded, good},
   If[Length[$functions] == $expectedFunctions, Return[True]];
@@ -36,7 +36,8 @@ loadFunctions[] := Module[{before, loaded, good},
     "reloadFonts" -> LibraryFunctionLoad[$library, "matheme_reload_fonts", LinkObject, LinkObject],
     "reloadPackages" -> LibraryFunctionLoad[$library, "matheme_reload_packages", LinkObject, LinkObject],
     "warmup" -> LibraryFunctionLoad[$library, "matheme_warmup", LinkObject, LinkObject],
-    "settings" -> LibraryFunctionLoad[$library, "matheme_settings", LinkObject, LinkObject]
+    "settings" -> LibraryFunctionLoad[$library, "matheme_settings", LinkObject, LinkObject],
+    "close" -> LibraryFunctionLoad[$library, "matheme_close", LinkObject, LinkObject]
   |>;
   good = Select[Values[loaded], Head[#] === LibraryFunction &];
   If[Length[good] === $expectedFunctions,
@@ -59,7 +60,12 @@ callFunction[name_String, args___] := Module[{},
   $functions[name][args]
 ];
 
-MathemeClose[] := Module[{before, funcs, unloaded = 0, links = $links},
+MathemeClose[] := Module[{before, unloaded = 0, links = $links, released = False, dllUnloaded, result},
+  (* Ask the library to drop its process-wide caches first; this must happen
+     while the functions are still loaded. *)
+  If[Length[$functions] == $expectedFunctions,
+    result = Quiet@Check[$functions["close"][], $Failed];
+    released = AssociationQ[result] && TrueQ[result["Status"] === "Success"]];
   before = Links[];
   Do[
     If[Head[f] === LibraryFunction, Quiet[LibraryFunctionUnload[f]]; unloaded++],
@@ -70,10 +76,15 @@ MathemeClose[] := Module[{before, funcs, unloaded = 0, links = $links},
   Scan[Quiet[LinkClose[#]] &, links];
   $functions = <||>;
   $links = {};
+  (* Best effort: unmap the DLL so even its statics return to the OS. Wolfram
+     15 currently refuses this even for trivial libraries, hence the report. *)
+  dllUnloaded = Quiet@Check[LibraryUnload[$library]; True, False];
   <|
     "Status" -> "Success",
     "Unloaded" -> unloaded,
-    "LinksClosed" -> Length[Complement[before, Links[]]]
+    "LinksClosed" -> Length[Complement[before, Links[]]],
+    "CachesReleased" -> released,
+    "LibraryUnloaded" -> dllUnloaded
   |>
 ];
 

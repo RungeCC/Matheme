@@ -6,6 +6,8 @@ publish = false
 
 [dependencies]
 typst = "=0.15.1"
+# Must match typst's comemo so `comemo::evict` clears the same global cache.
+comemo = "0.5.1"
 typst-kit = { version = "=0.15.1", features = [
   "scan-fonts",
   "system-files",
@@ -18,4 +20,3 @@ ureq = { version = "2", default-features = false, features = ["native-tls", "gzi
 
 [dev-dependencies]
 typst-layout = "=0.15.1"
-comemo = "0.5.1"

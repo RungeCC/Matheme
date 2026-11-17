@@ -125,17 +125,26 @@ fn build(settings: &Settings) -> PackageRuntime {
     }
 }
 
-static PACKAGES: OnceLock<RwLock<Arc<PackageRuntime>>> = OnceLock::new();
+static PACKAGES: OnceLock<RwLock<Option<Arc<PackageRuntime>>>> = OnceLock::new();
 
-fn package_slot() -> &'static RwLock<Arc<PackageRuntime>> {
-    PACKAGES.get_or_init(|| RwLock::new(Arc::new(build(&settings::settings()))))
+fn package_slot() -> &'static RwLock<Option<Arc<PackageRuntime>>> {
+    PACKAGES.get_or_init(|| RwLock::new(None))
 }
 
 pub(crate) fn package_runtime() -> Arc<PackageRuntime> {
-    package_slot()
+    if let Some(runtime) = package_slot()
         .read()
         .expect("package cache lock poisoned")
         .clone()
+    {
+        return runtime;
+    }
+    let runtime = Arc::new(build(&settings::settings()));
+    let mut slot = package_slot().write().expect("package cache lock poisoned");
+    if slot.is_none() {
+        *slot = Some(Arc::clone(&runtime));
+    }
+    runtime
 }
 
 /// Allow downloads for the current call only. The bridge resets this on every
@@ -149,10 +158,10 @@ pub(crate) fn set_configured_downloads(allowed: bool) -> bool {
     let Some(slot) = PACKAGES.get() else {
         return false;
     };
-    slot.read()
-        .expect("package cache lock poisoned")
-        .gate
-        .set_configured(allowed);
+    let Some(runtime) = slot.read().expect("package cache lock poisoned").clone() else {
+        return false;
+    };
+    runtime.gate.set_configured(allowed);
     true
 }
 
@@ -188,7 +197,7 @@ pub fn prefetch_universe_index() -> Result<String, String> {
 /// Rebuild the loader unconditionally and report its status.
 pub fn reload_packages() -> PackageStatus {
     let next = Arc::new(build(&settings::settings()));
-    *package_slot().write().expect("package cache lock poisoned") = next;
+    *package_slot().write().expect("package cache lock poisoned") = Some(next);
     package_status()
 }
 
@@ -199,9 +208,18 @@ pub(crate) fn rebuild() -> bool {
     let Some(slot) = PACKAGES.get() else {
         return false;
     };
+    if slot.read().expect("package cache lock poisoned").is_none() {
+        return false;
+    }
     let next = Arc::new(build(&settings::settings()));
-    *slot.write().expect("package cache lock poisoned") = next;
+    *slot.write().expect("package cache lock poisoned") = Some(next);
     true
+}
+
+/// Drop the loader (including the cached Universe index); the next use
+/// rebuilds it from the settings.
+pub fn reset() {
+    *package_slot().write().expect("package cache lock poisoned") = None;
 }
 
 pub struct PackageStatus {

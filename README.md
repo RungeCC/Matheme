@@ -156,6 +156,15 @@ and the in-memory source is `<typst source>`.
   Totals on this machine: 149 host + 17 embedded + 1069 system = **1235 faces**
   (custom paths add on top). Family names follow the font metadata, e.g.
   `"MathematicaSans"` / `"MathematicaMono"` (no space) and `"Libertinus Serif"`.
+- **Font data loads lazily.** Only the font *book* (metadata) is built at scan
+  time; a font file is read when a document first selects that face, and then
+  stays resident for reuse. This matters: typst's `Font` holds the entire font
+  file, and a multi-face `.ttc` is held once *per face* — eagerly materializing
+  all 1069 system faces costs **7.4 GiB** on this machine (a single 16-face
+  `SourceHanSans.ttc` alone accounts for 4.9 GiB). With lazy loading the
+  steady state is the book plus whatever your documents actually use (e.g. a
+  CJK document pulls in one full `SourceHanSans.ttc` read, ~300 MiB).
+  `crates/matheme-world/examples/font-memory.rs` reproduces these numbers.
 - The world crate itself remains Wolfram-agnostic: the bridge supplies the
   bundled directory through `set_host_font_paths`, and users configure paths
   through `MathemeSettings`. No environment variables are consulted.
@@ -205,8 +214,11 @@ MathemeWarmup["Fonts" -> True, "Packages" -> False, "PackageIndex" -> False]
 ```
 
 Returns per-stage timings (`FontsMs`, `PackagesMs`, `PackageIndexMs`) and counts.
-`PackageIndex` fetches the Universe index and therefore needs network access;
-a failure is reported in `Diagnostics` and leaves the other caches warmed.
+Warmup builds the font *book* (metadata) and the package loader; font *files*
+are not read — they load lazily when a document first uses a face, so warmup
+is fast and cheap in memory. `PackageIndex` fetches the Universe index and
+therefore needs network access; a failure is reported in `Diagnostics` and
+leaves the other caches warmed.
 
 ### Cache / state management
 
@@ -216,18 +228,39 @@ a failure is reported in `Diagnostics` and leaves the other caches warmed.
 | `MathemeSettings[]` | Read or patch the configuration (see *Settings*). |
 | `MathemeReloadFonts[]` | Rescan all configured font sources (e.g. after installing a font). |
 | `MathemeReloadPackages[]` | Rebuild the package loader and drop the cached Universe index. |
-| `MathemeClose[]` | Close WSTP `LinkObject`s and unload the library functions. |
+| `MathemeClose[]` | Close WSTP `LinkObject`s, drop every library cache (fonts, packages, memoization) and unload the library functions. |
+
+### Memory
+
+Measured on the Wolfram 15 kernel (process working set, `.tmp/test-memory.wl`):
+
+| Stage | Before lazy fonts | After |
+|---|---|---|
+| Kernel start | 0.21 GiB | 0.21 GiB |
+| After font scan (`MathemeVersion[]`) | **8.2 GiB** | 0.22 GiB |
+| After 6 compiles | 8.2 GiB | 0.24 GiB |
+| After `MathemeClose[]` | 8.2 GiB (nothing released) | **0.22 GiB** |
+| After reload + rescan | 16.2 GiB (doubled) | 0.23 GiB |
+
+`MathemeClose[]` releases the font book and any lazily loaded faces, the
+package loader (including the Universe index) and typst's memoized
+compilation results (`comemo::evict(0)` — these also pin `Font` clones, so
+evicting is required for the memory to actually return). The DLL image itself
+stays mapped until the kernel exits: Wolfram 15 refuses `LibraryUnload` even
+for a trivial library (verified with a minimal probe), so `MathemeClose[]`
+reports `LibraryUnloaded -> False` and does not rely on unloading.
 
 ### Resource release
 
 `LibraryFunctionLoad[..., LinkObject, LinkObject]` creates extra `LinkObject`s
-that keep the DLL file handle open. `MathemeClose[]` unloads all six library
-functions and closes their links, after which the DLL can be overwritten and
-later calls transparently reload it. Use it before rebuilding the DLL in a
-running kernel.
+that keep the DLL file handle open. `MathemeClose[]` asks the library to drop
+its caches, unloads all seven library functions and closes their links, after
+which the DLL can be overwritten and later calls transparently reload it. Use
+it before rebuilding the DLL in a running kernel.
 
 ```wolfram
-MathemeClose[]  (* <|"Status"->"Success", "Unloaded"->6, "LinksClosed"->…|> *)
+MathemeClose[]  (* <|"Status"->"Success", "Unloaded"->7, "LinksClosed"->…,
+                       "CachesReleased"->True, "LibraryUnloaded"->False|> *)
 ```
 
 ## Performance: rebuild the World vs. reuse one with unique virtual files
