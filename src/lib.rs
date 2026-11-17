@@ -1,4 +1,5 @@
 mod diagnostics;
+mod query;
 mod settings;
 mod wolfram;
 
@@ -512,6 +513,29 @@ fn matheme_reload_packages(link: &mut Link) {
     let result = Expr::association(entries);
     link.put_expr(result.raw())
         .expect("failed to write package reload result");
+}
+
+/// Read-only queries over the metadata the process-wide caches hold: font
+/// book entries (family, variant, source, residency) and package entries
+/// (local installs plus the Universe index once it has been fetched).
+///
+/// Call shapes: `MathemeQuery[]` (cache overview), `MathemeQuery["Fonts"]`,
+/// `MathemeQuery["Packages"]`, `MathemeQuery[association]` and
+/// `MathemeQuery[target, filters]`. A query never loads font bytes or reaches
+/// the network unless `AllowDownloads -> True` is given explicitly.
+#[export(wstp)]
+fn matheme_query(link: &mut Link) {
+    // A per-call opt-in never outlives the call that set it.
+    world::set_call_downloads(false);
+    let args = read_args(link);
+    wolfram::configure_world_fonts(link);
+
+    let result = match query::parse(&args) {
+        Ok(parsed) => query::run(&parsed),
+        Err(reason) => query::error(&reason),
+    };
+    link.put_expr(result.raw())
+        .expect("failed to write query result");
 }
 
 /// Release the memory held by the process-wide caches: the font book with its

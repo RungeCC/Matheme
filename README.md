@@ -17,9 +17,9 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 
 | Path | Role |
 |---|---|
-| `crates/matheme-world/` | Typst dependency: `World`, font & package caches, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
+| `crates/matheme-world/` | Typst dependency: `World`, font & package caches (`query.rs` is a read-only view over their metadata), file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
 | `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion. `Expr`, `Normal`, `Entry`/`Rule` and `Symbol` wrappers expose `From`/`Into` and `as_*` accessors instead of raw `ExprKind` matching. `RuleDelayed` stays distinct from `Rule`. No WSTP dependency. |
-| `src/` | WSTP bridge: exported functions, argument reading, diagnostic expressions, settings mapping (`settings.rs`) and Wolfram-specific discovery (`wolfram.rs`). |
+| `src/` | WSTP bridge: exported functions, argument reading, diagnostic expressions, settings/query mappings (`settings.rs`, `query.rs`) and Wolfram-specific discovery (`wolfram.rs`). |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. |
 | `scripts/` | WSTP SDK setup and one-shot build. |
 
@@ -220,12 +220,61 @@ is fast and cheap in memory. `PackageIndex` fetches the Universe index and
 therefore needs network access; a failure is reported in `Diagnostics` and
 leaves the other caches warmed.
 
+### Querying cached metadata
+
+`MathemeQuery` is a read-only view of exactly the metadata the library caches:
+the font book (plus each face's source and residency), the listing of locally
+installed packages, and the Universe index once typst has fetched it. A plain
+query never loads a font file, writes to disk or reaches the network.
+
+```wolfram
+MathemeQuery[]                                   (* cache state only *)
+MathemeQuery["Fonts"]                            (* first 50 faces *)
+MathemeQuery["Fonts", <|"Family" -> "libertinus", "Source" -> "Embedded"|>]
+MathemeQuery["Fonts", <|"Resident" -> True, "MaxResults" -> All|>]
+MathemeQuery["Packages", <|"Name" -> "cetz", "Origin" -> "Universe"|>]
+MathemeQuery[<|"Target" -> "Fonts", "MaxResults" -> All, "Offset" -> 100|>]
+```
+
+| Key | Applies to | Meaning |
+|---|---|---|
+| `Target` | all | `"Fonts"`, `"Packages"` or `"Caches"`; may also be the first positional argument. |
+| `Family` | Fonts | Case-insensitive substring of the family name. |
+| `Source` | Fonts | `Custom`, `Host`, `Embedded` or `System`. |
+| `Resident` | Fonts | `True`/`False`: whether the face's bytes are in memory. |
+| `Character` | Fonts | One-character string; keeps faces whose typst `Coverage` contains it (the same predicate typst uses for font fallback, so it reflects declared cmap ranges and can be coarse). |
+| `Name`, `Namespace`, `Version` | Packages | Name substring, namespace and exact version. |
+| `Origin` | Packages | `Local`, `Data`, `Cache` or `Universe`. |
+| `Offset`, `MaxResults` | Fonts, Packages | Paging; default 50 rows, `MaxResults -> All` removes the cap. |
+| `AllowDownloads` | Packages | Explicit opt-in to fetch and cache the Universe index. |
+| `Refresh` | Packages | Rescan the local package directories. |
+
+Every answer carries `Status` and `Target`. Font answers add `Total` (faces in
+the book), `Matched`, `Returned`, `Offset`, `MaxResults`, `Resident` (number of
+faces whose bytes are in memory) and `Results` — associations with `Index`,
+`Family`, `Style`, `Weight`, `Stretch`, `Flags`, `Source`, `Path`,
+`CollectionIndex` and `Resident`. Package answers add `Total`, `Local`,
+`Universe`, `UniverseIndexCached` and `Results` — associations with
+`Namespace`, `Name`, `Version`, `Origin`, `Path` and `Metadata` (Universe index
+fields such as `Description`, `Authors`, `License`, `Keywords`, `Categories`,
+`Entrypoint`, `Repository`, `UpdatedAt` and `Template`; `Null` for local
+packages). `MathemeQuery[]` reports only cache state: whether each cache is
+live, face counts by source, resident face count, local package count and
+whether the Universe index has been fetched.
+
+Universe entries appear only after the index is cached — by
+`MathemeWarmup["PackageIndex" -> True]`, by a compile that resolves an
+unversioned `@preview` package, or by `AllowDownloads -> True`. A query that
+returns every face still reads no font file: the resident count before and
+after `MathemeQuery["Fonts", <|"MaxResults" -> All|>]` is unchanged.
+
 ### Cache / state management
 
 | Function | Effect |
 |---|---|
 | `MathemeVersion[]` | Matheme/Typst versions (with commit), effective settings, font counts per source, Wolfram font dirs/count (plus `WolframFontError` if kernel discovery failed), package dirs/count and download policy. |
 | `MathemeSettings[]` | Read or patch the configuration (see *Settings*). |
+| `MathemeQuery[]` | Query the cached font and package metadata (see *Querying cached metadata*). |
 | `MathemeReloadFonts[]` | Rescan all configured font sources (e.g. after installing a font). |
 | `MathemeReloadPackages[]` | Rebuild the package loader and drop the cached Universe index. |
 | `MathemeClose[]` | Close WSTP `LinkObject`s, drop every library cache (fonts, packages, memoization) and unload the library functions. |
@@ -245,21 +294,23 @@ Measured on the Wolfram 15 kernel (process working set, `.tmp/test-memory.wl`):
 `MathemeClose[]` releases the font book and any lazily loaded faces, the
 package loader (including the Universe index) and typst's memoized
 compilation results (`comemo::evict(0)` — these also pin `Font` clones, so
-evicting is required for the memory to actually return). The DLL image itself
-stays mapped until the kernel exits: Wolfram 15 refuses `LibraryUnload` even
-for a trivial library (verified with a minimal probe), so `MathemeClose[]`
-reports `LibraryUnloaded -> False` and does not rely on unloading.
+evicting is required for the memory to actually return). Unloading the
+`LibraryFunction`s unmaps the DLL image too (the file becomes writable
+again). The subsequent best-effort `LibraryUnload` reports `$Failed` on
+Wolfram 15 because there is nothing left to unload — the same happens for a
+trivial probe library — so `MathemeClose[]` reports `LibraryUnloaded -> False`
+without relying on that call.
 
 ### Resource release
 
 `LibraryFunctionLoad[..., LinkObject, LinkObject]` creates extra `LinkObject`s
 that keep the DLL file handle open. `MathemeClose[]` asks the library to drop
-its caches, unloads all seven library functions and closes their links, after
+its caches, unloads all eight library functions and closes their links, after
 which the DLL can be overwritten and later calls transparently reload it. Use
 it before rebuilding the DLL in a running kernel.
 
 ```wolfram
-MathemeClose[]  (* <|"Status"->"Success", "Unloaded"->7, "LinksClosed"->…,
+MathemeClose[]  (* <|"Status"->"Success", "Unloaded"->8, "LinksClosed"->…,
                        "CachesReleased"->True, "LibraryUnloaded"->False|> *)
 ```
 

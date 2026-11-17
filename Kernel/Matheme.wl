@@ -7,7 +7,8 @@ MathemeSettings::usage = "MathemeSettings[] returns the effective compiler setti
 MathemeReloadFonts::usage = "MathemeReloadFonts[] rescans all configured font sources (custom paths, Wolfram, embedded, system) and returns the number of faces found.";
 MathemeReloadPackages::usage = "MathemeReloadPackages[] rebuilds the package loader (dropping the cached Universe index) and returns package information.";
 MathemeWarmup::usage = "MathemeWarmup[] eagerly initializes the font cache, package loader and Universe index so the first MathemeCompile is fast. Options: \"Fonts\", \"Packages\", \"PackageIndex\" (all True by default). Returns per-stage timings; PackageIndex needs network access. The library is loaded if needed.";
-MathemeClose::usage = "MathemeClose[] closes the WSTP LinkObjects and asks the library to drop its caches (font book, lazily loaded font faces, package loader, memoized compilation results), returning that memory to the operating system. The library itself stays mapped until the kernel exits (Wolfram 15 refuses LibraryUnload even for trivial libraries), but its caches are empty after this call. The library is reloaded automatically on the next call.";
+MathemeQuery::usage = "MathemeQuery[] reports the state of the process-wide caches. MathemeQuery[\"Fonts\"] and MathemeQuery[\"Packages\"] return the cached metadata; MathemeQuery[target, filters] and MathemeQuery[association] add filters (Family, Source, Resident, Character, Name, Namespace, Origin, Version), paging (Offset, MaxResults -> All) and the opt-ins AllowDownloads and Refresh. Queries never load font bytes or reach the network unless AllowDownloads -> True is given.";
+MathemeClose::usage = "MathemeClose[] closes the WSTP LinkObjects and asks the library to drop its caches (font book, lazily loaded font faces, package loader, memoized compilation results), returning that memory to the operating system. The library functions are unloaded and the DLL image is released; the library is reloaded automatically on the next call.";
 
 Begin["`Private`"];
 
@@ -25,7 +26,7 @@ $library = Module[{found = Quiet[FindLibrary["matheme"]]},
 $functions = <||>;
 $links = {};
 
-$expectedFunctions = 7;
+$expectedFunctions = 8;
 
 loadFunctions[] := Module[{before, loaded, good},
   If[Length[$functions] == $expectedFunctions, Return[True]];
@@ -37,6 +38,7 @@ loadFunctions[] := Module[{before, loaded, good},
     "reloadPackages" -> LibraryFunctionLoad[$library, "matheme_reload_packages", LinkObject, LinkObject],
     "warmup" -> LibraryFunctionLoad[$library, "matheme_warmup", LinkObject, LinkObject],
     "settings" -> LibraryFunctionLoad[$library, "matheme_settings", LinkObject, LinkObject],
+    "query" -> LibraryFunctionLoad[$library, "matheme_query", LinkObject, LinkObject],
     "close" -> LibraryFunctionLoad[$library, "matheme_close", LinkObject, LinkObject]
   |>;
   good = Select[Values[loaded], Head[#] === LibraryFunction &];
@@ -136,6 +138,14 @@ MathemeReloadPackages[] := callFunction["reloadPackages"];
 
 MathemeSettings[] := callFunction["settings"];
 MathemeSettings[settings_Association] := callFunction["settings", settings];
+
+MathemeQuery[] := callFunction["query"];
+MathemeQuery[target_String] := callFunction["query", target];
+MathemeQuery[filters_Association] := callFunction["query", filters];
+MathemeQuery[target_String, filters_Association] := callFunction["query", target, filters];
+(* Anything else is forwarded so the Rust side can report a shaped error
+   instead of leaving an unevaluated Wolfram expression behind. *)
+MathemeQuery[args___] := callFunction["query", args];
 
 Options[MathemeWarmup] = {"Fonts" -> True, "Packages" -> True, "PackageIndex" -> True};
 MathemeWarmup[opts : OptionsPattern[]] := callFunction["warmup", <|

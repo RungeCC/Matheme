@@ -42,6 +42,8 @@ impl Symbol {
     pub const NULL: Self = Self(Cow::Borrowed("System`Null"));
     /// `System`None`, the WL spelling of "no value" used by some APIs.
     pub const NONE: Self = Self(Cow::Borrowed("System`None"));
+    /// `System`All`, used for an unbounded query result.
+    pub const ALL: Self = Self(Cow::Borrowed("System`All"));
     /// `System`List`.
     pub const LIST: Self = Self(Cow::Borrowed("System`List"));
     /// `System`Association`.

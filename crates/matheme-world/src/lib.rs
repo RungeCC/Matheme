@@ -6,6 +6,7 @@
 pub mod fonts;
 pub mod loader;
 pub mod packages;
+pub mod query;
 pub mod settings;
 pub mod world;
 
