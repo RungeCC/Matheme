@@ -10,15 +10,6 @@ MathemeClose::usage = "MathemeClose[] closes the WSTP LinkObjects, unloads the L
 
 Begin["`Private`"];
 
-(* Wolfram bundles fonts under $InstallationDirectory/SystemFiles/Fonts/TrueType;
-   they are not registered as OS fonts, so point the Rust font scanner at them.
-   An explicit MATHEME_WOLFRAM_DIR or MATHEME_WOLFRAM_FONTS set by the user wins. *)
-Module[{current = Quiet[GetEnvironment["MATHEME_WOLFRAM_DIR"]]},
-  If[!MatchQ[current, _Rule] || !StringQ[current[[2]]],
-    SetEnvironment["MATHEME_WOLFRAM_DIR" -> $InstallationDirectory]
-  ]
-];
-
 $library = Module[{found = Quiet[FindLibrary["matheme"]]},
   If[TrueQ[found =!= $Failed],
     found,

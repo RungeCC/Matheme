@@ -16,7 +16,7 @@ use typst::diag::{Severity, SourceDiagnostic};
 use typst::syntax::{DiagSpan, DiagSpanKind, FileId, Spanned};
 use typst::World;
 
-use crate::wl;
+use matheme_wl::{Expr, Rule};
 
 /// A resolved source location: user-facing file name, 1-based line/column,
 /// byte range and the text of the containing line.
@@ -170,58 +170,45 @@ pub fn format(world: &MathemeWorld, typst_diags: &[SourceDiagnostic], all: &[Dia
     text
 }
 
-fn location_expr(location: &Option<Location>) -> wolfram_library_link::expr::Expr {
+fn location_expr(location: &Option<Location>) -> Expr {
     let Some(location) = location else {
-        return wl::null();
+        return Expr::null();
     };
-    wl::assoc(vec![
-        wl::rule("File", wl::string(location.file.as_str())),
-        wl::rule("Line", wl::integer(location.line)),
-        wl::rule("Column", wl::integer(location.column)),
-        wl::rule(
+    Expr::association([
+        Rule::new("File", location.file.as_str()),
+        Rule::new("Line", location.line),
+        Rule::new("Column", location.column),
+        Rule::new(
             "Range",
-            wl::list(vec![
-                wl::integer(location.range.0 as i64),
-                wl::integer(location.range.1 as i64),
-            ]),
+            Expr::list([location.range.0 as i64, location.range.1 as i64]),
         ),
-        wl::rule("Text", wl::string(location.text.as_str())),
+        Rule::new("Text", location.text.as_str()),
     ])
 }
 
-pub fn expr(diag: &Diagnostic) -> wolfram_library_link::expr::Expr {
-    wl::assoc(vec![
-        wl::rule("Severity", wl::string(diag.severity)),
-        wl::rule("Message", wl::string(diag.message.as_str())),
-        wl::rule("Location", location_expr(&diag.location)),
-        wl::rule(
+pub fn expr(diag: &Diagnostic) -> Expr {
+    Expr::association([
+        Rule::new("Severity", diag.severity),
+        Rule::new("Message", diag.message.as_str()),
+        Rule::new("Location", location_expr(&diag.location)),
+        Rule::new(
             "Hints",
-            wl::list(
-                diag.hints
-                    .iter()
-                    .map(|hint| {
-                        wl::assoc(vec![
-                            wl::rule("Message", wl::string(hint.message.as_str())),
-                            wl::rule("Location", location_expr(&hint.location)),
-                        ])
-                    })
-                    .collect(),
-            ),
+            Expr::list(diag.hints.iter().map(|hint| {
+                Expr::association([
+                    Rule::new("Message", hint.message.as_str()),
+                    Rule::new("Location", location_expr(&hint.location)),
+                ])
+            })),
         ),
-        wl::rule(
+        Rule::new(
             "Trace",
-            wl::list(
-                diag.trace
-                    .iter()
-                    .map(|trace| {
-                        wl::assoc(vec![
-                            wl::rule("Kind", wl::string(trace.kind.as_str())),
-                            wl::rule("Location", location_expr(&trace.location)),
-                            wl::rule("Text", wl::string(trace.text.as_str())),
-                        ])
-                    })
-                    .collect(),
-            ),
+            Expr::list(diag.trace.iter().map(|trace| {
+                Expr::association([
+                    Rule::new("Kind", trace.kind.as_str()),
+                    Rule::new("Location", location_expr(&trace.location)),
+                    Rule::new("Text", trace.text.as_str()),
+                ])
+            })),
         ),
     ])
 }

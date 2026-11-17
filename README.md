@@ -3,8 +3,9 @@
 A bridge that lets the Wolfram Language typeset with [Typst](https://typst.app/).
 A Rust `cdylib` is loaded **in-process** by Wolfram 15 via WSTP `LinkObject`;
 Typst compiles source to PDF, and the Wolfram layer imports that PDF as native
-vector `Graphics`. No external process, no WSTP callbacks into the kernel, and
-no Frame-to-Graphics reimplementation.
+vector `Graphics`. No external process and no Frame-to-Graphics reimplementation.
+The only callback into the kernel is a one-time evaluation of
+`$InstallationDirectory` to locate Wolfram's bundled fonts.
 
 ```
 Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶ PDF bytes
@@ -17,8 +18,8 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 | Path | Role |
 |---|---|
 | `crates/matheme-world/` | Typst dependency: `World`, font & package caches, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
-| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion, including both WXF and WSTP forms of `ByteArray` → `bytes`. No WSTP dependency. |
-| `src/` | WSTP bridge: exported functions, argument reading, diagnostic expressions. |
+| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion. `Expr`/`Rule` newtypes expose `From`/`Into` and `as_*` accessors; Normal expressions (List/Association/ByteArray) live in `normal.rs`. No WSTP dependency. |
+| `src/` | WSTP bridge: exported functions, argument reading, diagnostic expressions, and Wolfram-specific discovery (`wolfram.rs`). |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. |
 | `scripts/` | WSTP SDK setup and one-shot build. |
 
@@ -143,18 +144,19 @@ and the in-memory source is `<typst source>`.
   an explicit proxy; this overrides the process proxy, which is sometimes
   broken. Windows uses schannel via `native-tls`, so no OpenSSL DLL is needed.
 - Fonts are discovered by scanning the system once, then cached process-wide.
-- **Wolfram's bundled fonts are included.** The WL package points the Rust
-  scanner at `$InstallationDirectory/SystemFiles/Fonts/TrueType` (Mathematica
-  Sans/Mono, Alegreya, Source Sans, Clear Sans, …); these are not OS-registered
-  fonts, so they would otherwise be invisible to Typst. On this machine that
-  adds 149 font files / 149 faces (1069 → 1218 total). Bundled fonts are
-  searched before system fonts; family names follow the font metadata, e.g.
-  `"MathematicaSans"` and `"MathematicaMono"` (no space).
+- **Wolfram's bundled fonts are included.** The bridge evaluates
+  ``System`$InstallationDirectory`` over WSTP once per process (no filesystem
+  guessing of install roots) and injects
+  `$InstallationDirectory/SystemFiles/Fonts/TrueType` into the font scanner
+  (Mathematica Sans/Mono, Alegreya, Source Sans, Clear Sans, …); these are not
+  OS-registered fonts, so they would otherwise be invisible to Typst. On this
+  machine that adds 149 font files / 149 faces (1069 → 1218 total). Bundled
+  fonts are searched before system fonts; family names follow the font
+  metadata, e.g. `"MathematicaSans"` and `"MathematicaMono"` (no space).
   Override discovery with `MATHEME_WOLFRAM_DIR` (installation root) or
   `MATHEME_WOLFRAM_FONTS` (explicit path list); set the latter to an empty
-  string to disable bundled fonts. Without those, the newest versioned
-  directory under `Program Files\Wolfram Research\Wolfram` (or the macOS /
-  Linux equivalents) is used.
+  string to disable bundled fonts. The world crate itself remains agnostic:
+  callers pass extra font directories in via `set_extra_font_dirs`.
 
 ### Eager warmup
 
@@ -175,7 +177,7 @@ a failure is reported in `Diagnostics` and leaves the other caches warmed.
 
 | Function | Effect |
 |---|---|
-| `MathemeVersion[]` | Matheme/Typst versions (with commit), Wolfram font dirs/count, package dirs/count, download flag. |
+| `MathemeVersion[]` | Matheme/Typst versions (with commit), Wolfram font dirs/count (plus `WolframFontError` if kernel discovery failed), package dirs/count, download flag. |
 | `MathemeReloadFonts[]` | Rescan system **and** Wolfram fonts (e.g. after installing fonts). |
 | `MathemeReloadPackages[]` | Drop the cached Universe index. |
 | `MathemeClose[]` | Close WSTP `LinkObject`s and unload the library functions. |
@@ -241,8 +243,12 @@ session / `ManagedLibraryExpression` design is not warranted here.
 
 ## Known constraints
 
-- Windows x86-64 + Wolfram 15.0 is the tested target; the WSTP SDK alias and
-  linker shims are version-sensitive.
+- Windows x86-64 + Wolfram 15.0 is the tested target; the WSTP DeveloperKit
+  path is version-sensitive (override with `WSTP_SDK_DIR`).
+- Wolfram 15 sends packet heads such as `ReturnPacket` over WSTP without a
+  context. Kernel evaluation in `src/wolfram.rs` therefore uses the same
+  context-resolving expression reader as argument parsing; the stock
+  `try_evaluate()` helper cannot read these packets.
 - Fonts come from the machine, so identical source can render slightly
   differently on machines with different fonts.
 - Structured columns are 1-based while the `Formatted` report shows the CLI's
