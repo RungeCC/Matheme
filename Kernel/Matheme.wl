@@ -32,36 +32,36 @@ MathemeDiagnostic::usage = "MathemeDiagnostic::warning is the message issued for
 $TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates. Pass one of its keys as \"TypstTemplate\" -> key to MathemeCompile, or supply a Function / StringTemplate / TemplateObject directly. Templates are applied to the source string before compilation; MiTeX templates need an explicit \"AllowDownloads\" -> True until the package is cached.";
 
 $TypstTemplates = <|
-"Equation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$ `` $"],
-"InlineEquation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$``$"],
-"Text" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n``"],
-"MiTeXEquation" -> (
-TemplateObject[{
-"#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-"#import \"@preview/mitex:0.2.4\": mitex\n",
-"#mitex(`", TemplateSlot[1], "`)"},
-CombinerFunction -> StringJoin,
-InsertionFunction -> TextString,
-MetaInformation -> <| |>]
-),
-"MiTeXInlineEquation" -> (
-TemplateObject[{
-"#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-"#import \"@preview/mitex:0.2.4\": mi\n",
-"#mi(`", TemplateSlot[1], "`)"},
-CombinerFunction -> StringJoin,
-InsertionFunction -> TextString,
-MetaInformation -> <| |>]
-),
-"MiTeXText" -> (
-TemplateObject[{
-"#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-"#import \"@preview/mitex:0.2.4\": mitext\n",
-"#mitext(`", TemplateSlot[1], "`)"},
-CombinerFunction -> StringJoin,
-InsertionFunction -> TextString,
-MetaInformation -> <| |>]
-)
+  "Equation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$ `` $"],
+  "InlineEquation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$``$"],
+  "Text" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n``"],
+  "MiTeXEquation" -> (
+    TemplateObject[{
+      "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
+      "#import \"@preview/mitex:0.2.4\": mitex\n",
+      "#mitex(`", TemplateSlot[1], "`)"},
+    CombinerFunction -> StringJoin,
+    InsertionFunction -> TextString,
+    MetaInformation -> <| |>]
+  ),
+  "MiTeXInlineEquation" -> (
+    TemplateObject[{
+      "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
+      "#import \"@preview/mitex:0.2.4\": mi\n",
+      "#mi(`", TemplateSlot[1], "`)"},
+      CombinerFunction -> StringJoin,
+      InsertionFunction -> TextString,
+      MetaInformation -> <| |>]
+    ),
+  "MiTeXText" -> (
+    TemplateObject[{
+      "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
+      "#import \"@preview/mitex:0.2.4\": mitext\n",
+      "#mitext(`", TemplateSlot[1], "`)"},
+      CombinerFunction -> StringJoin,
+      InsertionFunction -> TextString,
+      MetaInformation -> <| |>]
+  )
 |>;
 Protect[$TypstTemplates];
 
@@ -211,7 +211,7 @@ applyTemplate[other_, source_String] := With[{t = MathemeCallError},
 ];
 
 (* ------------------------------------------------------------------------ *)
-(* Compilation                                                               *)
+(* Compilation                                                              *)
 (* ------------------------------------------------------------------------ *)
 
 compileWith[source_, inputs_, base_, allowDownloads_] := callFunction["compile", <|
@@ -306,7 +306,7 @@ MathemeClose[] := Module[
 ];
 
 (* ------------------------------------------------------------------------ *)
-(* Package conventions                                                       *)
+(* Package conventions                                                      *)
 (* ------------------------------------------------------------------------ *)
 
 Scan[
