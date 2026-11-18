@@ -4,8 +4,9 @@ A bridge that lets the Wolfram Language typeset with [Typst](https://typst.app/)
 A Rust `cdylib` is loaded **in-process** by Wolfram 15 via WSTP `LinkObject`;
 Typst compiles source to PDF, and the Wolfram layer imports that PDF as native
 vector `Graphics`. No external process and no Frame-to-Graphics reimplementation.
-The only callback into the kernel is a one-time evaluation of
-`$InstallationDirectory` to locate Wolfram's bundled fonts.
+The only callback into the kernel is an evaluation of
+`$InstallationDirectory` to locate Wolfram's bundled fonts; it is cached
+in process state and only refreshes the font book if the paths change.
 
 ```
 Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶ PDF bytes
@@ -18,8 +19,8 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 | Path | Role |
 |---|---|
 | `crates/matheme-world/` | Typst dependency: `World`, font & package caches (`query.rs` holds both independent query surfaces), file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
-| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion. `Expr`, `Normal`, `Entry`/`Rule` and `Symbol` wrappers expose `From`/`Into` and `as_*` accessors instead of raw `ExprKind` matching. `RuleDelayed` stays distinct from `Rule`. No WSTP dependency. |
-| `src/` | WSTP bridge: `call.rs` is the uniform read → parse → invoke → write pipeline, `endpoints.rs` declares every function's expected arguments, plus WL value mappings (`settings.rs`, `query.rs`), diagnostics and Wolfram-specific discovery (`wolfram.rs`). |
+| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion. `Expr`, `Normal`, `Entry`/`Rule` and `Symbol` wrappers expose `From`/`Into` and `as_*` accessors instead of raw `ExprKind` matching; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. `RuleDelayed` stays distinct from `Rule`. No WSTP dependency. |
+| `src/` | WSTP bridge: one exported WSTP function receives `<|"Action" -> name, "Arguments" -> <|…|>|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, `endpoints.rs` declares every action's expected arguments, plus WL value mappings (`settings.rs`, `query.rs`), diagnostics and Wolfram-specific discovery (`wolfram.rs`). |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects. |
 | `scripts/` | WSTP SDK setup and one-shot build. |
 
@@ -57,9 +58,11 @@ PacletDirectoryLoad["/absolute/path/to/matheme"];
 Get["Matheme`"];
 ```
 
-The library functions are loaded lazily on first use. To rebuild the DLL while
-the kernel is running, call `MathemeClose[]` first — the WSTP `LinkObject`s
-hold the DLL open (see *Resource release* below).
+The library function is loaded lazily on first use. The DLL exposes exactly
+one WSTP function (`matheme_call`); all public Wolfram functions send it an
+envelope `<|"Action" -> name, "Arguments" -> <|…|>|>`. To rebuild the DLL
+while the kernel is running, call `MathemeClose[]` first (see *Resource
+release* below).
 
 The paclet requires the
 [`Wolfram/ErrorTools`](https://resources.wolframcloud.com/PacletRepository/resources/Wolfram/ErrorTools/)
@@ -98,7 +101,7 @@ silences them) and stay available in the result's `Diagnostics` field.
 ### Compile to PDF
 
 ```wolfram
-res = MathemeCompile["= Hello $x^2$", <|"title" -> "demo"|>] ;
+res = MathemeCompile["= Hello $x^2$", "Inputs" -> <|"title" -> "demo"|>];
 res["PDF"]        (* ByteArray *)
 res["Pages"]
 res["Diagnostics"]  (* present when there are warnings *)
@@ -112,17 +115,18 @@ that Failure through unchanged.
 Signatures:
 
 ```wolfram
-MathemeCompile[source_String, opts___]
-MathemeCompile[source_String, inputs_Association, opts___]
+MathemeCompile[source_String, opts : OptionsPattern[]]
+MathemeToGraphics[source_String, opts : OptionsPattern[]]
 ```
 
-Options:
+Options (all names are strings):
 
 | Option | Default | Meaning |
 |---|---|---|
 | `"Inputs"` | `<\| \|>` | Dictionary injected as Typst `sys.inputs`. |
 | `"BasePath"` | `Directory[]` | Root for `#include` / `#image` relative paths. |
 | `"AllowDownloads"` | `False` | If `True`, missing Universe packages may be downloaded. |
+| `"TypstTemplate"` | `None` | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see *Templates*). |
 
 `Inputs` accepts strings, integers, reals, `True`/`False`/`Null`, lists,
 nested associations and `ByteArray` (mapped to Typst `bytes`); unsupported
@@ -131,7 +135,7 @@ values become warnings in `Diagnostics`.
 ```wolfram
 res = MathemeCompile[
   "#let raw = sys.inputs.blob\nRaw bytes: #raw.len()",
-  <|"blob" -> ByteArray[{0, 1, 2, 255}]|>
+  "Inputs" -> <|"blob" -> ByteArray[{0, 1, 2, 255}]|>
 ];
 ```
 
@@ -171,14 +175,34 @@ the offline-package hint) are issued as `MathemeDiagnostic::warning` messages.
 Errors are not messages: they are carried by `MathemeCompileError`'s Failure
 object together with the CLI-style `Formatted` report.
 
+### Templates
+
+`$TypstTemplates` is a protected, read-only Association of Typst source
+templates: `Equation`, `InlineEquation`, `Text`, `MiTeXEquation`,
+`MiTeXInlineEquation` and `MiTeXText`. Pass a key through the `"TypstTemplate"`
+option, or supply a `Function` / template object directly:
+
+```wolfram
+MathemeCompile["x^2 + y^2 = z^2", "TypstTemplate" -> "Equation"]
+MathemeCompile["E = mc^2", "TypstTemplate" -> StringTemplate["$``$"]]
+MathemeCompile["x^2", "TypstTemplate" -> (("$" <> # <> "$") &)]
+```
+
+Templates are applied in the Wolfram layer with `TemplateApply` (or called as
+a `Function`) before the resulting source is sent to the compiler; the Rust
+side knows nothing about templates. An unknown key returns a
+`MathemeCallError` Failure listing the available keys. MiTeX templates import
+`@preview/mitex:0.2.4`, so they need `"AllowDownloads" -> True` until the
+package is cached — templates never turn downloads on implicitly.
+
 ### Packages and fonts
 
 - Packages load from the standard Typst data/cache directories and the
   Universe. **Downloads are off by default**; pass `"AllowDownloads" -> True`
-  for one call, or set `Downloads -> True` globally with `MathemeSettings`.
+  for one call, or set `"Downloads" -> True` globally with `MathemeSetSettings`.
   An offline miss returns a clear diagnostic that suggests turning downloads on.
 - Font sources, in priority order (earlier wins when families tie):
-  1. `FontPaths` — explicit directories from `MathemeSettings`;
+  1. `FontPaths` — explicit directories from `MathemeSetSettings`;
   2. Wolfram's bundled fonts — the bridge evaluates
      ``System`$InstallationDirectory`` over WSTP once per process (no filesystem
      guessing) and injects `$InstallationDirectory/SystemFiles/Fonts/TrueType`
@@ -204,21 +228,22 @@ object together with the CLI-style `Formatted` report.
   `crates/matheme-world/examples/font-memory.rs` reproduces these numbers.
 - The world crate itself remains Wolfram-agnostic: the bridge supplies the
   bundled directory through `set_host_font_paths`, and users configure paths
-  through `MathemeSettings`. No environment variables are consulted.
+  through `MathemeSetSettings`. No environment variables are consulted.
 
 ### Settings
 
 Configuration is explicit process state, not environment variables: the caches
 read it when they are (re)built, and every change is visible from Wolfram.
+Reading and writing are deliberately separate public functions:
 
 ```wolfram
-MathemeSettings[]                                      (* report *)
-MathemeSettings[<|"SystemFonts" -> False|>]            (* patch *)
-MathemeSettings[<|"FontPaths" -> {"D:/fonts"}|>]
-MathemeSettings[<|"PackagePath" -> "D:/typst/data", "PackageCache" -> "D:/typst/cache"|>]
-MathemeSettings[<|"Proxy" -> "http://127.0.0.1:2191", "Downloads" -> True|>]
-MathemeSettings[<|"FontPaths" -> Null|>]               (* reset one field *)
-MathemeSettings[<|"Reset" -> True|>]                   (* reset everything *)
+MathemeSettings[]                                      (* read-only: <|"Settings" -> …|> *)
+MathemeSetSettings[<|"SystemFonts" -> False|>]         (* patch: <|"Changed" -> …, "Settings" -> …|> *)
+MathemeSetSettings[<|"FontPaths" -> {"D:/fonts"}|>]
+MathemeSetSettings[<|"PackagePath" -> "D:/typst/data", "PackageCache" -> "D:/typst/cache"|>]
+MathemeSetSettings[<|"Proxy" -> "http://127.0.0.1:2191", "Downloads" -> True|>]
+MathemeSetSettings[<|"FontPaths" -> Null|>]            (* reset one field *)
+MathemeResetSettings[]                                 (* reset every field *)
 ```
 
 | Key | Type | Effect |
@@ -230,13 +255,15 @@ MathemeSettings[<|"Reset" -> True|>]                   (* reset everything *)
 | `PackageCache` | string / `Null` | Package cache directory (`Null` = platform default). |
 | `Proxy` | string / `Null` | Explicit proxy for downloads; `Null` connects directly and ignores the process environment. |
 | `Downloads` | `True`/`False` | Global download policy; `AllowDownloads` still opts in per call. |
-| `Reset` | `True`/`False` | Restore every default before applying the rest of the patch. |
 
-Returns `Changed` (which groups were invalidated), `FontsReloaded`,
-`PackagesRebuilt`, the effective `Settings`, `FontCounts` and package status —
-no `Status` field on success; a malformed patch returns a `MathemeCallError`
-Failure.
-Host-provided `HostFontPaths` is reported for transparency but is not patchable.
+`MathemeSettings[]` returns only `Settings`. The two writing functions return
+`Changed` (which groups were invalidated) and the effective `Settings`; font
+counts and package status are *not* part of this API — use
+`MathemeQueryFonts[]` / `MathemeQueryPackages[]`. There is no `Reset` patch key:
+single-field reset is `Null`, and full reset is `MathemeResetSettings[]`.
+A malformed patch returns a `MathemeCallError` Failure. Host-provided
+`HostFontPaths` is reported for transparency but is not patchable and survives
+a full reset.
 A null `Proxy` deliberately ignores `HTTP_PROXY`/`HTTPS_PROXY`: the process
 environment is not a configuration channel here. Windows uses schannel via
 `native-tls`, so no OpenSSL DLL is needed.
@@ -314,12 +341,14 @@ or wrong value types are our own Wolfram layer's bugs, so they become a
 | Function | Effect |
 |---|---|
 | `MathemeVersion[]` | `<\|"Matheme", "Typst", "TypstCommit"\|>` only. Configuration lives in `MathemeSettings[]`; cache contents live behind the query functions. |
-| `MathemeSettings[]` | Read or patch the configuration (see *Settings*). |
+| `MathemeSettings[]` | Read the configuration (see *Settings*). |
+| `MathemeSetSettings[patch]` | Apply a settings patch. |
+| `MathemeResetSettings[]` | Restore every user-facing setting. |
 | `MathemeQueryFonts[]` | Query cached font-book metadata (see *Querying cached metadata*). |
 | `MathemeQueryPackages[]` | Query cached package metadata. |
 | `MathemeReloadFonts[]` | Rescan all configured font sources (e.g. after installing a font). |
 | `MathemeReloadPackages[]` | Rebuild the package loader and drop the cached Universe index. |
-| `MathemeClose[]` | Close WSTP `LinkObject`s, drop every library cache (fonts, packages, memoization), unload the nine library functions and release the DLL image. |
+| `MathemeClose[]` | Close the WSTP `LinkObject`, drop every library cache (fonts, packages, memoization), unload the single library function and release the DLL image. |
 
 ### Memory
 
@@ -343,11 +372,11 @@ taken after `MathemeWarmup[]` or a font query.
 
 ### Resource release
 
-`LibraryFunctionLoad[..., LinkObject, LinkObject]` creates extra `LinkObject`s
-that keep the DLL file handle open. `MathemeClose[]` asks the library to drop
-its caches, unloads all nine library functions and closes their links, after
-which the DLL can be overwritten and later calls transparently reload it. Use
-it before rebuilding the DLL in a running kernel.
+`LibraryFunctionLoad[..., LinkObject, LinkObject]` creates a `LinkObject`
+that keeps the DLL file handle open. `MathemeClose[]` asks the library to drop
+its caches, unloads the one library function and closes its link, after which
+the DLL can be overwritten and later calls transparently reload it. Use it
+before rebuilding the DLL in a running kernel.
 
 On Wolfram 15, `LibraryFunctionUnload` already drops the last module
 reference, so a subsequent `LibraryUnload` reports "cannot be unloaded" even
@@ -358,8 +387,8 @@ takes one extra `LibraryLoad` reference *before* unloading, leaving the final
 
 ```wolfram
 MathemeClose[]  (* <|"Released"->{"Fonts","Packages","Memoization"},
-                       "Unloaded"->9, "LinksClosed"->9,
-                       "LibraryUnloaded"->True|> *)
+                       "Unloaded"->1, "LinksClosed"->1,
+                       "LibraryUnloaded"->True|> )
 ```
 
 ## Performance: rebuild the World vs. reuse one with unique virtual files

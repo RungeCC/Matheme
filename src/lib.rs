@@ -1,8 +1,8 @@
 //! WSTP bridge between the Wolfram Language package and `matheme-world`.
 //!
-//! This crate only declares the exported link functions. Each one names an
-//! [`endpoints::Endpoint`], which models its expected arguments; [`call::serve`]
-//! implements the shared read → parse → invoke → write pipeline.
+//! The crate exports one link function. [`call::serve`] reads a single
+//! `<|"Action" -> name, "Arguments" -> <|…|>|>` envelope, dispatches it to an
+//! [`endpoints::Endpoint`], and writes back the uniform result association.
 
 mod call;
 mod diagnostics;
@@ -11,55 +11,41 @@ mod query;
 mod settings;
 mod wolfram;
 
+use matheme_wl::Entry;
 use wolfram_library_link::{export, wstp::Link};
 
-use call::serve;
+use call::{Answer, Endpoint};
 use endpoints::{
-    Close, Compile, QueryFonts, QueryPackages, ReloadFonts, ReloadPackages, Settings, Version,
-    Warmup,
+    Close, Compile, QueryFonts, QueryPackages, ReloadFonts, ReloadPackages, ResetSettings,
+    SetSettings, Settings, Version, Warmup,
 };
 
 #[export(wstp)]
-fn matheme_compile(link: &mut Link) {
-    serve::<Compile>(link);
+fn matheme_call(link: &mut Link) {
+    call::serve(link, dispatch);
 }
 
-#[export(wstp)]
-fn matheme_version(link: &mut Link) {
-    serve::<Version>(link);
-}
-
-#[export(wstp)]
-fn matheme_settings(link: &mut Link) {
-    serve::<Settings>(link);
-}
-
-#[export(wstp)]
-fn matheme_warmup(link: &mut Link) {
-    serve::<Warmup>(link);
-}
-
-#[export(wstp)]
-fn matheme_reload_fonts(link: &mut Link) {
-    serve::<ReloadFonts>(link);
-}
-
-#[export(wstp)]
-fn matheme_reload_packages(link: &mut Link) {
-    serve::<ReloadPackages>(link);
-}
-
-#[export(wstp)]
-fn matheme_query_fonts(link: &mut Link) {
-    serve::<QueryFonts>(link);
-}
-
-#[export(wstp)]
-fn matheme_query_packages(link: &mut Link) {
-    serve::<QueryPackages>(link);
-}
-
-#[export(wstp)]
-fn matheme_close(link: &mut Link) {
-    serve::<Close>(link);
+/// The single source of truth for action names. Every entry must have a
+/// matching `$displayNames` key in `Kernel/Matheme.wl`.
+fn dispatch(link: &mut Link, action: &str, args: Vec<Entry>) -> Answer {
+    macro_rules! endpoint {
+        ($endpoint:ty) => {{
+            debug_assert_eq!(<$endpoint as Endpoint>::NAME, action);
+            call::invoke::<$endpoint>(link, args)
+        }};
+    }
+    match action {
+        "compile" => endpoint!(Compile),
+        "version" => endpoint!(Version),
+        "settings" => endpoint!(Settings),
+        "setSettings" => endpoint!(SetSettings),
+        "resetSettings" => endpoint!(ResetSettings),
+        "warmup" => endpoint!(Warmup),
+        "reloadFonts" => endpoint!(ReloadFonts),
+        "reloadPackages" => endpoint!(ReloadPackages),
+        "queryFonts" => endpoint!(QueryFonts),
+        "queryPackages" => endpoint!(QueryPackages),
+        "close" => endpoint!(Close),
+        other => panic!("unknown action: {other}"),
+    }
 }

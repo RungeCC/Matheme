@@ -1,9 +1,10 @@
 //! The standard WSTP call pipeline.
 //!
-//! Every exported function declares what it expects through [`Endpoint`]: a
-//! Rust input model plus a `parse` that reads the WSTP argument list. [`serve`]
-//! is the only place that reads arguments, configures host state, invokes the
-//! endpoint and writes the result.
+//! The library exposes exactly one link function. The Wolfram package sends a
+//! single envelope, `<|"Action" -> name, "Arguments" -> <|…|>|>`, and
+//! [`serve`] turns it into a shaped answer. The action table lives in
+//! [`crate`]; [`invoke`] applies the shared per-call state (host font paths and
+//! the download gate) before dispatching to an [`Endpoint`].
 //!
 //! Calls always originate in our own Wolfram package, so parsing assumes the
 //! declared shape instead of validating every value defensively. A mismatch
@@ -89,25 +90,57 @@ impl From<Failure> for Answer {
     }
 }
 
-/// The declaration of one link function: its name, its expected arguments and
-/// whether Wolfram's bundled font directories must be configured first.
+/// The declaration of one action: its name, whether Wolfram's bundled font
+/// directories must be configured first, and the expected arguments.
 pub trait Endpoint {
     const NAME: &'static str;
     const HOST_FONTS: bool = true;
     type Input;
 
-    fn parse(args: Vec<Expr>) -> Self::Input;
+    fn parse(args: Vec<Entry>) -> Self::Input;
     fn invoke(input: Self::Input) -> Answer;
 }
 
-/// Read the WSTP argument list, resolving Wolfram 15's context-free symbol
-/// names (e.g. `List`, `True`) into their `System\`` forms.
-fn read_args(link: &mut Link) -> Vec<Expr> {
+/// Apply the state shared by every call, then run one endpoint.
+pub fn invoke<E: Endpoint>(link: &mut Link, args: Vec<Entry>) -> Answer {
+    if E::HOST_FONTS {
+        wolfram::configure_world_fonts(link);
+    }
+    // A per-call download opt-in never outlives the call that set it.
+    world::set_call_downloads(false);
+    E::invoke(E::parse(args))
+}
+
+/// The one expression read from the link: `Action` plus its `Arguments`.
+pub struct Envelope {
+    pub action: String,
+    pub arguments: Vec<Entry>,
+}
+
+/// Read the envelope, resolving Wolfram 15's context-free symbol names
+/// (e.g. `List`, `True`) into their `System\`` forms.
+fn read_envelope(link: &mut Link) -> Envelope {
     let expr: Expr = link
         .get_expr_with_resolver(&mut |name: &str| Some(RawSymbol::new(&format!("System`{name}"))))
-        .expect("failed to read WSTP arguments")
+        .expect("failed to read WSTP call")
         .into();
-    expr.as_list().expect("expected an argument list")
+    // A LinkObject function always delivers its WL arguments as a List; the
+    // package passes exactly one expression, the Action/Arguments envelope.
+    let args: Vec<Expr> = expr
+        .as_list()
+        .expect("expected an argument list")
+        .into_iter()
+        .collect();
+    assert!(args.len() == 1, "expected exactly one call envelope");
+    let entries = args[0]
+        .as_association()
+        .expect("expected an Action/Arguments association");
+    let action = string(field(&entries, "Action").expect("missing Action"));
+    let arguments = field(&entries, "Arguments")
+        .expect("missing Arguments")
+        .as_association()
+        .expect("Arguments must be an Association");
+    Envelope { action, arguments }
 }
 
 fn diagnostics_expr(items: &[Diagnostic]) -> Expr {
@@ -151,53 +184,25 @@ fn panic_message(payload: Box<dyn Any + Send>, name: &str) -> String {
     format!("{name}: {detail}")
 }
 
-/// The one entry point used by every `#[export(wstp)]` function.
-pub fn serve<E: Endpoint>(link: &mut Link) {
-    let args = read_args(link);
-    if E::HOST_FONTS {
-        wolfram::configure_world_fonts(link);
-    }
-    // A per-call download opt-in never outlives the call that set it.
-    world::set_call_downloads(false);
-
-    let answer = panic::catch_unwind(AssertUnwindSafe(|| E::invoke(E::parse(args))))
-        .unwrap_or_else(|payload| {
-            Answer::Failure(Failure::new("Call", panic_message(payload, E::NAME)))
-        });
+/// Read one envelope, dispatch it, and write the answer. `dispatch` is supplied
+/// by the crate root, which owns the action table and imports the endpoints.
+pub fn serve(link: &mut Link, dispatch: impl FnOnce(&mut Link, &str, Vec<Entry>) -> Answer) {
+    let answer = panic::catch_unwind(AssertUnwindSafe(|| {
+        let envelope = read_envelope(link);
+        dispatch(link, &envelope.action, envelope.arguments)
+    }))
+    .unwrap_or_else(|payload| {
+        Answer::Failure(Failure::new("Call", panic_message(payload, "matheme_call")))
+    });
 
     link.put_expr(render(answer).raw())
-        .unwrap_or_else(|_| panic!("{}: failed to write result expression", E::NAME));
+        .unwrap_or_else(|_| panic!("matheme_call: failed to write result expression"));
 }
 
 // ---------------------------------------------------------------------------
-// Shared argument readers. These encode the declared shapes and nothing else:
-// a wrong shape is a bug in our own Wolfram package, not user input.
+// Shared association readers. These encode the declared shapes and nothing
+// else: a wrong shape is a bug in our own Wolfram package, not user input.
 // ---------------------------------------------------------------------------
-
-/// An endpoint taking no arguments.
-pub fn no_args(args: Vec<Expr>) {
-    assert!(args.is_empty(), "endpoint takes no arguments");
-}
-
-/// An endpoint taking exactly one Association.
-pub fn one_association(args: Vec<Expr>) -> Vec<Entry> {
-    let mut args = args.into_iter();
-    let arg = args.next().expect("expected one Association argument");
-    assert!(args.next().is_none(), "expected exactly one argument");
-    arg.as_association()
-        .expect("expected an Association argument")
-}
-
-/// An endpoint taking zero or one Association.
-pub fn optional_association(args: Vec<Expr>) -> Vec<Entry> {
-    match args.as_slice() {
-        [] => Vec::new(),
-        [arg] => arg
-            .as_association()
-            .expect("expected an Association argument"),
-        _ => panic!("expected at most one Association argument"),
-    }
-}
 
 /// Pair an association entry; delayed rules are rejected with their reason.
 pub fn pair(entry: &Entry) -> (&Expr, &Expr) {
@@ -258,16 +263,23 @@ pub fn named<T>(expr: &Expr, parse: impl Fn(&str) -> Option<T>, what: &str) -> T
     parse(&name).unwrap_or_else(|| panic!("unknown {what}: {name}"))
 }
 
+/// Build association entries from rules, mainly for tests.
+#[cfg(test)]
+pub fn entries(rules: impl IntoIterator<Item = Rule>) -> Vec<Entry> {
+    Expr::association(rules)
+        .as_association()
+        .expect("association")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declared_shapes_are_read_without_fallbacks() {
-        let entries = one_association(vec![Expr::association([Rule::new("Source", "text")])]);
-        assert_eq!(string(required(&entries, "Source")), "text");
-        assert!(field(&entries, "Missing").is_none());
-        assert!(optional_association(vec![]).is_empty());
+        let args = entries([Rule::new("Source", "text")]);
+        assert_eq!(string(required(&args, "Source")), "text");
+        assert!(field(&args, "Missing").is_none());
     }
 
     #[test]
@@ -279,8 +291,8 @@ mod tests {
     #[test]
     fn failure_renders_uniformly() {
         let expr = render(Answer::Failure(Failure::new("Compile", "bad source")));
-        let entries = expr.as_association().expect("association");
-        let tag = field(&entries, "ErrorTag").expect("tag");
+        let args = expr.as_association().expect("association");
+        let tag = field(&args, "ErrorTag").expect("tag");
         assert_eq!(tag.as_str(), Some("Compile"));
     }
 }

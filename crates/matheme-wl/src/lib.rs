@@ -15,6 +15,7 @@
 
 mod entry;
 mod expr;
+mod macros;
 mod normal;
 mod symbol;
 mod typst_value;

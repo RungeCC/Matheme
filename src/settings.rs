@@ -14,7 +14,6 @@ use matheme_world::FontCounts;
 use crate::call;
 
 const FIELDS: &[&str] = &[
-    "Reset",
     "FontPaths",
     "SystemFonts",
     "EmbeddedFonts",
@@ -32,7 +31,6 @@ pub fn parse(entries: &[Entry]) -> Patch {
         let name = call::key(key);
         assert!(FIELDS.contains(&name), "unknown settings key: {name}");
         match name {
-            "Reset" => patch.reset = call::boolean(value),
             "FontPaths" => patch.font_paths = path_list(value),
             "SystemFonts" => patch.system_fonts = Update::Set(call::boolean(value)),
             "EmbeddedFonts" => patch.embedded_fonts = Update::Set(call::boolean(value)),
@@ -44,6 +42,14 @@ pub fn parse(entries: &[Entry]) -> Patch {
         }
     }
     patch
+}
+
+/// A patch that restores every user-facing field to its default.
+pub fn reset_patch() -> Patch {
+    Patch {
+        reset: true,
+        ..Patch::default()
+    }
 }
 
 fn path_list(value: &Expr) -> Update<Vec<PathBuf>> {
@@ -162,11 +168,15 @@ mod tests {
         let patch = parse(&entries([
             Rule::new("Proxy", Expr::null()),
             Rule::new("FontPaths", Expr::null()),
-            Rule::new("Reset", true),
         ]));
         assert!(matches!(patch.proxy, Update::Reset));
         assert!(matches!(patch.font_paths, Update::Reset));
-        assert!(patch.reset);
+        assert!(!patch.reset);
+    }
+
+    #[test]
+    fn reset_is_a_separate_patch() {
+        assert!(reset_patch().reset);
     }
 
     #[test]

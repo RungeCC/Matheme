@@ -65,7 +65,7 @@ fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, allow_downloads: bool) 
     {
         diagnostics.push(diagnostics::warning(
             "Package downloads are disabled; pass \"AllowDownloads\" -> True or set \
-             MathemeSettings[<|\"Downloads\" -> True|>].",
+             \"Downloads\" -> True with MathemeSetSettings[].",
         ));
     }
 }
@@ -109,11 +109,10 @@ pub struct CompileArgs {
 const COMPILE_FIELDS: &[&str] = &["Source", "Inputs", "BasePath", "AllowDownloads"];
 
 impl Endpoint for Compile {
-    const NAME: &'static str = "matheme_compile";
+    const NAME: &'static str = "compile";
     type Input = CompileArgs;
 
-    fn parse(args: Vec<Expr>) -> Self::Input {
-        let entries = call::one_association(args);
+    fn parse(entries: Vec<Entry>) -> Self::Input {
         for entry in &entries {
             let name = call::key(call::pair(entry).0);
             assert!(
@@ -224,12 +223,12 @@ impl Endpoint for Compile {
 pub struct Version;
 
 impl Endpoint for Version {
-    const NAME: &'static str = "matheme_version";
+    const NAME: &'static str = "version";
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Expr>) {
-        call::no_args(args);
+    fn parse(args: Vec<Entry>) {
+        assert!(args.is_empty(), "version takes no arguments");
     }
 
     fn invoke((): ()) -> Answer {
@@ -253,48 +252,68 @@ impl Endpoint for Version {
 }
 
 // ---------------------------------------------------------------------------
-// matheme_settings
+// settings / setSettings / resetSettings
 // ---------------------------------------------------------------------------
 
 pub struct Settings;
 
-/// No argument reports the effective settings; one Association is a patch.
-type SettingsArgs = Option<Vec<Entry>>;
-
 impl Endpoint for Settings {
-    const NAME: &'static str = "matheme_settings";
-    type Input = SettingsArgs;
+    const NAME: &'static str = "settings";
+    const HOST_FONTS: bool = false;
+    type Input = ();
 
-    fn parse(args: Vec<Expr>) -> Self::Input {
-        let entries = call::optional_association(args);
-        (!entries.is_empty()).then_some(entries)
+    fn parse(args: Vec<Entry>) {
+        assert!(args.is_empty(), "settings takes no arguments");
+    }
+
+    fn invoke((): ()) -> Answer {
+        Outcome::new([Rule::new("Settings", settings::expr(&world::settings()))]).into()
+    }
+}
+
+pub struct SetSettings;
+
+impl Endpoint for SetSettings {
+    const NAME: &'static str = "setSettings";
+    type Input = Vec<Entry>;
+
+    fn parse(args: Vec<Entry>) -> Self::Input {
+        args
     }
 
     fn invoke(input: Self::Input) -> Answer {
-        let applied = input.map(|entries| world::apply(&settings::parse(&entries)));
-        let mut entries = Vec::new();
-
-        if let Some(applied) = &applied {
-            entries.push(Rule::new(
-                "Changed",
-                Expr::association([
-                    Rule::new("Fonts", applied.changes.fonts),
-                    Rule::new("Packages", applied.changes.packages),
-                    Rule::new("Downloads", applied.changes.downloads),
-                ]),
-            ));
-            entries.push(Rule::new("FontsReloaded", applied.fonts_reloaded));
-            entries.push(Rule::new("PackagesRebuilt", applied.packages_rebuilt));
-        }
-
-        let effective = applied
-            .map(|applied| applied.settings)
-            .unwrap_or_else(world::settings);
-        entries.push(Rule::new("Settings", settings::expr(&effective)));
-        entries.push(font_counts_entry(false));
-        entries.extend(package_entries(&world::package_status()));
-        Outcome::new(entries).into()
+        applied_outcome(world::apply(&settings::parse(&input)))
     }
+}
+
+pub struct ResetSettings;
+
+impl Endpoint for ResetSettings {
+    const NAME: &'static str = "resetSettings";
+    type Input = ();
+
+    fn parse(args: Vec<Entry>) {
+        assert!(args.is_empty(), "resetSettings takes no arguments");
+    }
+
+    fn invoke((): ()) -> Answer {
+        applied_outcome(world::apply(&settings::reset_patch()))
+    }
+}
+
+fn applied_outcome(applied: world::Applied) -> Answer {
+    Outcome::new([
+        Rule::new(
+            "Changed",
+            Expr::association([
+                Rule::new("Fonts", applied.changes.fonts),
+                Rule::new("Packages", applied.changes.packages),
+                Rule::new("Downloads", applied.changes.downloads),
+            ]),
+        ),
+        Rule::new("Settings", settings::expr(&applied.settings)),
+    ])
+    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -310,16 +329,16 @@ pub struct WarmupArgs {
 }
 
 impl Endpoint for Warmup {
-    const NAME: &'static str = "matheme_warmup";
+    const NAME: &'static str = "warmup";
     type Input = WarmupArgs;
 
-    fn parse(args: Vec<Expr>) -> Self::Input {
+    fn parse(args: Vec<Entry>) -> Self::Input {
         let mut input = WarmupArgs {
             fonts: true,
             packages: true,
             package_index: true,
         };
-        for entry in call::optional_association(args) {
+        for entry in args {
             let (key, value) = call::pair(&entry);
             let enabled = call::boolean(value);
             match call::key(key) {
@@ -378,11 +397,11 @@ impl Endpoint for Warmup {
 pub struct ReloadFonts;
 
 impl Endpoint for ReloadFonts {
-    const NAME: &'static str = "matheme_reload_fonts";
+    const NAME: &'static str = "reloadFonts";
     type Input = ();
 
-    fn parse(args: Vec<Expr>) {
-        call::no_args(args);
+    fn parse(args: Vec<Entry>) {
+        assert!(args.is_empty(), "reloadFonts takes no arguments");
     }
 
     fn invoke((): ()) -> Answer {
@@ -394,12 +413,12 @@ impl Endpoint for ReloadFonts {
 pub struct ReloadPackages;
 
 impl Endpoint for ReloadPackages {
-    const NAME: &'static str = "matheme_reload_packages";
+    const NAME: &'static str = "reloadPackages";
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Expr>) {
-        call::no_args(args);
+    fn parse(args: Vec<Entry>) {
+        assert!(args.is_empty(), "reloadPackages takes no arguments");
     }
 
     fn invoke((): ()) -> Answer {
@@ -414,10 +433,10 @@ impl Endpoint for ReloadPackages {
 pub struct QueryFonts;
 
 impl Endpoint for QueryFonts {
-    const NAME: &'static str = "matheme_query_fonts";
+    const NAME: &'static str = "queryFonts";
     type Input = query::FontQuery;
 
-    fn parse(args: Vec<Expr>) -> Self::Input {
+    fn parse(args: Vec<Entry>) -> Self::Input {
         query::FontQuery::parse(args)
     }
 
@@ -429,11 +448,11 @@ impl Endpoint for QueryFonts {
 pub struct QueryPackages;
 
 impl Endpoint for QueryPackages {
-    const NAME: &'static str = "matheme_query_packages";
+    const NAME: &'static str = "queryPackages";
     const HOST_FONTS: bool = false;
     type Input = query::PackageQuery;
 
-    fn parse(args: Vec<Expr>) -> Self::Input {
+    fn parse(args: Vec<Entry>) -> Self::Input {
         query::PackageQuery::parse(args)
     }
 
@@ -449,12 +468,12 @@ impl Endpoint for QueryPackages {
 pub struct Close;
 
 impl Endpoint for Close {
-    const NAME: &'static str = "matheme_close";
+    const NAME: &'static str = "close";
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Expr>) {
-        call::no_args(args);
+    fn parse(args: Vec<Entry>) {
+        assert!(args.is_empty(), "close takes no arguments");
     }
 
     fn invoke((): ()) -> Answer {

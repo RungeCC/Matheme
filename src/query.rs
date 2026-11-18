@@ -5,7 +5,7 @@
 //! values into [`matheme_world::query`] filters and renders the answers; the
 //! world crate owns the data and all filtering logic.
 
-use matheme_wl::{Expr, Rule, Symbol};
+use matheme_wl::{Entry, Expr, Rule, Symbol};
 use matheme_world as world;
 use world::query::{
     FontAnswer, FontFace, FontFilter, FontOrigin, PackageAnswer, PackageEntry, PackageFilter,
@@ -63,12 +63,12 @@ fn page_entry(page: &mut Page, name: &str, value: &Expr) -> bool {
 }
 
 impl FontQuery {
-    pub fn parse(args: Vec<Expr>) -> Self {
+    pub fn parse(args: Vec<Entry>) -> Self {
         let mut query = Self {
             filter: FontFilter::default(),
             page: default_page(),
         };
-        for entry in call::optional_association(args) {
+        for entry in &args {
             let (key, value) = call::pair(&entry);
             let name = call::key(key);
             if page_entry(&mut query.page, name, value) {
@@ -89,14 +89,14 @@ impl FontQuery {
 }
 
 impl PackageQuery {
-    pub fn parse(args: Vec<Expr>) -> Self {
+    pub fn parse(args: Vec<Entry>) -> Self {
         let mut query = Self {
             filter: PackageFilter::default(),
             page: default_page(),
             allow_downloads: false,
             refresh: false,
         };
-        for entry in call::optional_association(args) {
+        for entry in &args {
             let (key, value) = call::pair(&entry);
             let name = call::key(key);
             if page_entry(&mut query.page, name, value) {
@@ -255,15 +255,21 @@ pub fn run_packages(query: &PackageQuery) -> Outcome {
 mod tests {
     use super::*;
 
+    fn entries(rules: impl IntoIterator<Item = Rule>) -> Vec<Entry> {
+        Expr::association(rules)
+            .as_association()
+            .expect("association")
+    }
+
     #[test]
     fn font_filters_and_paging() {
-        let query = FontQuery::parse(vec![Expr::association([
+        let query = FontQuery::parse(entries([
             Rule::new("Family", "libertinus"),
             Rule::new("Source", "Embedded"),
             Rule::new("Resident", true),
             Rule::new("MaxResults", 7_i64),
             Rule::new("Offset", 2_i64),
-        ])]);
+        ]));
         assert_eq!(query.filter.family.as_deref(), Some("libertinus"));
         assert_eq!(query.filter.origin, Some(FontOrigin::Embedded));
         assert_eq!(query.filter.resident, Some(true));
@@ -273,13 +279,13 @@ mod tests {
 
     #[test]
     fn package_filters_and_opt_ins() {
-        let query = PackageQuery::parse(vec![Expr::association([
+        let query = PackageQuery::parse(entries([
             Rule::new("Name", "cetz"),
             Rule::new("Origin", "Universe"),
             Rule::new("MaxResults", Symbol::ALL),
             Rule::new("AllowDownloads", true),
             Rule::new("Refresh", true),
-        ])]);
+        ]));
         assert_eq!(query.filter.name.as_deref(), Some("cetz"));
         assert_eq!(query.filter.origin, Some(PackageOriginFilter::Universe));
         assert_eq!(query.page.limit, None);
@@ -296,18 +302,19 @@ mod tests {
     #[test]
     #[should_panic(expected = "unknown font query key")]
     fn unknown_keys_are_not_silently_ignored() {
-        FontQuery::parse(vec![Expr::association([Rule::new("Mystery", 1_i64)])]);
+        FontQuery::parse(entries([Rule::new("Mystery", 1_i64)]));
     }
 
     #[test]
     #[should_panic(expected = "RuleDelayed")]
     fn delayed_rules_are_not_guessed() {
-        FontQuery::parse(vec![Expr::normal(
+        let association = Expr::normal(
             Symbol::ASSOCIATION,
             [Expr::normal(
                 Symbol::RULE_DELAYED,
                 [Expr::from("Family"), Expr::from("Libertinus")],
             )],
-        )]);
+        );
+        FontQuery::parse(association.as_association().expect("association"));
     }
 }
