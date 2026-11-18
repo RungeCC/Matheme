@@ -17,7 +17,8 @@ use wolfram_library_link::{
 
 use matheme_wl::{Expr, Symbol};
 
-static INSTALLATION_DIR: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+static INSTALLATION_DIR: OnceLock<PathBuf> = OnceLock::new();
+static HOST_FONTS_SET: OnceLock<()> = OnceLock::new();
 
 /// Evaluate a WL expression on the bridge's WSTP link.
 ///
@@ -36,51 +37,60 @@ fn evaluate(link: &mut Link, query: &RawExpr) -> Result<RawExpr, String> {
             .unwrap_or_else(|| "unknown error processing WSTP link".into()));
     }
 
-    let packet = link
-        .get_expr_with_resolver(&mut |name: &str| Some(RawSymbol::new(&format!("System`{name}"))))
-        .map_err(|error| error.to_string())?;
-    match packet.kind() {
-        ExprKind::Normal(return_packet)
-            if return_packet.has_head(&RawSymbol::new(Symbol::RETURN_PACKET.as_str()))
-                && return_packet.elements().len() == 1 =>
-        {
-            Ok(return_packet.elements()[0].clone())
+    let return_head = RawSymbol::new(Symbol::RETURN_PACKET.as_str());
+    let message_head = RawSymbol::new("System`MessagePacket");
+    let text_head = RawSymbol::new("System`TextPacket");
+
+    // Drain any intermediate TextPacket/MessagePacket before ReturnPacket.
+    for _ in 0..16 {
+        let packet = link
+            .get_expr_with_resolver(&mut |name: &str| {
+                Some(RawSymbol::new(&format!("System`{name}")))
+            })
+            .map_err(|error| error.to_string())?;
+        match packet.kind() {
+            ExprKind::Normal(normal)
+                if normal.has_head(&return_head) && normal.elements().len() == 1 =>
+            {
+                return Ok(normal.elements()[0].clone());
+            }
+            ExprKind::Normal(normal)
+                if normal.has_head(&message_head) || normal.has_head(&text_head) =>
+            {
+                continue;
+            }
+            other => return Err(format!("expected ReturnPacket, got: {other}")),
         }
-        other => Err(format!("expected ReturnPacket, got: {other}")),
     }
+    Err("exceeded intermediate WSTP packet limit before ReturnPacket".into())
 }
 
-/// Ask the kernel once per process for `$InstallationDirectory`.
-fn installation(link: &mut Link) -> &'static Result<PathBuf, String> {
-    INSTALLATION_DIR.get_or_init(|| {
-        let query = Expr::from(Symbol::INSTALLATION_DIRECTORY);
-        let raw = evaluate(link, query.raw())?;
-        let value = Expr::from_raw(raw);
-        value
-            .as_str()
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("expected a String, got: {}", value.raw()))
-    })
+/// Ask the kernel for `$InstallationDirectory`, caching only successful lookups
+/// so a transient WSTP failure can be retried on a subsequent call.
+fn installation(link: &mut Link) -> Option<&'static PathBuf> {
+    if let Some(dir) = INSTALLATION_DIR.get() {
+        return Some(dir);
+    }
+    let query = Expr::from(Symbol::INSTALLATION_DIRECTORY);
+    let raw = evaluate(link, query.raw()).ok()?;
+    let value = Expr::from_raw(raw);
+    let dir = PathBuf::from(value.as_str()?);
+    let _ = INSTALLATION_DIR.set(dir);
+    INSTALLATION_DIR.get()
 }
 
 fn bundled_font_dir(root: &Path) -> PathBuf {
     root.join("SystemFiles").join("Fonts").join("TrueType")
 }
 
-/// Directories holding Wolfram's bundled TrueType fonts.
-///
-/// The path comes from the running kernel's `$InstallationDirectory`, evaluated
-/// over WSTP and cached for the process. Overriding it is a matter of patching
-/// the font settings (`FontPaths`), not the environment.
-pub fn font_dirs(link: &mut Link) -> Vec<PathBuf> {
-    installation(link)
-        .as_ref()
-        .ok()
-        .map(|root| vec![bundled_font_dir(root)])
-        .unwrap_or_default()
-}
-
-/// Push the discovered directories into the Wolfram-agnostic world crate.
+/// Push the discovered directories into the Wolfram-agnostic world crate once
+/// per process so steady-state calls avoid taking the settings write lock.
 pub fn configure_world_fonts(link: &mut Link) {
-    matheme_world::set_host_font_paths(font_dirs(link));
+    if HOST_FONTS_SET.get().is_some() {
+        return;
+    }
+    if let Some(root) = installation(link) {
+        matheme_world::set_host_font_paths(vec![bundled_font_dir(root)]);
+        let _ = HOST_FONTS_SET.set(());
+    }
 }

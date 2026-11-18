@@ -13,6 +13,7 @@
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
+use crate::cache::{read_unpoisoned, write_unpoisoned};
 use crate::fonts;
 use crate::packages;
 
@@ -26,12 +27,6 @@ pub enum Update<T> {
     Reset,
     /// Replace the value.
     Set(T),
-}
-
-impl<T> Update<T> {
-    pub fn is_keep(&self) -> bool {
-        matches!(self, Update::Keep)
-    }
 }
 
 impl<T: Clone + PartialEq> Update<T> {
@@ -183,13 +178,13 @@ fn slot() -> &'static RwLock<Settings> {
 
 /// A snapshot of the current settings.
 pub fn settings() -> Settings {
-    slot().read().expect("settings lock poisoned").clone()
+    read_unpoisoned(slot()).clone()
 }
 
 /// Apply a patch and invalidate the caches it affects.
 pub fn apply(patch: &Patch) -> Applied {
     let (settings, changes) = {
-        let mut guard = slot().write().expect("settings lock poisoned");
+        let mut guard = write_unpoisoned(slot());
         let changes = patch.apply_to(&mut guard);
         (guard.clone(), changes)
     };
@@ -222,7 +217,7 @@ pub fn apply(patch: &Patch) -> Applied {
 /// `font_paths` so a user patch cannot accidentally drop the host's fonts.
 pub fn set_host_font_paths(paths: Vec<PathBuf>) -> bool {
     let changed = {
-        let mut guard = slot().write().expect("settings lock poisoned");
+        let mut guard = write_unpoisoned(slot());
         replace(&mut guard.host_font_paths, paths)
     };
     if changed {

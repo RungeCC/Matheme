@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use matheme_wl::{to_typst_value, Entry, Expr, Rule};
+use matheme_wl::{assoc, rule, to_typst_value, Entry, Expr, Rule};
 use typst::diag::SourceDiagnostic;
 use typst::foundations::Dict;
 use typst_layout::PagedDocument;
@@ -15,28 +15,26 @@ use typst_pdf::PdfOptions;
 use wolfram_library_link::expr::{Expr as RawExpr, ExprKind};
 
 use matheme_world as world;
+use world::settings::Update;
 use world::MathemeWorld;
 
 use crate::call::{self, Answer, Endpoint, Failure, Outcome};
 use crate::diagnostics::{self, Diagnostic};
 use crate::{query, settings};
 
-fn string_or_null(value: Option<&str>) -> Expr {
-    match value {
-        Some(value) => Expr::string(value),
-        None => Expr::null(),
-    }
-}
+/// Evict memoized Typst entries older than this many compilations so memory
+/// stays bounded in long-running kernel sessions.
+const COMEMO_MAX_AGE: usize = 10;
 
 fn package_entries(status: &world::PackageStatus) -> Vec<Rule> {
     vec![
-        Rule::new("Packages", status.count as i64),
-        Rule::new("PackageData", string_or_null(status.data.as_deref())),
-        Rule::new("PackageCache", string_or_null(status.cache.as_deref())),
-        Rule::new("DownloadsAllowed", status.downloads),
-        Rule::new("DownloadsActive", status.downloads_active),
-        Rule::new("Proxy", string_or_null(status.proxy.as_deref())),
-        Rule::new("ProxyError", string_or_null(status.proxy_error.as_deref())),
+        rule!("Packages" -> status.count as i64),
+        rule!("PackageData" -> status.data.as_deref()),
+        rule!("PackageCache" -> status.cache.as_deref()),
+        rule!("DownloadsAllowed" -> status.downloads),
+        rule!("DownloadsActive" -> status.downloads_active),
+        rule!("Proxy" -> status.proxy.as_deref()),
+        rule!("ProxyError" -> status.proxy_error.as_deref()),
     ]
 }
 
@@ -47,11 +45,10 @@ fn font_counts_entry(scan: bool) -> Rule {
     } else {
         world::cached_counts()
     };
-    Rule::new(
-        "FontCounts",
-        counts
+    rule!(
+        "FontCounts" -> counts
             .map(|counts| settings::font_counts_expr(&counts))
-            .unwrap_or_else(Expr::null),
+            .unwrap_or_else(Expr::null)
     )
 }
 
@@ -112,20 +109,19 @@ impl Endpoint for Compile {
     const NAME: &'static str = "compile";
     type Input = CompileArgs;
 
-    fn parse(entries: Vec<Entry>) -> Self::Input {
+    fn parse(entries: Vec<Entry>) -> Result<Self::Input, Failure> {
         for entry in &entries {
-            let name = call::key(call::pair(entry).0);
-            assert!(
-                COMPILE_FIELDS.contains(&name),
-                "unknown compile key: {name}"
-            );
+            let name = call::key(call::pair(entry)?.0)?;
+            if !COMPILE_FIELDS.contains(&name) {
+                return Err(call::error(format!("unknown compile key: {name}")));
+            }
         }
 
-        let source = call::string(call::required(&entries, "Source"));
-        let inputs = call::required(&entries, "Inputs")
+        let source = call::string(call::required(&entries, "Source")?)?;
+        let inputs = call::required(&entries, "Inputs")?
             .as_association()
-            .expect("Inputs must be an Association");
-        let base = PathBuf::from(call::string(call::required(&entries, "BasePath")));
+            .ok_or_else(|| call::error("Inputs must be an Association"))?;
+        let base = PathBuf::from(call::string(call::required(&entries, "BasePath")?)?);
         let base_path = if base.is_absolute() {
             base
         } else {
@@ -133,14 +129,14 @@ impl Endpoint for Compile {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(base)
         };
-        let allow_downloads = call::boolean(call::required(&entries, "AllowDownloads"));
+        let allow_downloads = call::boolean(call::required(&entries, "AllowDownloads")?)?;
 
-        CompileArgs {
+        Ok(CompileArgs {
             source,
             inputs,
             base_path,
             allow_downloads,
-        }
+        })
     }
 
     fn invoke(input: Self::Input) -> Answer {
@@ -177,13 +173,11 @@ impl Endpoint for Compile {
         typst_diags.extend(errors.iter().cloned());
         diagnostics.extend(errors.iter().map(|d| diagnostics::from_typst(d, &world)));
 
-        let failed = pdf.is_none();
-        if failed {
+        let Some(pdf_bytes) = pdf else {
             maybe_offline_hint(&mut diagnostics, input.allow_downloads);
-        }
-        let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
+            let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
+            world::evict_caches(COMEMO_MAX_AGE);
 
-        if failed {
             let errors: Vec<_> = diagnostics
                 .iter()
                 .filter(|diagnostic| diagnostic.severity == "Error")
@@ -201,15 +195,16 @@ impl Endpoint for Compile {
             )
             .with(diagnostics, Some(formatted))
             .into();
-        }
+        };
 
-        let pdf = Expr::from_raw(RawExpr::new(ExprKind::ByteArray(
-            pdf.expect("success implies a PDF"),
-        )));
+        let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
+        world::evict_caches(COMEMO_MAX_AGE);
+
+        let pdf = Expr::from_raw(RawExpr::new(ExprKind::ByteArray(pdf_bytes)));
         let mut outcome = Outcome::new([
-            Rule::new("PDF", pdf),
-            Rule::new("Pages", pages),
-            Rule::new("Formatted", formatted),
+            rule!("PDF" -> pdf),
+            rule!("Pages" -> pages),
+            rule!("Formatted" -> formatted),
         ]);
         outcome.warnings = diagnostics;
         outcome.into()
@@ -227,8 +222,8 @@ impl Endpoint for Version {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) {
-        assert!(args.is_empty(), "version takes no arguments");
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
@@ -237,15 +232,9 @@ impl Endpoint for Version {
         // never leave a stale hard-coded number here.
         let version = typst::utils::version();
         Outcome::new([
-            Rule::new("Matheme", env!("CARGO_PKG_VERSION")),
-            Rule::new("Typst", version.raw()),
-            Rule::new(
-                "TypstCommit",
-                version
-                    .commit()
-                    .map(Expr::string)
-                    .unwrap_or_else(Expr::null),
-            ),
+            rule!("Matheme" -> env!("CARGO_PKG_VERSION")),
+            rule!("Typst" -> version.raw()),
+            rule!("TypstCommit" -> version.commit()),
         ])
         .into()
     }
@@ -262,12 +251,12 @@ impl Endpoint for Settings {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) {
-        assert!(args.is_empty(), "settings takes no arguments");
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
-        Outcome::new([Rule::new("Settings", settings::expr(&world::settings()))]).into()
+        Outcome::new([rule!("Settings" -> settings::expr(&world::settings()))]).into()
     }
 }
 
@@ -275,14 +264,24 @@ pub struct SetSettings;
 
 impl Endpoint for SetSettings {
     const NAME: &'static str = "setSettings";
-    type Input = Vec<Entry>;
+    type Input = world::settings::Patch;
 
-    fn parse(args: Vec<Entry>) -> Self::Input {
-        args
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+        settings::parse(&args)
     }
 
-    fn invoke(input: Self::Input) -> Answer {
-        applied_outcome(world::apply(&settings::parse(&input)))
+    fn invoke(patch: Self::Input) -> Answer {
+        let mut warning = None;
+        if let Update::Set(ref proxy) = patch.proxy {
+            if let Err(err) = world::packages::validate_proxy(proxy) {
+                warning = Some(err);
+            }
+        }
+        let mut outcome = applied_outcome(world::apply(&patch));
+        if let Some(msg) = warning {
+            outcome.warn(msg);
+        }
+        outcome.into()
     }
 }
 
@@ -292,28 +291,26 @@ impl Endpoint for ResetSettings {
     const NAME: &'static str = "resetSettings";
     type Input = ();
 
-    fn parse(args: Vec<Entry>) {
-        assert!(args.is_empty(), "resetSettings takes no arguments");
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
-        applied_outcome(world::apply(&settings::reset_patch()))
+        applied_outcome(world::apply(&settings::reset_patch())).into()
     }
 }
 
-fn applied_outcome(applied: world::Applied) -> Answer {
+fn applied_outcome(applied: world::Applied) -> Outcome {
     Outcome::new([
-        Rule::new(
-            "Changed",
-            Expr::association([
-                Rule::new("Fonts", applied.changes.fonts),
-                Rule::new("Packages", applied.changes.packages),
-                Rule::new("Downloads", applied.changes.downloads),
-            ]),
+        rule!(
+            "Changed" -> assoc! {
+                "Fonts" -> applied.changes.fonts,
+                "Packages" -> applied.changes.packages,
+                "Downloads" -> applied.changes.downloads,
+            }
         ),
-        Rule::new("Settings", settings::expr(&applied.settings)),
+        rule!("Settings" -> settings::expr(&applied.settings)),
     ])
-    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -332,23 +329,23 @@ impl Endpoint for Warmup {
     const NAME: &'static str = "warmup";
     type Input = WarmupArgs;
 
-    fn parse(args: Vec<Entry>) -> Self::Input {
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
         let mut input = WarmupArgs {
             fonts: true,
             packages: true,
             package_index: true,
         };
         for entry in args {
-            let (key, value) = call::pair(&entry);
-            let enabled = call::boolean(value);
-            match call::key(key) {
+            let (key, value) = call::pair(&entry)?;
+            let enabled = call::boolean(value)?;
+            match call::key(key)? {
                 "Fonts" => input.fonts = enabled,
                 "Packages" => input.packages = enabled,
                 "PackageIndex" => input.package_index = enabled,
-                other => panic!("unknown warmup key: {other}"),
+                other => return Err(call::error(format!("unknown warmup key: {other}"))),
             }
         }
-        input
+        Ok(input)
     }
 
     fn invoke(input: Self::Input) -> Answer {
@@ -358,8 +355,8 @@ impl Endpoint for Warmup {
             let start = std::time::Instant::now();
             let count = world::warmup_fonts();
             outcome.extend([
-                Rule::new("Fonts", count as i64),
-                Rule::new("FontsMs", start.elapsed().as_millis() as i64),
+                rule!("Fonts" -> count as i64),
+                rule!("FontsMs" -> start.elapsed().as_millis() as i64),
                 font_counts_entry(false),
             ]);
         }
@@ -368,21 +365,20 @@ impl Endpoint for Warmup {
             let start = std::time::Instant::now();
             let status = world::warmup_packages();
             outcome.extend(package_entries(&status));
-            outcome.extend([Rule::new("PackagesMs", start.elapsed().as_millis() as i64)]);
+            outcome.extend([rule!("PackagesMs" -> start.elapsed().as_millis() as i64)]);
         }
 
         if input.package_index {
             let start = std::time::Instant::now();
             match world::prefetch_universe_index() {
-                Ok(version) => outcome.extend([Rule::new("PackageIndex", version)]),
+                Ok(version) => outcome.extend([rule!("PackageIndex" -> version)]),
                 Err(err) => {
-                    outcome.extend([Rule::new("PackageIndex", Expr::null())]);
+                    outcome.extend([rule!("PackageIndex" -> Expr::null())]);
                     outcome.warn(format!("failed to prefetch Universe index: {err}"));
                 }
             }
-            outcome.extend([Rule::new(
-                "PackageIndexMs",
-                start.elapsed().as_millis() as i64,
+            outcome.extend([rule!(
+                "PackageIndexMs" -> start.elapsed().as_millis() as i64
             )]);
         }
 
@@ -400,13 +396,13 @@ impl Endpoint for ReloadFonts {
     const NAME: &'static str = "reloadFonts";
     type Input = ();
 
-    fn parse(args: Vec<Entry>) {
-        assert!(args.is_empty(), "reloadFonts takes no arguments");
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
         let count = world::reload_fonts();
-        Outcome::new([Rule::new("Fonts", count as i64), font_counts_entry(false)]).into()
+        Outcome::new([rule!("Fonts" -> count as i64), font_counts_entry(false)]).into()
     }
 }
 
@@ -417,8 +413,8 @@ impl Endpoint for ReloadPackages {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) {
-        assert!(args.is_empty(), "reloadPackages takes no arguments");
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
@@ -436,7 +432,7 @@ impl Endpoint for QueryFonts {
     const NAME: &'static str = "queryFonts";
     type Input = query::FontQuery;
 
-    fn parse(args: Vec<Entry>) -> Self::Input {
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
         query::FontQuery::parse(args)
     }
 
@@ -452,7 +448,7 @@ impl Endpoint for QueryPackages {
     const HOST_FONTS: bool = false;
     type Input = query::PackageQuery;
 
-    fn parse(args: Vec<Entry>) -> Self::Input {
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
         query::PackageQuery::parse(args)
     }
 
@@ -472,15 +468,14 @@ impl Endpoint for Close {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) {
-        assert!(args.is_empty(), "close takes no arguments");
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
         world::reset_caches();
-        Outcome::new([Rule::new(
-            "Released",
-            Expr::list(["Fonts", "Packages", "Memoization"]),
+        Outcome::new([rule!(
+            "Released" -> Expr::list(["Fonts", "Packages", "Memoization"])
         )])
         .into()
     }

@@ -3,8 +3,9 @@
 //! crate and only supplies host-specific paths (e.g. Wolfram's bundled fonts)
 //! through [`settings::set_host_font_paths`].
 
+mod cache;
 pub mod fonts;
-pub mod loader;
+mod loader;
 pub mod packages;
 pub mod query;
 pub mod settings;
@@ -34,6 +35,12 @@ pub fn reset_caches() {
     reset_fonts();
     reset_packages();
     comemo::evict(0);
+}
+
+/// Evict memoized compilation results older than `max_age` generations so
+/// long-lived sessions do not retain every historical compilation in memory.
+pub fn evict_caches(max_age: usize) {
+    comemo::evict(max_age);
 }
 
 // Re-exported so the WSTP bridge can render diagnostics with the same

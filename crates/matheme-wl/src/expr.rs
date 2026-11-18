@@ -227,6 +227,15 @@ impl From<bool> for Expr {
     }
 }
 
+impl<T: Into<Expr>> From<Option<T>> for Expr {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(inner) => inner.into(),
+            None => Self::null(),
+        }
+    }
+}
+
 impl PartialEq<Symbol> for Expr {
     fn eq(&self, other: &Symbol) -> bool {
         self.is_symbol(other)
@@ -269,6 +278,9 @@ mod tests {
         assert_eq!(Expr::from(2.5_f64).as_f64(), Some(2.5));
         assert_eq!(Expr::from(true).as_bool(), Some(true));
         assert_eq!(Expr::from(false).raw().to_string(), "System`False");
+        assert_eq!(Expr::from(Some("ok")).as_str(), Some("ok"));
+        assert_eq!(Expr::from(Option::<&str>::None), Symbol::NULL);
+        assert_eq!(Expr::from(Some(9_i64)).as_i64(), Some(9));
     }
 
     #[test]

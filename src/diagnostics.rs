@@ -14,7 +14,7 @@ use typst::diag::{Severity, SourceDiagnostic};
 use typst::syntax::{DiagSpan, DiagSpanKind, FileId, Spanned};
 use typst::World;
 
-use matheme_wl::{Expr, Rule};
+use matheme_wl::{assoc, Expr};
 
 /// A resolved source location: user-facing file name, 1-based line/column,
 /// byte range and the text of the containing line.
@@ -178,41 +178,32 @@ fn location_expr(location: &Option<Location>) -> Expr {
     let Some(location) = location else {
         return Expr::null();
     };
-    Expr::association([
-        Rule::new("File", location.file.as_str()),
-        Rule::new("Line", location.line),
-        Rule::new("Column", location.column),
-        Rule::new(
-            "Range",
-            Expr::list([location.range.0 as i64, location.range.1 as i64]),
-        ),
-        Rule::new("Text", location.text.as_str()),
-    ])
+    assoc! {
+        "File" -> location.file.as_str(),
+        "Line" -> location.line,
+        "Column" -> location.column,
+        "Range" -> Expr::list([location.range.0 as i64, location.range.1 as i64]),
+        "Text" -> location.text.as_str(),
+    }
 }
 
 pub fn expr(diag: &Diagnostic) -> Expr {
-    Expr::association([
-        Rule::new("Severity", diag.severity),
-        Rule::new("Message", diag.message.as_str()),
-        Rule::new("Location", location_expr(&diag.location)),
-        Rule::new(
-            "Hints",
-            Expr::list(diag.hints.iter().map(|hint| {
-                Expr::association([
-                    Rule::new("Message", hint.message.as_str()),
-                    Rule::new("Location", location_expr(&hint.location)),
-                ])
-            })),
-        ),
-        Rule::new(
-            "Trace",
-            Expr::list(diag.trace.iter().map(|trace| {
-                Expr::association([
-                    Rule::new("Kind", trace.kind.as_str()),
-                    Rule::new("Location", location_expr(&trace.location)),
-                    Rule::new("Text", trace.text.as_str()),
-                ])
-            })),
-        ),
-    ])
+    assoc! {
+        "Severity" -> diag.severity,
+        "Message" -> diag.message.as_str(),
+        "Location" -> location_expr(&diag.location),
+        "Hints" -> Expr::list(diag.hints.iter().map(|hint| {
+            assoc! {
+                "Message" -> hint.message.as_str(),
+                "Location" -> location_expr(&hint.location),
+            }
+        })),
+        "Trace" -> Expr::list(diag.trace.iter().map(|trace| {
+            assoc! {
+                "Kind" -> trace.kind.as_str(),
+                "Location" -> location_expr(&trace.location),
+                "Text" -> trace.text.as_str(),
+            }
+        })),
+    }
 }

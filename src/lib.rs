@@ -46,6 +46,6 @@ fn dispatch(link: &mut Link, action: &str, args: Vec<Entry>) -> Answer {
         "queryFonts" => endpoint!(QueryFonts),
         "queryPackages" => endpoint!(QueryPackages),
         "close" => endpoint!(Close),
-        other => panic!("unknown action: {other}"),
+        other => Answer::Failure(call::error(format!("unknown action: {other}"))),
     }
 }

@@ -110,10 +110,25 @@ pub struct FontFilter {
     pub character: Option<char>,
 }
 
+/// Case-insensitive substring check without allocating on the ASCII fast path.
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle.is_ascii() {
+        let needle_bytes = needle.as_bytes();
+        return haystack
+            .as_bytes()
+            .windows(needle_bytes.len())
+            .any(|window| window.eq_ignore_ascii_case(needle_bytes));
+    }
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
 impl FontFilter {
     fn matches(&self, face: &FontFace) -> bool {
         if let Some(family) = &self.family {
-            if !face.family.to_lowercase().contains(&family.to_lowercase()) {
+            if !contains_case_insensitive(&face.family, family) {
                 return false;
             }
         }
@@ -142,7 +157,7 @@ pub struct PackageFilter {
 impl PackageFilter {
     fn matches(&self, entry: &packages::PackageEntry) -> bool {
         if let Some(name) = &self.name {
-            if !entry.name.to_lowercase().contains(&name.to_lowercase()) {
+            if !contains_case_insensitive(&entry.name, name) {
                 return false;
             }
         }
@@ -307,7 +322,8 @@ pub fn universe_cached() -> bool {
 }
 
 /// Rescan the local package directories when the caller explicitly asks for
-/// fresh filesystem data.
+/// fresh filesystem data. When the package runtime is not yet initialized,
+/// the subsequent `packages()` query initializes and scans it cleanly.
 pub fn refresh_local() {
     if let Some(runtime) = packages::cached() {
         runtime.metadata.refresh_local();

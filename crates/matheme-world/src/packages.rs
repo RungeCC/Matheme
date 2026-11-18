@@ -13,14 +13,19 @@ use std::any::Any;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
+use serde::Deserialize;
 use serde_json::Value;
 use typst::syntax::package::VersionlessPackageSpec;
 use typst_kit::downloader::Downloader;
 use typst_kit::packages::{FsPackages, SystemPackages, UniversePackages};
 
+use crate::cache::{read_unpoisoned, write_unpoisoned, LazyCache};
 use crate::settings::{self, Settings};
+
+/// Upper bound when buffering `/preview/index.json` in memory (32 MiB).
+const MAX_UNIVERSE_INDEX_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Two independent switches: the configured policy and a per-call opt-in.
 struct DownloadGate {
@@ -46,6 +51,14 @@ impl DownloadGate {
 
     fn set_call(&self, allowed: bool) {
         self.call.store(allowed, Ordering::Relaxed);
+    }
+}
+
+struct CallDownloadGuard<'a>(&'a DownloadGate);
+
+impl Drop for CallDownloadGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set_call(false);
     }
 }
 
@@ -101,43 +114,54 @@ pub struct PackageEntry {
     pub metadata: Option<UniverseMetadata>,
 }
 
-fn field(entry: &Value, key: &str) -> Option<String> {
-    entry.get(key).and_then(Value::as_str).map(str::to_owned)
-}
-
-fn field_list(entry: &Value, key: &str) -> Vec<String> {
-    entry
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawUniverseEntry {
+    name: Option<String>,
+    version: Option<String>,
+    description: Option<String>,
+    #[serde(default)]
+    authors: Vec<String>,
+    license: Option<String>,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    disciplines: Vec<String>,
+    entrypoint: Option<String>,
+    repository: Option<String>,
+    homepage: Option<String>,
+    compiler: Option<String>,
+    updated_at: Option<i64>,
+    #[serde(default)]
+    template: Option<Value>,
 }
 
 fn universe_entry(entry: &Value) -> Option<PackageEntry> {
+    let raw: RawUniverseEntry = serde_json::from_value(entry.clone()).ok()?;
+    let template = raw
+        .template
+        .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false));
     Some(PackageEntry {
         namespace: UniversePackages::NAMESPACE.to_owned(),
-        name: field(entry, "name")?,
-        version: field(entry, "version")?,
+        name: raw.name?,
+        version: raw.version?,
         origin: PackageOrigin::Universe,
         path: None,
         metadata: Some(UniverseMetadata {
-            description: field(entry, "description"),
-            authors: field_list(entry, "authors"),
-            license: field(entry, "license"),
-            keywords: field_list(entry, "keywords"),
-            categories: field_list(entry, "categories"),
-            disciplines: field_list(entry, "disciplines"),
-            entrypoint: field(entry, "entrypoint"),
-            repository: field(entry, "repository"),
-            homepage: field(entry, "homepage"),
-            compiler: field(entry, "compiler"),
-            updated_at: entry.get("updatedAt").and_then(Value::as_i64),
-            template: entry.get("template").is_some(),
+            description: raw.description,
+            authors: raw.authors,
+            license: raw.license,
+            keywords: raw.keywords,
+            categories: raw.categories,
+            disciplines: raw.disciplines,
+            entrypoint: raw.entrypoint,
+            repository: raw.repository,
+            homepage: raw.homepage,
+            compiler: raw.compiler,
+            updated_at: raw.updated_at,
+            template,
         }),
     })
 }
@@ -183,6 +207,8 @@ fn scan_local(root: &Path, origin: PackageOrigin) -> Vec<PackageEntry> {
 /// `local` is a filesystem listing that is invalidated whenever a package
 /// archive is downloaded; `universe` is filled by the downloader when typst
 /// fetches the index, so the query layer never needs a second network call.
+use std::sync::RwLock;
+
 #[derive(Debug)]
 pub struct MetadataCache {
     data_dir: Option<PathBuf>,
@@ -203,12 +229,7 @@ impl MetadataCache {
 
     /// Locally installed packages, scanning the directories on first use.
     pub fn local(&self) -> Arc<Vec<PackageEntry>> {
-        if let Some(entries) = self
-            .local
-            .read()
-            .expect("package metadata poisoned")
-            .clone()
-        {
+        if let Some(entries) = read_unpoisoned(&self.local).clone() {
             return entries;
         }
         let mut entries = Vec::new();
@@ -222,13 +243,13 @@ impl MetadataCache {
             (&a.namespace, &a.name, &a.version).cmp(&(&b.namespace, &b.name, &b.version))
         });
         let entries = Arc::new(entries);
-        *self.local.write().expect("package metadata poisoned") = Some(Arc::clone(&entries));
+        *write_unpoisoned(&self.local) = Some(Arc::clone(&entries));
         entries
     }
 
     /// Drop the local listing; the next access rescans the directories.
     pub fn invalidate_local(&self) {
-        *self.local.write().expect("package metadata poisoned") = None;
+        *write_unpoisoned(&self.local) = None;
     }
 
     /// Rescan the local directories immediately.
@@ -240,24 +261,17 @@ impl MetadataCache {
     /// Universe index entries, if the index has been fetched in this loader
     /// generation. A query never triggers a download on its own.
     pub fn universe(&self) -> Option<Arc<Vec<PackageEntry>>> {
-        self.universe
-            .read()
-            .expect("package metadata poisoned")
-            .clone()
+        read_unpoisoned(&self.universe).clone()
     }
 
     /// Entry counts that are already cached, without forcing either a scan or
     /// a network request (`None` means "not cached yet").
     pub fn cached_counts(&self) -> (Option<usize>, Option<usize>) {
         (
-            self.local
-                .read()
-                .expect("package metadata poisoned")
+            read_unpoisoned(&self.local)
                 .as_ref()
                 .map(|entries| entries.len()),
-            self.universe
-                .read()
-                .expect("package metadata poisoned")
+            read_unpoisoned(&self.universe)
                 .as_ref()
                 .map(|entries| entries.len()),
         )
@@ -268,7 +282,7 @@ impl MetadataCache {
             return;
         };
         let entries: Vec<_> = values.iter().filter_map(universe_entry).collect();
-        *self.universe.write().expect("package metadata poisoned") = Some(Arc::new(entries));
+        *write_unpoisoned(&self.universe) = Some(Arc::new(entries));
     }
 }
 
@@ -298,14 +312,22 @@ impl Downloader for GatedDownloader {
         let size = response
             .header("Content-Length")
             .and_then(|value| value.parse().ok());
-        let mut reader = response.into_reader();
+        let reader = response.into_reader();
 
         if is_universe_index(url) {
             // typst caches the index inside `UniversePackages`; buffer the very
             // same response to keep a parsed copy for queries. Re-serving the
             // bytes means this is not a second request.
-            let mut bytes = Vec::with_capacity(size.unwrap_or(0));
-            reader.read_to_end(&mut bytes)?;
+            let mut bytes = Vec::with_capacity(size.unwrap_or(0).min(MAX_UNIVERSE_INDEX_BYTES as usize));
+            reader
+                .take(MAX_UNIVERSE_INDEX_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_UNIVERSE_INDEX_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Universe index exceeds maximum supported size",
+                ));
+            }
             self.metadata.set_universe(&bytes);
             return Ok((Some(bytes.len()), Box::new(Cursor::new(bytes))));
         }
@@ -381,34 +403,21 @@ fn build(settings: &Settings) -> PackageRuntime {
     }
 }
 
-static PACKAGES: OnceLock<RwLock<Option<Arc<PackageRuntime>>>> = OnceLock::new();
-
-fn package_slot() -> &'static RwLock<Option<Arc<PackageRuntime>>> {
-    PACKAGES.get_or_init(|| RwLock::new(None))
+/// Validate a proxy URL without constructing the full runtime.
+pub fn validate_proxy(proxy: &str) -> Result<(), String> {
+    ureq::Proxy::new(proxy).map(|_| ()).map_err(|err| format!("invalid proxy {proxy:?}: {err}"))
 }
 
+static PACKAGES: LazyCache<PackageRuntime> = LazyCache::new();
+
 pub(crate) fn package_runtime() -> Arc<PackageRuntime> {
-    if let Some(runtime) = package_slot()
-        .read()
-        .expect("package cache lock poisoned")
-        .clone()
-    {
-        return runtime;
-    }
-    let runtime = Arc::new(build(&settings::settings()));
-    let mut slot = package_slot().write().expect("package cache lock poisoned");
-    if slot.is_none() {
-        *slot = Some(Arc::clone(&runtime));
-    }
-    runtime
+    PACKAGES.get_or_init(|| build(&settings::settings()))
 }
 
 /// The live loader, if one exists. Unlike [`package_runtime`] this never
 /// builds one, so cache-state queries stay read-only.
 pub(crate) fn cached() -> Option<Arc<PackageRuntime>> {
-    PACKAGES
-        .get()
-        .and_then(|slot| slot.read().expect("package cache lock poisoned").clone())
+    PACKAGES.cached()
 }
 
 /// Allow downloads for the current call only. The bridge resets this on every
@@ -428,10 +437,7 @@ pub fn set_call_downloads(allowed: bool) {
 
 /// Mirror a changed `Downloads` setting into the live loader, if it exists.
 pub(crate) fn set_configured_downloads(allowed: bool) -> bool {
-    let Some(slot) = PACKAGES.get() else {
-        return false;
-    };
-    let Some(runtime) = slot.read().expect("package cache lock poisoned").clone() else {
+    let Some(runtime) = cached() else {
         return false;
     };
     runtime.gate.set_configured(allowed);
@@ -447,30 +453,29 @@ pub fn warmup_packages() -> PackageStatus {
 
 /// Eagerly fetch and cache the Universe index (the `OnceCell` inside
 /// `UniversePackages`) without compiling a document. The per-call gate is
-/// opened temporarily, so this works even when downloads are configured off.
+/// opened temporarily via an RAII guard, so this works even when downloads are
+/// configured off.
 ///
-/// Returns the resolved version of a well-known package on success, or the
-/// error message on failure (e.g. no network / proxy misconfigured).
+/// `typst-kit::UniversePackages` exposes no standalone index-fetch API, so we
+/// probe `@preview/cetz` to populate its internal index cell.
 pub fn prefetch_universe_index() -> Result<String, String> {
     let runtime = package_runtime();
     let spec: VersionlessPackageSpec = "@preview/cetz"
         .parse()
         .expect("valid versionless package spec");
     runtime.gate.set_call(true);
-    let result = runtime
+    let _guard = CallDownloadGuard(&runtime.gate);
+    runtime
         .packages
         .universe()
         .latest_version(&spec)
         .map(|version| version.to_string())
-        .map_err(|err| err.to_string());
-    runtime.gate.set_call(false);
-    result
+        .map_err(|err| err.to_string())
 }
 
 /// Rebuild the loader unconditionally and report its status.
 pub fn reload_packages() -> PackageStatus {
-    let next = Arc::new(build(&settings::settings()));
-    *package_slot().write().expect("package cache lock poisoned") = Some(next);
+    PACKAGES.install(build(&settings::settings()));
     package_status()
 }
 
@@ -478,21 +483,15 @@ pub fn reload_packages() -> PackageStatus {
 /// the loader was live; when it is not, the next access builds it from the new
 /// settings anyway.
 pub(crate) fn rebuild() -> bool {
-    let Some(slot) = PACKAGES.get() else {
-        return false;
-    };
-    if slot.read().expect("package cache lock poisoned").is_none() {
-        return false;
-    }
-    let next = Arc::new(build(&settings::settings()));
-    *slot.write().expect("package cache lock poisoned") = Some(next);
-    true
+    PACKAGES
+        .refresh_if_live(|| build(&settings::settings()))
+        .is_some()
 }
 
 /// Drop the loader (including the cached Universe index); the next use
 /// rebuilds it from the settings.
 pub fn reset() {
-    *package_slot().write().expect("package cache lock poisoned") = None;
+    PACKAGES.reset();
 }
 
 pub struct PackageStatus {

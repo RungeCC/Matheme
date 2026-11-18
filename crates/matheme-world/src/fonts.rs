@@ -29,12 +29,13 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
 use typst::text::{Font, FontBook, FontInfo};
 use typst::utils::LazyHash;
 use typst_kit::fonts::{self, FontPath, FontSource, FontStore};
 
+use crate::cache::LazyCache;
 use crate::query::FontOrigin;
 use crate::settings;
 
@@ -221,39 +222,19 @@ fn scan() -> FontCache {
 }
 
 /// `None` means "dropped, rescan on next use" (see [`reset`]).
-static FONTS: OnceLock<RwLock<Option<Arc<FontCache>>>> = OnceLock::new();
-
-fn fonts_slot() -> &'static RwLock<Option<Arc<FontCache>>> {
-    FONTS.get_or_init(|| RwLock::new(None))
-}
+static FONTS: LazyCache<FontCache> = LazyCache::new();
 
 /// Get the current font snapshot without holding the lock across a
 /// compilation. This also triggers the lazy font scan (metadata only — no
 /// font data is loaded) on first use.
 pub fn font_cache() -> Arc<FontCache> {
-    if let Some(cache) = fonts_slot()
-        .read()
-        .expect("font cache lock poisoned")
-        .clone()
-    {
-        return cache;
-    }
-    let cache = Arc::new(scan());
-    let mut slot = fonts_slot().write().expect("font cache lock poisoned");
-    // A concurrent `reset()` may have cleared the slot meanwhile; whichever
-    // scan is newer wins, both are consistent with some settings snapshot.
-    if slot.is_none() {
-        *slot = Some(Arc::clone(&cache));
-    }
-    cache
+    FONTS.get_or_init(scan)
 }
 
 /// The live snapshot, if one exists. Unlike [`font_cache`] this never scans,
 /// so cache-state queries stay read-only.
 pub(crate) fn cached() -> Option<Arc<FontCache>> {
-    FONTS
-        .get()
-        .and_then(|slot| slot.read().expect("font cache lock poisoned").clone())
+    FONTS.cached()
 }
 
 /// Counts of the current snapshot, triggering the scan if needed.
@@ -268,31 +249,28 @@ pub fn cached_counts() -> Option<FontCounts> {
 
 /// Replace the cache with a fresh scan and evict memoized entries that could
 /// keep the previous generation's fonts alive.
-fn install(next: Arc<FontCache>) {
-    *fonts_slot().write().expect("font cache lock poisoned") = Some(next);
+fn install() -> Arc<FontCache> {
+    let next = FONTS.install(scan());
     // comemo's global cache may hold `Font` clones (e.g. memoized
     // `Font::instantiate` results) pinning the old font data.
     comemo::evict(0);
+    next
 }
 
 /// Rescan with the current settings. Returns whether the cache was live.
 pub(crate) fn refresh() -> bool {
-    let Some(slot) = FONTS.get() else {
-        // Not initialized yet: the next `font_cache()` picks up the new
-        // settings on its own.
-        return false;
-    };
-    if slot.read().expect("font cache lock poisoned").is_none() {
-        return false;
+    if FONTS.refresh_if_live(scan).is_some() {
+        comemo::evict(0);
+        true
+    } else {
+        false
     }
-    install(Arc::new(scan()));
-    true
 }
 
 /// Drop the cache entirely; the next use rescans from the settings. Also
 /// evicts memoized results so dropped fonts are actually released.
 pub fn reset() {
-    *fonts_slot().write().expect("font cache lock poisoned") = None;
+    FONTS.reset();
     comemo::evict(0);
 }
 
@@ -304,8 +282,5 @@ pub fn warmup_fonts() -> usize {
 
 /// Rescan fonts (e.g. after installing a font) and return the new face count.
 pub fn reload_fonts() -> usize {
-    let next = Arc::new(scan());
-    let count = next.len();
-    install(next);
-    count
+    install().len()
 }

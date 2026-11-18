@@ -5,17 +5,11 @@
 //! [`serve`] turns it into a shaped answer. The action table lives in
 //! [`crate`]; [`invoke`] applies the shared per-call state (host font paths and
 //! the download gate) before dispatching to an [`Endpoint`].
-//!
-//! Calls always originate in our own Wolfram package, so parsing assumes the
-//! declared shape instead of validating every value defensively. A mismatch
-//! is a programming bug: `serve` catches it and returns a shaped failure
-//! (rendered as an ErrorTools `Failure` by the kernel) rather than aborting
-//! the kernel.
 
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
 
-use matheme_wl::{Entry, Expr, Rule};
+use matheme_wl::{assoc, Entry, Expr, Rule};
 use wolfram_library_link::{expr::Symbol as RawSymbol, wstp::Link};
 
 use matheme_world as world;
@@ -49,6 +43,7 @@ impl Outcome {
 
 /// A shaped error. The Wolfram layer turns `tag` into an ErrorTools failure
 /// tag and keeps `diagnostics` / `formatted` as its payload.
+#[derive(Debug)]
 pub struct Failure {
     pub tag: &'static str,
     pub message: String,
@@ -71,6 +66,11 @@ impl Failure {
         self.formatted = formatted;
         self
     }
+}
+
+/// Build a `"Call"` failure for invalid arguments or bridge-level errors.
+pub fn error(message: impl Into<String>) -> Failure {
+    Failure::new("Call", message)
 }
 
 pub enum Answer {
@@ -97,7 +97,7 @@ pub trait Endpoint {
     const HOST_FONTS: bool = true;
     type Input;
 
-    fn parse(args: Vec<Entry>) -> Self::Input;
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure>;
     fn invoke(input: Self::Input) -> Answer;
 }
 
@@ -108,7 +108,10 @@ pub fn invoke<E: Endpoint>(link: &mut Link, args: Vec<Entry>) -> Answer {
     }
     // A per-call download opt-in never outlives the call that set it.
     world::set_call_downloads(false);
-    E::invoke(E::parse(args))
+    match E::parse(args) {
+        Ok(input) => E::invoke(input),
+        Err(failure) => Answer::Failure(failure),
+    }
 }
 
 /// The one expression read from the link: `Action` plus its `Arguments`.
@@ -119,28 +122,27 @@ pub struct Envelope {
 
 /// Read the envelope, resolving Wolfram 15's context-free symbol names
 /// (e.g. `List`, `True`) into their `System\`` forms.
-fn read_envelope(link: &mut Link) -> Envelope {
+fn read_envelope(link: &mut Link) -> Result<Envelope, Failure> {
     let expr: Expr = link
         .get_expr_with_resolver(&mut |name: &str| Some(RawSymbol::new(&format!("System`{name}"))))
-        .expect("failed to read WSTP call")
+        .map_err(|err| error(format!("failed to read WSTP call: {err}")))?
         .into();
     // A LinkObject function always delivers its WL arguments as a List; the
     // package passes exactly one expression, the Action/Arguments envelope.
-    let args: Vec<Expr> = expr
+    let args = expr
         .as_list()
-        .expect("expected an argument list")
-        .into_iter()
-        .collect();
-    assert!(args.len() == 1, "expected exactly one call envelope");
-    let entries = args[0]
+        .ok_or_else(|| error("expected an argument list"))?;
+    let [envelope] = args.as_slice() else {
+        return Err(error("expected exactly one call envelope"));
+    };
+    let entries = envelope
         .as_association()
-        .expect("expected an Action/Arguments association");
-    let action = string(field(&entries, "Action").expect("missing Action"));
-    let arguments = field(&entries, "Arguments")
-        .expect("missing Arguments")
+        .ok_or_else(|| error("expected an Action/Arguments association"))?;
+    let action = string(required(&entries, "Action")?)?;
+    let arguments = required(&entries, "Arguments")?
         .as_association()
-        .expect("Arguments must be an Association");
-    Envelope { action, arguments }
+        .ok_or_else(|| error("Arguments must be an Association"))?;
+    Ok(Envelope { action, arguments })
 }
 
 fn diagnostics_expr(items: &[Diagnostic]) -> Expr {
@@ -163,13 +165,13 @@ fn render(answer: Answer) -> Expr {
             }
             Expr::association(rules)
         }
-        Answer::Failure(failure) => Expr::association([
-            Rule::new("Status", "Error"),
-            Rule::new("ErrorTag", failure.tag),
-            Rule::new("Message", failure.message),
-            Rule::new("Diagnostics", diagnostics_expr(&failure.diagnostics)),
-            Rule::new("Formatted", failure.formatted.unwrap_or_default()),
-        ]),
+        Answer::Failure(failure) => assoc! {
+            "Status" -> "Error",
+            "ErrorTag" -> failure.tag,
+            "Message" -> failure.message,
+            "Diagnostics" -> diagnostics_expr(&failure.diagnostics),
+            "Formatted" -> failure.formatted.unwrap_or_default(),
+        },
     }
 }
 
@@ -187,80 +189,101 @@ fn panic_message(payload: Box<dyn Any + Send>, name: &str) -> String {
 /// Read one envelope, dispatch it, and write the answer. `dispatch` is supplied
 /// by the crate root, which owns the action table and imports the endpoints.
 pub fn serve(link: &mut Link, dispatch: impl FnOnce(&mut Link, &str, Vec<Entry>) -> Answer) {
-    let answer = panic::catch_unwind(AssertUnwindSafe(|| {
-        let envelope = read_envelope(link);
-        dispatch(link, &envelope.action, envelope.arguments)
+    let answer = panic::catch_unwind(AssertUnwindSafe(|| match read_envelope(link) {
+        Ok(envelope) => dispatch(link, &envelope.action, envelope.arguments),
+        Err(failure) => Answer::Failure(failure),
     }))
     .unwrap_or_else(|payload| {
         Answer::Failure(Failure::new("Call", panic_message(payload, "matheme_call")))
     });
 
-    link.put_expr(render(answer).raw())
-        .unwrap_or_else(|_| panic!("matheme_call: failed to write result expression"));
+    // Never panic across the FFI boundary if the WSTP link itself failed.
+    let _ = link.put_expr(render(answer).raw());
 }
 
 // ---------------------------------------------------------------------------
-// Shared association readers. These encode the declared shapes and nothing
-// else: a wrong shape is a bug in our own Wolfram package, not user input.
+// Shared association readers returning shaped Failures on mismatch.
 // ---------------------------------------------------------------------------
 
+/// Ensure an endpoint taking no arguments was given an empty Association.
+pub fn ensure_empty(entries: &[Entry], action: &str) -> Result<(), Failure> {
+    if entries.is_empty() {
+        Ok(())
+    } else {
+        Err(error(format!("{action} takes no arguments")))
+    }
+}
+
 /// Pair an association entry; delayed rules are rejected with their reason.
-pub fn pair(entry: &Entry) -> (&Expr, &Expr) {
-    entry.pair().unwrap_or_else(|reason| panic!("{reason}"))
+pub fn pair(entry: &Entry) -> Result<(&Expr, &Expr), Failure> {
+    entry.pair().map_err(error)
 }
 
 /// The string key of an association entry.
-pub fn key(key: &Expr) -> &str {
+pub fn key(key: &Expr) -> Result<&str, Failure> {
     key.as_str()
-        .unwrap_or_else(|| panic!("association key must be a String, got: {}", key.raw()))
+        .ok_or_else(|| error(format!("association key must be a String, got: {}", key.raw())))
 }
 
 /// A present-or-absent association field.
-pub fn field<'a>(entries: &'a [Entry], name: &str) -> Option<&'a Expr> {
-    entries
-        .iter()
-        .find(|entry| entry.key_name() == Some(name))
-        .map(|entry| pair(entry).1)
+pub fn field<'a>(entries: &'a [Entry], name: &str) -> Result<Option<&'a Expr>, Failure> {
+    for entry in entries {
+        if entry.key_name() == Some(name) {
+            return Ok(Some(pair(entry)?.1));
+        }
+    }
+    Ok(None)
 }
 
 /// A field the caller must supply.
-pub fn required<'a>(entries: &'a [Entry], name: &str) -> &'a Expr {
-    field(entries, name).unwrap_or_else(|| panic!("missing association key: {name}"))
+pub fn required<'a>(entries: &'a [Entry], name: &str) -> Result<&'a Expr, Failure> {
+    field(entries, name)?.ok_or_else(|| error(format!("missing association key: {name}")))
 }
 
-pub fn string(expr: &Expr) -> String {
-    expr.as_str().expect("expected a WL String").to_owned()
+pub fn string(expr: &Expr) -> Result<String, Failure> {
+    expr.as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| error("expected a WL String"))
 }
 
-pub fn boolean(expr: &Expr) -> bool {
-    expr.as_bool().expect("expected True or False")
+pub fn boolean(expr: &Expr) -> Result<bool, Failure> {
+    expr.as_bool()
+        .ok_or_else(|| error("expected True or False"))
 }
 
-pub fn integer(expr: &Expr) -> i64 {
-    expr.as_i64().expect("expected a WL Integer")
+pub fn integer(expr: &Expr) -> Result<i64, Failure> {
+    expr.as_i64()
+        .ok_or_else(|| error("expected a WL Integer"))
 }
 
-pub fn nonnegative(expr: &Expr, name: &str) -> i64 {
-    let value = integer(expr);
-    assert!(value >= 0, "{name} must be a non-negative Integer");
-    value
+pub fn nonnegative(expr: &Expr, name: &str) -> Result<i64, Failure> {
+    let value = integer(expr)?;
+    if value < 0 {
+        return Err(error(format!("{name} must be a non-negative Integer")));
+    }
+    Ok(value)
 }
 
-pub fn character(expr: &Expr) -> char {
-    let text = string(expr);
+pub fn character(expr: &Expr) -> Result<char, Failure> {
+    let text = string(expr)?;
     let mut chars = text.chars();
-    let first = chars.next().expect("expected a non-empty String");
-    assert!(
-        chars.next().is_none(),
-        "Character must be a single character"
-    );
-    first
+    let first = chars
+        .next()
+        .ok_or_else(|| error("expected a non-empty String"))?;
+    if chars.next().is_some() {
+        return Err(error("Character must be a single character"));
+    }
+    Ok(first)
 }
 
 /// Parse a named enumeration value, e.g. a font source or package origin.
-pub fn named<T>(expr: &Expr, parse: impl Fn(&str) -> Option<T>, what: &str) -> T {
-    let name = string(expr);
-    parse(&name).unwrap_or_else(|| panic!("unknown {what}: {name}"))
+pub fn named<T>(
+    expr: &Expr,
+    parse: impl Fn(&str) -> Option<T>,
+    what: &str,
+) -> Result<T, Failure> {
+    let name = string(expr)?;
+    parse(&name).ok_or_else(|| error(format!("unknown {what}: {name}")))
 }
 
 /// Build association entries from rules, mainly for tests.
@@ -278,21 +301,22 @@ mod tests {
     #[test]
     fn declared_shapes_are_read_without_fallbacks() {
         let args = entries([Rule::new("Source", "text")]);
-        assert_eq!(string(required(&args, "Source")), "text");
-        assert!(field(&args, "Missing").is_none());
+        assert_eq!(string(required(&args, "Source").unwrap()).unwrap(), "text");
+        assert!(field(&args, "Missing").unwrap().is_none());
     }
 
     #[test]
-    #[should_panic(expected = "missing association key")]
-    fn a_missing_key_is_a_programming_error() {
-        required(&[], "Source");
+    fn a_missing_key_returns_a_failure() {
+        let err = required(&[], "Source").expect_err("missing key");
+        assert_eq!(err.tag, "Call");
+        assert!(err.message.contains("missing association key"), "{}", err.message);
     }
 
     #[test]
     fn failure_renders_uniformly() {
         let expr = render(Answer::Failure(Failure::new("Compile", "bad source")));
         let args = expr.as_association().expect("association");
-        let tag = field(&args, "ErrorTag").expect("tag");
+        let tag = field(&args, "ErrorTag").unwrap().expect("tag");
         assert_eq!(tag.as_str(), Some("Compile"));
     }
 }

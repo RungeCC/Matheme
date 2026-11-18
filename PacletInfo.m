@@ -5,6 +5,7 @@ Paclet[
   Description -> "Typst typesetting bridge for the Wolfram Language.",
   Creator -> "Matheme",
   Extensions -> {
-    {"Kernel", Root -> ".", Context -> "Matheme`"}
+    {"Kernel", Root -> ".", Context -> "Matheme`"},
+    {"LibraryResources", Root -> "LibraryResources"}
   }
 ]
