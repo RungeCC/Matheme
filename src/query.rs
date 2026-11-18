@@ -69,7 +69,7 @@ impl FontQuery {
             page: default_page(),
         };
         for entry in &args {
-            let (key, value) = call::pair(&entry);
+            let (key, value) = call::pair(entry);
             let name = call::key(key);
             if page_entry(&mut query.page, name, value) {
                 continue;
@@ -97,7 +97,7 @@ impl PackageQuery {
             refresh: false,
         };
         for entry in &args {
-            let (key, value) = call::pair(&entry);
+            let (key, value) = call::pair(entry);
             let name = call::key(key);
             if page_entry(&mut query.page, name, value) {
                 continue;

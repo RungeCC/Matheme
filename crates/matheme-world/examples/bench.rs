@@ -266,7 +266,7 @@ fn main() {
     //    where comemo's memoization shines and shows the fixed-name speedup's
     //    true source (identical input cache hit, not the World being cheaper).
     let same = document(9999);
-    let reuse_same = {
+    {
         let world = ReusableWorld::new();
         time_many("compile / reuse World + SAME source", 200, || {
             world.set_source(same.clone(), false);
@@ -274,7 +274,6 @@ fn main() {
             black_box(result);
         })
     };
-    let _ = reuse_same;
 
     // 7. Fixed-name World but evict comemo's memo cache before every compile.
     //    If this returns to ~6ms, the fixed-name speedup is purely memoization.

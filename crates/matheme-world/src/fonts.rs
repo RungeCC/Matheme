@@ -118,6 +118,11 @@ impl FontCache {
         self.counts.total()
     }
 
+    /// Whether no faces are registered.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Provenance of the face at `index`, if the index is registered.
     pub(crate) fn face(&self, index: usize) -> Option<&FaceMetadata> {
         self.faces.get(index)
