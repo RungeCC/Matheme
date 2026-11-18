@@ -19,7 +19,7 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 | Path | Role |
 |---|---|
 | `crates/matheme-world/` | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
-| `crates/matheme-wl/` | Pure bidirectional WL-expression ↔ Typst-value conversion (`to_typst_value` and `from_typst_value`). `Expr`, `Normal`, `Entry`/`Rule` and `Symbol` wrappers expose `From`/`Into` and `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
+| `crates/matheme-wl/` | Pure bidirectional WL-expression ↔ Typst-value conversion (`convert::to_typst` / `Expr::to_typst` and `convert::from_typst` / `Expr::from_typst`). `Expr`, `Normal<'a>`, `Entry<'a>`/`Rule` and `Symbol` wrappers expose `From`/`TryFrom` and zero-copy `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
 | `src/` | WSTP bridge: one exported WSTP function receives `<|"Action" -> name, "Arguments" -> <|…|>|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, with dedicated modules for `compile.rs` (PDF/SVG/HTML + simultaneous `Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`. |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects. |
 | `scripts/` | WSTP SDK setup and one-shot build. |
@@ -155,7 +155,8 @@ nested associations and `ByteArray` (mapped to Typst `bytes`); unsupported
 values become warnings in `Diagnostics`. Conversely, `"Evaluated"` maps Typst
 values back to native Wolfram expressions (`Quantity`, `RGBColor`, `DateObject`,
 `TimeObject`, `ByteArray`, `Association`, `List`, `Automatic`, `Null`, and
-structured content/module associations).
+structured associations for `Type`, `Label`, `Symbol`, `Version`, `Decimal`,
+`Content`, and `Module`).
 
 ```wolfram
 res = MathemeCompile[

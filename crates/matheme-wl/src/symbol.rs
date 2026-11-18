@@ -11,7 +11,7 @@
 //! assert_eq!(Symbol::system("List"), Symbol::LIST);
 //! ```
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::fmt;
 
 /// A fully-qualified Wolfram Language symbol name, e.g. `System`List`.
@@ -79,6 +79,18 @@ impl Symbol {
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for Symbol {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for Symbol {
+    fn borrow(&self) -> &str {
+        self.as_str()
     }
 }
 

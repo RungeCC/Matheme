@@ -63,12 +63,12 @@ fn page_entry(page: &mut Page, name: &str, value: &Expr) -> Result<bool, Failure
 }
 
 impl FontQuery {
-    pub fn parse(args: Vec<Entry>) -> Result<Self, Failure> {
+    pub fn parse(args: &[Entry<'_>]) -> Result<Self, Failure> {
         let mut query = Self {
             filter: FontFilter::default(),
             page: default_page(),
         };
-        for entry in &args {
+        for entry in args {
             let (key, value) = call::pair(entry)?;
             let name = call::key(key)?;
             if page_entry(&mut query.page, name, value)? {
@@ -90,14 +90,14 @@ impl FontQuery {
 }
 
 impl PackageQuery {
-    pub fn parse(args: Vec<Entry>) -> Result<Self, Failure> {
+    pub fn parse(args: &[Entry<'_>]) -> Result<Self, Failure> {
         let mut query = Self {
             filter: PackageFilter::default(),
             page: default_page(),
             allow_downloads: false,
             refresh: false,
         };
-        for entry in &args {
+        for entry in args {
             let (key, value) = call::pair(entry)?;
             let name = call::key(key)?;
             if page_entry(&mut query.page, name, value)? {
@@ -234,7 +234,7 @@ impl Endpoint for QueryFonts {
     const NAME: &'static str = "queryFonts";
     type Input = FontQuery;
 
-    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
         FontQuery::parse(args)
     }
 
@@ -250,7 +250,7 @@ impl Endpoint for QueryPackages {
     const HOST_FONTS: bool = false;
     type Input = PackageQuery;
 
-    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
         PackageQuery::parse(args)
     }
 
@@ -262,17 +262,20 @@ impl Endpoint for QueryPackages {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::entries;
+    use crate::call::with_entries;
 
     #[test]
     fn font_filters_and_paging() {
-        let query = FontQuery::parse(entries([
-            Rule::new("Family", "libertinus"),
-            Rule::new("Source", "Embedded"),
-            Rule::new("Resident", true),
-            Rule::new("MaxResults", 7_i64),
-            Rule::new("Offset", 2_i64),
-        ]))
+        let query = with_entries(
+            [
+                Rule::new("Family", "libertinus"),
+                Rule::new("Source", "Embedded"),
+                Rule::new("Resident", true),
+                Rule::new("MaxResults", 7_i64),
+                Rule::new("Offset", 2_i64),
+            ],
+            FontQuery::parse,
+        )
         .expect("valid font query");
         assert_eq!(query.filter.family.as_deref(), Some("libertinus"));
         assert_eq!(query.filter.origin, Some(FontOrigin::Embedded));
@@ -283,13 +286,16 @@ mod tests {
 
     #[test]
     fn package_filters_and_opt_ins() {
-        let query = PackageQuery::parse(entries([
-            Rule::new("Name", "cetz"),
-            Rule::new("Origin", "Universe"),
-            Rule::new("MaxResults", Symbol::ALL),
-            Rule::new("AllowDownloads", true),
-            Rule::new("Refresh", true),
-        ]))
+        let query = with_entries(
+            [
+                Rule::new("Name", "cetz"),
+                Rule::new("Origin", "Universe"),
+                Rule::new("MaxResults", Symbol::ALL),
+                Rule::new("AllowDownloads", true),
+                Rule::new("Refresh", true),
+            ],
+            PackageQuery::parse,
+        )
         .expect("valid package query");
         assert_eq!(query.filter.name.as_deref(), Some("cetz"));
         assert_eq!(query.filter.origin, Some(PackageOriginFilter::Universe));
@@ -302,18 +308,18 @@ mod tests {
     #[test]
     fn no_arguments_uses_the_default_page() {
         assert_eq!(
-            FontQuery::parse(vec![]).unwrap().page.limit,
+            FontQuery::parse(&[]).unwrap().page.limit,
             Some(DEFAULT_LIMIT)
         );
         assert_eq!(
-            PackageQuery::parse(vec![]).unwrap().page.limit,
+            PackageQuery::parse(&[]).unwrap().page.limit,
             Some(DEFAULT_LIMIT)
         );
     }
 
     #[test]
     fn unknown_keys_return_a_failure() {
-        let err = FontQuery::parse(entries([Rule::new("Mystery", 1_i64)]))
+        let err = with_entries([Rule::new("Mystery", 1_i64)], FontQuery::parse)
             .expect_err("unknown font query key");
         assert_eq!(err.tag, "Call");
         assert!(
@@ -332,7 +338,7 @@ mod tests {
                 [Expr::from("Family"), Expr::from("Libertinus")],
             )],
         );
-        let err = FontQuery::parse(association.as_association().expect("association"))
+        let err = FontQuery::parse(&association.as_association().expect("association"))
             .expect_err("delayed rule");
         assert_eq!(err.tag, "Call");
         assert!(err.message.contains("RuleDelayed"), "{}", err.message);

@@ -44,11 +44,11 @@ impl Endpoint for ClearCache {
     const HOST_FONTS: bool = false;
     type Input = CacheSelection;
 
-    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
         let mut selection = CacheSelection::default();
         let mut saw_targets = false;
 
-        for entry in &args {
+        for entry in args {
             let (key, value) = call::pair(entry)?;
             match call::key(key)? {
                 "Targets" => {
@@ -59,7 +59,7 @@ impl Endpoint for ClearCache {
                     let items = value
                         .as_list()
                         .ok_or_else(|| call::error("Targets must be All or a List of strings"))?;
-                    for item in &items {
+                    for item in items {
                         let name = call::string(item)?;
                         if name.eq_ignore_ascii_case("all") {
                             selection = CacheSelection::all();
@@ -108,14 +108,14 @@ impl Endpoint for Warmup {
     const NAME: &'static str = "warmup";
     type Input = WarmupArgs;
 
-    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
         let mut input = WarmupArgs {
             fonts: true,
             packages: true,
             package_index: true,
         };
         for entry in args {
-            let (key, value) = call::pair(&entry)?;
+            let (key, value) = call::pair(entry)?;
             let enabled = call::boolean(value)?;
             match call::key(key)? {
                 "Fonts" => input.fonts = enabled,
@@ -175,8 +175,8 @@ impl Endpoint for ReloadFonts {
     const NAME: &'static str = "reloadFonts";
     type Input = ();
 
-    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
-        call::ensure_empty(&args, Self::NAME)
+    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
+        call::ensure_empty(args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
@@ -192,8 +192,8 @@ impl Endpoint for ReloadPackages {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
-        call::ensure_empty(&args, Self::NAME)
+    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
+        call::ensure_empty(args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
@@ -208,8 +208,8 @@ impl Endpoint for Close {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
-        call::ensure_empty(&args, Self::NAME)
+    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
+        call::ensure_empty(args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
@@ -221,30 +221,29 @@ impl Endpoint for Close {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::entries;
+    use crate::call::with_entries;
 
     #[test]
     fn clear_cache_parses_targets() {
-        assert_eq!(
-            ClearCache::parse(vec![]).unwrap(),
-            CacheSelection::all()
+        assert_eq!(ClearCache::parse(&[]).unwrap(), CacheSelection::all());
+        with_entries([Rule::new("Targets", Symbol::ALL)], |args| {
+            assert_eq!(ClearCache::parse(args).unwrap(), CacheSelection::all());
+        });
+        with_entries(
+            [Rule::new("Targets", Expr::list(["Fonts", "Memoization"]))],
+            |args| {
+                assert_eq!(
+                    ClearCache::parse(args).unwrap(),
+                    CacheSelection {
+                        fonts: true,
+                        packages: false,
+                        memoization: true,
+                    }
+                );
+            },
         );
-        assert_eq!(
-            ClearCache::parse(entries([Rule::new("Targets", Symbol::ALL)])).unwrap(),
-            CacheSelection::all()
-        );
-        assert_eq!(
-            ClearCache::parse(entries([Rule::new(
-                "Targets",
-                Expr::list(["Fonts", "Memoization"])
-            )]))
-            .unwrap(),
-            CacheSelection {
-                fonts: true,
-                packages: false,
-                memoization: true,
-            }
-        );
-        assert!(ClearCache::parse(entries([Rule::new("Targets", Expr::list(["Bogus"]))])).is_err());
+        with_entries([Rule::new("Targets", Expr::list(["Bogus"]))], |args| {
+            assert!(ClearCache::parse(args).is_err());
+        });
     }
 }

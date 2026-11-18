@@ -5,13 +5,12 @@
 //! evaluate later. Only immediate rules can be interpreted as Typst values, so
 //! [`Entry`] keeps them apart instead of flattening both heads into one type.
 
-use wolfram_library_link::expr::{Expr as RawExpr, RuleEntry};
+use wolfram_library_link::expr::RuleEntry;
 
 use crate::expr::Expr;
-use crate::normal::Normal;
 use crate::symbol::Symbol;
 
-/// An immediate rule `key -> value`.
+/// An owned immediate rule `key -> value`, used when constructing associations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     key: Expr,
@@ -39,30 +38,29 @@ impl Rule {
     }
 }
 
-/// One element of an association.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Entry {
+/// One borrowed element of an association.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entry<'a> {
     /// `key -> value`.
-    Rule(Rule),
+    Rule { key: &'a Expr, value: &'a Expr },
     /// `key :> value`. The key is kept for diagnostics; the value is not, since
     /// WL has not evaluated it and the bridge must not pretend otherwise.
-    RuleDelayed { key: Expr },
+    RuleDelayed { key: &'a Expr },
     /// An element that is not a rule at all.
-    Other { expr: Expr },
+    Other { expr: &'a Expr },
 }
 
-impl Entry {
+impl<'a> Entry<'a> {
     /// The key, if this entry has one at all.
-    pub fn key(&self) -> Option<&Expr> {
-        match self {
-            Entry::Rule(rule) => Some(rule.key()),
-            Entry::RuleDelayed { key } => Some(key),
+    pub fn key(&self) -> Option<&'a Expr> {
+        match *self {
+            Entry::Rule { key, .. } | Entry::RuleDelayed { key } => Some(key),
             Entry::Other { .. } => None,
         }
     }
 
     /// The string key, when it is a WL String.
-    pub fn key_name(&self) -> Option<&str> {
+    pub fn key_name(&self) -> Option<&'a str> {
         self.key().and_then(Expr::as_str)
     }
 
@@ -70,9 +68,9 @@ impl Entry {
     ///
     /// Returns a complete diagnostic sentence for delayed or malformed entries,
     /// so callers can forward it without re-deriving why the entry was skipped.
-    pub fn pair(&self) -> Result<(&Expr, &Expr), String> {
-        match self {
-            Entry::Rule(rule) => Ok((rule.key(), rule.value())),
+    pub fn pair(&self) -> Result<(&'a Expr, &'a Expr), String> {
+        match *self {
+            Entry::Rule { key, value } => Ok((key, value)),
             Entry::RuleDelayed { key } => Err(format!(
                 "association entry {} uses RuleDelayed (:>); its right-hand side is not evaluated, \
                  so it cannot be converted",
@@ -90,26 +88,25 @@ impl Entry {
 fn describe_key(key: &Expr) -> String {
     match key.as_str() {
         Some(name) => format!("\"{name}\""),
-        None => key.raw().to_string(),
+        None => key.to_string(),
     }
 }
 
-/// Parse association elements, keeping the head of each entry.
-pub(crate) fn parse(elements: &[RawExpr]) -> Vec<Entry> {
+/// Parse association elements without cloning keys or values.
+pub(crate) fn parse_slice(elements: &[Expr]) -> Vec<Entry<'_>> {
     elements
         .iter()
-        .map(|element| match Normal::from_expr(element) {
-            Some(normal) if normal.has_head(&Symbol::RULE) && normal.len() == 2 => Entry::Rule(
-                Rule::new(normal.elements()[0].clone(), normal.elements()[1].clone()),
-            ),
+        .map(|element| match element.as_normal() {
+            Some(normal) if normal.has_head(&Symbol::RULE) && normal.len() == 2 => Entry::Rule {
+                key: &normal.elements()[0],
+                value: &normal.elements()[1],
+            },
             Some(normal) if normal.has_head(&Symbol::RULE_DELAYED) && normal.len() == 2 => {
                 Entry::RuleDelayed {
-                    key: Expr::from_raw(normal.elements()[0].clone()),
+                    key: &normal.elements()[0],
                 }
             }
-            _ => Entry::Other {
-                expr: Expr::from_raw(element.clone()),
-            },
+            _ => Entry::Other { expr: element },
         })
         .collect()
 }
@@ -117,7 +114,6 @@ pub(crate) fn parse(elements: &[RawExpr]) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::Expr;
 
     fn wstp_association(elements: Vec<Expr>) -> Expr {
         Expr::normal(Symbol::ASSOCIATION, elements)

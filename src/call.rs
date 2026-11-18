@@ -97,12 +97,12 @@ pub trait Endpoint {
     const HOST_FONTS: bool = true;
     type Input;
 
-    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure>;
+    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure>;
     fn invoke(input: Self::Input) -> Answer;
 }
 
 /// Apply the state shared by every call, then run one endpoint.
-pub fn invoke<E: Endpoint>(link: &mut Link, args: Vec<Entry>) -> Answer {
+pub fn invoke<E: Endpoint>(link: &mut Link, args: &[Entry<'_>]) -> Answer {
     if E::HOST_FONTS {
         wolfram::configure_world_fonts(link);
     }
@@ -117,7 +117,7 @@ pub fn invoke<E: Endpoint>(link: &mut Link, args: Vec<Entry>) -> Answer {
 /// The one expression read from the link: `Action` plus its `Arguments`.
 pub struct Envelope {
     pub action: String,
-    pub arguments: Vec<Entry>,
+    pub arguments: Expr,
 }
 
 /// Read the envelope, resolving Wolfram 15's context-free symbol names
@@ -132,17 +132,21 @@ fn read_envelope(link: &mut Link) -> Result<Envelope, Failure> {
     let args = expr
         .as_list()
         .ok_or_else(|| error("expected an argument list"))?;
-    let [envelope] = args.as_slice() else {
+    let [envelope] = args else {
         return Err(error("expected exactly one call envelope"));
     };
     let entries = envelope
         .as_association()
         .ok_or_else(|| error("expected an Action/Arguments association"))?;
     let action = string(required(&entries, "Action")?)?;
-    let arguments = required(&entries, "Arguments")?
-        .as_association()
-        .ok_or_else(|| error("Arguments must be an Association"))?;
-    Ok(Envelope { action, arguments })
+    let arguments = required(&entries, "Arguments")?;
+    if arguments.as_association().is_none() {
+        return Err(error("Arguments must be an Association"));
+    }
+    Ok(Envelope {
+        action,
+        arguments: arguments.clone(),
+    })
 }
 
 fn diagnostics_expr(items: &[Diagnostic]) -> Expr {
@@ -188,9 +192,12 @@ fn panic_message(payload: Box<dyn Any + Send>, name: &str) -> String {
 
 /// Read one envelope, dispatch it, and write the answer. `dispatch` is supplied
 /// by the crate root, which owns the action table and imports the endpoints.
-pub fn serve(link: &mut Link, dispatch: impl FnOnce(&mut Link, &str, Vec<Entry>) -> Answer) {
+pub fn serve(link: &mut Link, dispatch: impl FnOnce(&mut Link, &str, &[Entry<'_>]) -> Answer) {
     let answer = panic::catch_unwind(AssertUnwindSafe(|| match read_envelope(link) {
-        Ok(envelope) => dispatch(link, &envelope.action, envelope.arguments),
+        Ok(envelope) => match envelope.arguments.as_association() {
+            Some(args) => dispatch(link, &envelope.action, &args),
+            None => Answer::Failure(error("Arguments must be an Association")),
+        },
         Err(failure) => Answer::Failure(failure),
     }))
     .unwrap_or_else(|payload| {
@@ -206,7 +213,7 @@ pub fn serve(link: &mut Link, dispatch: impl FnOnce(&mut Link, &str, Vec<Entry>)
 // ---------------------------------------------------------------------------
 
 /// Ensure an endpoint taking no arguments was given an empty Association.
-pub fn ensure_empty(entries: &[Entry], action: &str) -> Result<(), Failure> {
+pub fn ensure_empty(entries: &[Entry<'_>], action: &str) -> Result<(), Failure> {
     if entries.is_empty() {
         Ok(())
     } else {
@@ -215,18 +222,18 @@ pub fn ensure_empty(entries: &[Entry], action: &str) -> Result<(), Failure> {
 }
 
 /// Pair an association entry; delayed rules are rejected with their reason.
-pub fn pair(entry: &Entry) -> Result<(&Expr, &Expr), Failure> {
+pub fn pair<'a>(entry: &Entry<'a>) -> Result<(&'a Expr, &'a Expr), Failure> {
     entry.pair().map_err(error)
 }
 
 /// The string key of an association entry.
 pub fn key(key: &Expr) -> Result<&str, Failure> {
     key.as_str()
-        .ok_or_else(|| error(format!("association key must be a String, got: {}", key.raw())))
+        .ok_or_else(|| error(format!("association key must be a String, got: {key}")))
 }
 
 /// A present-or-absent association field.
-pub fn field<'a>(entries: &'a [Entry], name: &str) -> Result<Option<&'a Expr>, Failure> {
+pub fn field<'a>(entries: &'a [Entry<'a>], name: &str) -> Result<Option<&'a Expr>, Failure> {
     for entry in entries {
         if entry.key_name() == Some(name) {
             return Ok(Some(pair(entry)?.1));
@@ -236,7 +243,7 @@ pub fn field<'a>(entries: &'a [Entry], name: &str) -> Result<Option<&'a Expr>, F
 }
 
 /// A field the caller must supply.
-pub fn required<'a>(entries: &'a [Entry], name: &str) -> Result<&'a Expr, Failure> {
+pub fn required<'a>(entries: &'a [Entry<'a>], name: &str) -> Result<&'a Expr, Failure> {
     field(entries, name)?.ok_or_else(|| error(format!("missing association key: {name}")))
 }
 
@@ -286,12 +293,15 @@ pub fn named<T>(
     parse(&name).ok_or_else(|| error(format!("unknown {what}: {name}")))
 }
 
-/// Build association entries from rules, mainly for tests.
+/// Parse an association test fixture and feed its entries into `f`.
 #[cfg(test)]
-pub fn entries(rules: impl IntoIterator<Item = Rule>) -> Vec<Entry> {
-    Expr::association(rules)
-        .as_association()
-        .expect("association")
+pub fn with_entries<R>(
+    rules: impl IntoIterator<Item = Rule>,
+    f: impl FnOnce(&[Entry<'_>]) -> R,
+) -> R {
+    let expr = Expr::association(rules);
+    let entries = expr.as_association().expect("association");
+    f(&entries)
 }
 
 #[cfg(test)]
@@ -300,9 +310,10 @@ mod tests {
 
     #[test]
     fn declared_shapes_are_read_without_fallbacks() {
-        let args = entries([Rule::new("Source", "text")]);
-        assert_eq!(string(required(&args, "Source").unwrap()).unwrap(), "text");
-        assert!(field(&args, "Missing").unwrap().is_none());
+        with_entries([Rule::new("Source", "text")], |args| {
+            assert_eq!(string(required(args, "Source").unwrap()).unwrap(), "text");
+            assert!(field(args, "Missing").unwrap().is_none());
+        });
     }
 
     #[test]

@@ -12,8 +12,8 @@ impl Endpoint for Version {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
-        call::ensure_empty(&args, Self::NAME)
+    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
+        call::ensure_empty(args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {

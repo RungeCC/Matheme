@@ -5,7 +5,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use matheme_wl::{from_typst_value, rule, to_typst_value, Entry, Expr, Rule, Symbol};
+use matheme_wl::{from_typst, rule, to_typst, Entry, Expr, Rule, Symbol};
 use matheme_world::{self as world, datetime_from_unix, MathemeWorld, WorldDate};
 use typst::comemo::Track;
 use typst::diag::{SourceDiagnostic, SourceResult};
@@ -20,7 +20,6 @@ use typst_html::{html, HtmlDocument, HtmlOptions};
 use typst_layout::PagedDocument;
 use typst_pdf::{pdf, PdfOptions, PdfStandard, PdfStandards, Timestamp};
 use typst_svg::{svg, SvgOptions};
-use wolfram_library_link::expr::{Expr as RawExpr, ExprKind};
 
 use crate::call::{self, Answer, Endpoint, Failure, Outcome};
 use crate::diagnostics::{self, Diagnostic};
@@ -67,7 +66,7 @@ pub enum EvaluateSpec {
 
 pub struct CompileArgs {
     source: String,
-    inputs: Vec<Entry>,
+    inputs: Expr,
     base_path: PathBuf,
     allow_downloads: bool,
     format: OutputFormat,
@@ -112,7 +111,7 @@ fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, allow_downloads: bool) 
 /// Convert user-supplied Typst inputs. Unlike the link's own arguments, these
 /// values come from the document, so unsupported values are reported as
 /// warnings instead of failing the whole call.
-fn read_inputs(entries: &[Entry], inputs: &mut Dict, warnings: &mut Vec<String>) {
+fn read_inputs(entries: &[Entry<'_>], inputs: &mut Dict, warnings: &mut Vec<String>) {
     for entry in entries {
         let (key, value) = match entry.pair() {
             Ok(pair) => pair,
@@ -122,10 +121,10 @@ fn read_inputs(entries: &[Entry], inputs: &mut Dict, warnings: &mut Vec<String>)
             }
         };
         let Some(name) = key.as_str() else {
-            warnings.push(format!("Inputs key {} is not a String; skipped", key.raw()));
+            warnings.push(format!("Inputs key {key} is not a String; skipped"));
             continue;
         };
-        let converted = to_typst_value(value, warnings);
+        let converted = to_typst(value, warnings);
         inputs.insert(typst::foundations::Str::from(name), converted);
     }
 }
@@ -200,13 +199,11 @@ fn parse_page_item(expr: &Expr) -> Result<PageRange, Failure> {
         if elements.len() != 2 {
             return Err(call::error("Span in Pages must have two endpoints"));
         }
-        let lo_expr = Expr::from_raw(elements[0].clone());
-        let hi_expr = Expr::from_raw(elements[1].clone());
-        let lo = positive_page(&lo_expr, "Pages span start")?;
-        let hi = if hi_expr.is_symbol(&Symbol::ALL) {
+        let lo = positive_page(&elements[0], "Pages span start")?;
+        let hi = if elements[1].is_symbol(&Symbol::ALL) {
             None
         } else {
-            Some(positive_page(&hi_expr, "Pages span end")?)
+            Some(positive_page(&elements[1], "Pages span end")?)
         };
         return Ok(Some(lo)..=hi);
     }
@@ -250,7 +247,7 @@ fn parse_pages(expr: &Expr) -> Result<Option<PageRanges>, Failure> {
     }
     if let Some(items) = expr.as_list() {
         let mut ranges = Vec::with_capacity(items.len());
-        for item in &items {
+        for item in items {
             ranges.push(parse_page_item(item)?);
         }
         return Ok(Some(PageRanges::new(ranges)));
@@ -349,7 +346,7 @@ fn parse_features(expr: &Expr, format: OutputFormat) -> Result<Features, Failure
     let list = expr
         .as_list()
         .ok_or_else(|| call::error("Features must be a List of feature strings"))?;
-    for item in &list {
+    for item in list {
         let name = call::string(item)?;
         let feature = match name.to_ascii_lowercase().as_str() {
             "html" => Feature::Html,
@@ -396,19 +393,21 @@ impl Endpoint for Compile {
     const NAME: &'static str = "compile";
     type Input = CompileArgs;
 
-    fn parse(entries: Vec<Entry>) -> Result<Self::Input, Failure> {
-        for entry in &entries {
+    fn parse(entries: &[Entry<'_>]) -> Result<Self::Input, Failure> {
+        for entry in entries {
             let name = call::key(call::pair(entry)?.0)?;
             if !COMPILE_FIELDS.contains(&name) {
                 return Err(call::error(format!("unknown compile key: {name}")));
             }
         }
 
-        let source = call::string(call::required(&entries, "Source")?)?;
-        let inputs = call::required(&entries, "Inputs")?
-            .as_association()
-            .ok_or_else(|| call::error("Inputs must be an Association"))?;
-        let base = PathBuf::from(call::string(call::required(&entries, "BasePath")?)?);
+        let source = call::string(call::required(entries, "Source")?)?;
+        let inputs_expr = call::required(entries, "Inputs")?;
+        if inputs_expr.as_association().is_none() {
+            return Err(call::error("Inputs must be an Association"));
+        }
+        let inputs = inputs_expr.clone();
+        let base = PathBuf::from(call::string(call::required(entries, "BasePath")?)?);
         let base_path = if base.is_absolute() {
             base
         } else {
@@ -416,33 +415,33 @@ impl Endpoint for Compile {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(base)
         };
-        let allow_downloads = call::boolean(call::required(&entries, "AllowDownloads")?)?;
+        let allow_downloads = call::boolean(call::required(entries, "AllowDownloads")?)?;
 
-        let format = match call::field(&entries, "Format")? {
+        let format = match call::field(entries, "Format")? {
             Some(expr) => call::named(expr, OutputFormat::parse, "output format")?,
             None => OutputFormat::Pdf,
         };
-        let pages = match call::field(&entries, "Pages")? {
+        let pages = match call::field(entries, "Pages")? {
             Some(expr) => parse_pages(expr)?,
             None => None,
         };
-        let pdf_standards = match call::field(&entries, "PDFStandard")? {
+        let pdf_standards = match call::field(entries, "PDFStandard")? {
             Some(expr) => parse_pdf_standards(expr)?,
             None => PdfStandards::default(),
         };
-        let pdf_tagged = match call::field(&entries, "PDFTags")? {
+        let pdf_tagged = match call::field(entries, "PDFTags")? {
             Some(expr) => call::boolean(expr)?,
             None => true,
         };
-        let (world_date, pdf_timestamp) = match call::field(&entries, "CreationTimestamp")? {
+        let (world_date, pdf_timestamp) = match call::field(entries, "CreationTimestamp")? {
             Some(expr) => parse_timestamp(expr)?,
             None => (WorldDate::System, None),
         };
-        let features = match call::field(&entries, "Features")? {
+        let features = match call::field(entries, "Features")? {
             Some(expr) => parse_features(expr, format)?,
             None => parse_features(&Expr::list(Vec::<Expr>::new()), format)?,
         };
-        let evaluate = match call::field(&entries, "Evaluate")? {
+        let evaluate = match call::field(entries, "Evaluate")? {
             Some(expr) => parse_evaluate(expr)?,
             None => None,
         };
@@ -467,7 +466,9 @@ impl Endpoint for Compile {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let mut inputs = Dict::new();
         let mut input_warnings = Vec::new();
-        read_inputs(&input.inputs, &mut inputs, &mut input_warnings);
+        if let Some(input_entries) = input.inputs.as_association() {
+            read_inputs(&input_entries, &mut inputs, &mut input_warnings);
+        }
         diagnostics.extend(input_warnings.into_iter().map(diagnostics::warning));
 
         world::set_call_downloads(input.allow_downloads);
@@ -501,10 +502,7 @@ impl Endpoint for Compile {
                                 };
                                 match pdf(&document, &opts) {
                                     Ok(bytes) => {
-                                        let pdf_expr = Expr::from_raw(RawExpr::new(
-                                            ExprKind::ByteArray(bytes),
-                                        ));
-                                        outcome_entries.push(rule!("PDF" -> pdf_expr));
+                                        outcome_entries.push(rule!("PDF" -> Expr::bytes(bytes)));
                                         outcome_entries.push(rule!("Pages" -> total_pages));
                                         Ok(())
                                     }
@@ -679,7 +677,7 @@ fn eval_one(
     match res {
         Ok(value) => {
             let mut conv_warnings = Vec::new();
-            let expr = from_typst_value(&value, &mut conv_warnings);
+            let expr = from_typst(&value, &mut conv_warnings);
             diagnostics.extend(conv_warnings.into_iter().map(diagnostics::warning));
             Ok(expr)
         }
@@ -771,9 +769,8 @@ fn evaluate_spec(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::entries;
 
-    fn base_args(extra: impl IntoIterator<Item = Rule>) -> Vec<Entry> {
+    fn base_args(extra: impl IntoIterator<Item = Rule>) -> Expr {
         let mut rules = vec![
             Rule::new("Source", "= Hello"),
             Rule::new("Inputs", Expr::association(Vec::<Rule>::new())),
@@ -781,12 +778,12 @@ mod tests {
             Rule::new("AllowDownloads", false),
         ];
         rules.extend(extra);
-        entries(rules)
+        Expr::association(rules)
     }
 
     #[test]
     fn parses_general_compile_options() {
-        let parsed = Compile::parse(base_args([
+        let expr = base_args([
             Rule::new("Format", "SVG"),
             Rule::new("Pages", "1,3-5"),
             Rule::new("PDFStandard", Expr::list(["a-2b", "ua-1"])),
@@ -794,8 +791,8 @@ mod tests {
             Rule::new("CreationTimestamp", 1_795_003_200_i64),
             Rule::new("Features", Expr::list(["a11y-extras"])),
             Rule::new("Evaluate", Expr::list(["1 + 2", "x"])),
-        ]))
-        .expect("valid compile args");
+        ]);
+        let parsed = Compile::parse(&expr.as_association().unwrap()).expect("valid compile args");
 
         assert_eq!(parsed.format, OutputFormat::Svg);
         assert!(!parsed.pdf_tagged);
@@ -813,18 +810,20 @@ mod tests {
 
     #[test]
     fn incompatible_pdf_standards_fail_cleanly() {
-        let err = Compile::parse(base_args([Rule::new(
+        let expr = base_args([Rule::new(
             "PDFStandard",
             Expr::list(["1.4", "2.0"]),
-        )]))
-        .err()
-        .expect("conflicting standards");
+        )]);
+        let err = Compile::parse(&expr.as_association().unwrap())
+            .err()
+            .expect("conflicting standards");
         assert_eq!(err.tag, "Call");
     }
 
     #[test]
     fn html_format_enables_html_feature_automatically() {
-        let parsed = Compile::parse(base_args([Rule::new("Format", "HTML")])).unwrap();
+        let expr = base_args([Rule::new("Format", "HTML")]);
+        let parsed = Compile::parse(&expr.as_association().unwrap()).unwrap();
         assert_eq!(parsed.format, OutputFormat::Html);
         assert!(parsed.features.is_enabled(Feature::Html));
     }

@@ -23,7 +23,7 @@ const FIELDS: &[&str] = &[
 ];
 
 /// Read a patch from association entries.
-pub fn parse(entries: &[Entry]) -> Result<Patch, Failure> {
+pub fn parse(entries: &[Entry<'_>]) -> Result<Patch, Failure> {
     let mut patch = Patch::default();
     for entry in entries {
         let (key, value) = call::pair(entry)?;
@@ -133,8 +133,8 @@ impl Endpoint for Settings {
     const HOST_FONTS: bool = false;
     type Input = ();
 
-    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
-        call::ensure_empty(&args, Self::NAME)
+    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
+        call::ensure_empty(args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
@@ -148,8 +148,8 @@ impl Endpoint for SetSettings {
     const NAME: &'static str = "setSettings";
     type Input = Patch;
 
-    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
-        parse(&args)
+    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
+        parse(args)
     }
 
     fn invoke(patch: Self::Input) -> Answer {
@@ -173,8 +173,8 @@ impl Endpoint for ResetSettings {
     const NAME: &'static str = "resetSettings";
     type Input = ();
 
-    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
-        call::ensure_empty(&args, Self::NAME)
+    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
+        call::ensure_empty(args, Self::NAME)
     }
 
     fn invoke((): ()) -> Answer {
@@ -198,16 +198,19 @@ fn applied_outcome(applied: world::Applied) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::entries;
+    use crate::call::with_entries;
     use matheme_wl::Rule;
 
     #[test]
     fn booleans_and_paths_are_read() {
-        let patch = parse(&entries([
-            Rule::new("SystemFonts", false),
-            Rule::new("PackagePath", "D:/typst/data"),
-            Rule::new("Proxy", "http://127.0.0.1:2191"),
-        ]))
+        let patch = with_entries(
+            [
+                Rule::new("SystemFonts", false),
+                Rule::new("PackagePath", "D:/typst/data"),
+                Rule::new("Proxy", "http://127.0.0.1:2191"),
+            ],
+            parse,
+        )
         .expect("valid settings patch");
         assert_eq!(patch.system_fonts, Update::Set(false));
         assert_eq!(
@@ -219,10 +222,13 @@ mod tests {
 
     #[test]
     fn null_resets_fields() {
-        let patch = parse(&entries([
-            Rule::new("Proxy", Expr::null()),
-            Rule::new("FontPaths", Expr::null()),
-        ]))
+        let patch = with_entries(
+            [
+                Rule::new("Proxy", Expr::null()),
+                Rule::new("FontPaths", Expr::null()),
+            ],
+            parse,
+        )
         .expect("valid null reset");
         assert!(matches!(patch.proxy, Update::Reset));
         assert!(matches!(patch.font_paths, Update::Reset));
@@ -236,15 +242,14 @@ mod tests {
 
     #[test]
     fn unknown_keys_return_a_failure() {
-        let err = parse(&entries([Rule::new("Mystery", 1_i64)])).expect_err("unknown key");
+        let err = with_entries([Rule::new("Mystery", 1_i64)], parse).expect_err("unknown key");
         assert_eq!(err.tag, "Call");
         assert!(err.message.contains("unknown settings key"), "{}", err.message);
     }
 
     #[test]
     fn wrong_types_return_a_failure() {
-        let err =
-            parse(&entries([Rule::new("SystemFonts", "yes")])).expect_err("wrong type");
+        let err = with_entries([Rule::new("SystemFonts", "yes")], parse).expect_err("wrong type");
         assert_eq!(err.tag, "Call");
         assert!(
             err.message.contains("expected True or False"),

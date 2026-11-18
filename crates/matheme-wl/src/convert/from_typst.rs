@@ -1,16 +1,17 @@
-//! Conversion of Typst evaluation [`Value`]s into Wolfram Language [`Expr`]s.
+//! Conversion of Typst evaluation [`Value`]s into Wolfram [`Expr`]s.
 //!
-//! Typst has rich domain primitives (lengths, angles, ratios, colors,
-//! datetimes, durations, content elements, modules) that map naturally onto
-//! native Wolfram expressions (`Quantity`, `RGBColor`, `DateObject`,
-//! `TimeObject`, `Association`, `ByteArray`). Values with no direct WL analog
-//! (functions, styles, gradients, opaque dynamics) are rendered as structured
-//! descriptive associations rather than failing the evaluation.
+//! Native WL primitives (`Null`, `Automatic`, `Bool`, `Integer`, `Real`,
+//! `String`, `ByteArray`, `List`, `Association`, `Quantity`, `RGBColor`,
+//! `DateObject`, `TimeObject`) are mapped directly. Typst-specific structured
+//! values (`Type`, `Label`, `Symbol`, `Version`, `Decimal`, `Fraction`,
+//! `Relative`, `Content`, `Module`, `Func`) preserve their internal structure as
+//! `"Type"`-tagged associations instead of flattening to plain strings.
 
-use typst::foundations::{Content, Datetime, Dict, Module, Repr, Value};
+use typst::foundations::{
+    Content, Datetime, Dict, Label, Module, Repr, Symbol as TypstSymbol, Type, Value, Version,
+};
 use typst::layout::{Angle, Length, Ratio, Rel};
 use typst::visualize::Color;
-use wolfram_library_link::expr::{Expr as RawExpr, ExprKind};
 
 use crate::assoc;
 use crate::entry::Rule;
@@ -19,9 +20,9 @@ use crate::symbol::Symbol;
 
 const MAX_DEPTH: usize = 64;
 
-/// Convert a Typst [`Value`] into an idiomatic Wolfram Language [`Expr`],
-/// recording non-fatal notes for lossy or opaque conversions.
-pub fn from_typst_value(value: &Value, warnings: &mut Vec<String>) -> Expr {
+/// Convert a Typst [`Value`] into a structured Wolfram [`Expr`], recording
+/// non-fatal notes for truncated or opaque values.
+pub fn from_typst(value: &Value, warnings: &mut Vec<String>) -> Expr {
     Converter::new(warnings).value(value, 0)
 }
 
@@ -41,24 +42,29 @@ impl<'a> Converter<'a> {
     fn value(&mut self, value: &Value, depth: usize) -> Expr {
         if depth >= MAX_DEPTH {
             self.warn("maximum Typst value nesting depth reached; truncated");
-            return Expr::string(value.repr().as_str());
+            return assoc! {
+                "Type" -> value.ty().short_name(),
+                "Repr" -> value.repr().as_str(),
+            };
         }
 
         match value {
             Value::None => Expr::null(),
-            Value::Auto => Expr::symbol(Symbol::AUTOMATIC),
+            Value::Auto => Expr::symbol(&Symbol::AUTOMATIC),
             Value::Bool(b) => Expr::boolean(*b),
             Value::Int(i) => Expr::from(*i),
             Value::Float(f) => float_expr(*f),
             Value::Decimal(d) => {
                 let text = d.to_string();
-                match text.parse::<f64>() {
-                    Ok(f) if f.is_finite() => Expr::from(f),
-                    _ => Expr::string(text),
+                let approx = text.parse::<f64>().ok().filter(|v| v.is_finite());
+                assoc! {
+                    "Type" -> "Decimal",
+                    "String" -> text,
+                    "Value" -> approx,
                 }
             }
             Value::Str(s) => Expr::string(s.as_str()),
-            Value::Bytes(bytes) => Expr::from_raw(RawExpr::new(ExprKind::ByteArray(bytes.to_vec()))),
+            Value::Bytes(bytes) => Expr::bytes(bytes.as_slice()),
             Value::Length(len) => length_expr(*len),
             Value::Angle(angle) => angle_expr(*angle),
             Value::Ratio(ratio) => ratio_expr(*ratio),
@@ -67,21 +73,11 @@ impl<'a> Converter<'a> {
             Value::Color(color) => color_expr(color),
             Value::Datetime(dt) => datetime_expr(*dt),
             Value::Duration(dur) => quantity(dur.seconds(), "Seconds"),
-            Value::Version(ver) => {
-                let text = ver
-                    .values()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(".");
-                Expr::string(text)
-            }
-            Value::Symbol(sym) => Expr::string(sym.get()),
-            Value::Label(label) => Expr::string(label.resolve().as_str()),
-            Value::Type(ty) => Expr::string(ty.short_name()),
-            Value::Array(arr) => {
-                Expr::list(arr.iter().map(|item| self.value(item, depth + 1)))
-            }
+            Value::Version(ver) => version_expr(ver),
+            Value::Symbol(sym) => symbol_expr(sym),
+            Value::Label(label) => label_expr(*label),
+            Value::Type(ty) => type_expr(*ty),
+            Value::Array(arr) => Expr::list(arr.iter().map(|item| self.value(item, depth + 1))),
             Value::Dict(dict) => self.dict(dict, depth + 1),
             Value::Content(content) => self.content(content, depth + 1),
             Value::Module(module) => self.module(module, depth + 1),
@@ -116,14 +112,14 @@ impl<'a> Converter<'a> {
 
     fn content(&mut self, content: &Content, depth: usize) -> Expr {
         let fields = content.fields();
-        let label = content.label().map(|l| l.resolve().as_str().to_owned());
         let mut rules = vec![
+            Rule::new("Type", "Content"),
             Rule::new("Element", content.func().name()),
             Rule::new("Text", content.plain_text().as_str()),
             Rule::new("Fields", self.dict(&fields, depth)),
         ];
-        if let Some(label) = label {
-            rules.push(Rule::new("Label", label));
+        if let Some(label) = content.label() {
+            rules.push(Rule::new("Label", label_expr(label)));
         }
         Expr::association(rules)
     }
@@ -143,20 +139,68 @@ impl<'a> Converter<'a> {
     }
 }
 
+fn type_expr(ty: Type) -> Expr {
+    assoc! {
+        "Type" -> "Type",
+        "Name" -> ty.short_name(),
+        "LongName" -> ty.long_name(),
+        "Title" -> ty.title(),
+    }
+}
+
+fn label_expr(label: Label) -> Expr {
+    assoc! {
+        "Type" -> "Label",
+        "Name" -> label.resolve().as_str(),
+    }
+}
+
+fn symbol_expr(sym: &TypstSymbol) -> Expr {
+    let modifiers = Expr::list(sym.modifiers());
+    let variants = Expr::list(sym.variants().map(|(mods, value, _)| {
+        let mod_list = Expr::list(mods.into_iter().filter(|m| !m.is_empty()));
+        assoc! {
+            "Modifiers" -> mod_list,
+            "Value" -> value,
+        }
+    }));
+    assoc! {
+        "Type" -> "Symbol",
+        "Value" -> sym.get(),
+        "Modifiers" -> modifiers,
+        "Variants" -> variants,
+    }
+}
+
+fn version_expr(ver: &Version) -> Expr {
+    let components = Expr::list(ver.values().iter().copied());
+    let formatted = ver
+        .values()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(".");
+    assoc! {
+        "Type" -> "Version",
+        "Components" -> components,
+        "String" -> formatted,
+    }
+}
+
 fn float_expr(value: f64) -> Expr {
     if value.is_finite() {
         Expr::from(value)
     } else if value.is_nan() {
-        Expr::symbol(Symbol::INDETERMINATE)
+        Expr::symbol(&Symbol::INDETERMINATE)
     } else if value.is_sign_positive() {
-        Expr::normal(Symbol::DIRECTED_INFINITY, [1_i64])
+        Expr::normal(&Symbol::DIRECTED_INFINITY, [1_i64])
     } else {
-        Expr::normal(Symbol::DIRECTED_INFINITY, [-1_i64])
+        Expr::normal(&Symbol::DIRECTED_INFINITY, [-1_i64])
     }
 }
 
 fn quantity(magnitude: f64, unit: &str) -> Expr {
-    Expr::normal(Symbol::QUANTITY, [Expr::from(magnitude), Expr::string(unit)])
+    Expr::normal(&Symbol::QUANTITY, [Expr::from(magnitude), Expr::string(unit)])
 }
 
 fn length_expr(len: Length) -> Expr {
@@ -204,16 +248,16 @@ fn color_expr(color: &Color) -> Expr {
     let b = f64::from(rgb.blue);
     let a = f64::from(rgb.alpha);
     if (a - 1.0).abs() <= 1e-6 {
-        Expr::normal(Symbol::RGB_COLOR, [r, g, b])
+        Expr::normal(&Symbol::RGB_COLOR, [r, g, b])
     } else {
-        Expr::normal(Symbol::RGB_COLOR, [r, g, b, a])
+        Expr::normal(&Symbol::RGB_COLOR, [r, g, b, a])
     }
 }
 
 fn datetime_expr(dt: Datetime) -> Expr {
     match (dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second()) {
         (Some(y), Some(m), Some(d), Some(h), Some(min), Some(s)) => Expr::normal(
-            Symbol::DATE_OBJECT,
+            &Symbol::DATE_OBJECT,
             [Expr::list([
                 i64::from(y),
                 i64::from(m),
@@ -224,11 +268,11 @@ fn datetime_expr(dt: Datetime) -> Expr {
             ])],
         ),
         (Some(y), Some(m), Some(d), _, _, _) => Expr::normal(
-            Symbol::DATE_OBJECT,
+            &Symbol::DATE_OBJECT,
             [Expr::list([i64::from(y), i64::from(m), i64::from(d)])],
         ),
         (_, _, _, Some(h), Some(min), Some(s)) => Expr::normal(
-            Symbol::TIME_OBJECT,
+            &Symbol::TIME_OBJECT,
             [Expr::list([i64::from(h), i64::from(min), i64::from(s)])],
         ),
         _ => assoc! {
@@ -246,13 +290,23 @@ fn datetime_expr(dt: Datetime) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use typst::foundations::{Array, Bytes, Duration, Str, Version};
+    use typst::foundations::{Array, Bytes, Decimal, Duration, Str};
     use typst::layout::{Abs, Em, Fr};
 
     fn convert(value: &Value) -> (Expr, Vec<String>) {
         let mut warnings = Vec::new();
-        let expr = from_typst_value(value, &mut warnings);
+        let expr = from_typst(value, &mut warnings);
         (expr, warnings)
+    }
+
+    fn field<'a>(entries: &'a [crate::Entry<'a>], name: &str) -> &'a Expr {
+        entries
+            .iter()
+            .find(|e| e.key_name() == Some(name))
+            .expect("missing key")
+            .pair()
+            .unwrap()
+            .1
     }
 
     #[test]
@@ -270,26 +324,57 @@ mod tests {
     }
 
     #[test]
-    fn bytes_and_version_round_trip() {
+    fn type_label_symbol_version_and_decimal_preserve_structure() {
+        let (ty_expr, w) = convert(&Value::Type(Type::of::<i64>()));
+        assert!(w.is_empty());
+        let ty = ty_expr.as_association().expect("Type assoc");
+        assert_eq!(field(&ty, "Type").as_str(), Some("Type"));
+        assert_eq!(field(&ty, "Name").as_str(), Some("int"));
+        assert_eq!(field(&ty, "LongName").as_str(), Some("integer"));
+        assert_eq!(field(&ty, "Title").as_str(), Some("Integer"));
+
+        let (lbl_expr, _) = convert(&Value::Label(
+            Label::new(typst::utils::PicoStr::constant("sec-1")).unwrap(),
+        ));
+        let lbl = lbl_expr.as_association().expect("Label assoc");
+        assert_eq!(field(&lbl, "Type").as_str(), Some("Label"));
+        assert_eq!(field(&lbl, "Name").as_str(), Some("sec-1"));
+
+        let sym = TypstSymbol::single("→");
+        let (sym_expr, _) = convert(&Value::Symbol(sym));
+        let sym_assoc = sym_expr.as_association().expect("Symbol assoc");
+        assert_eq!(field(&sym_assoc, "Type").as_str(), Some("Symbol"));
+        assert_eq!(field(&sym_assoc, "Value").as_str(), Some("→"));
+        assert_eq!(field(&sym_assoc, "Variants").as_list().unwrap().len(), 1);
+
+        let (ver_expr, _) = convert(&Value::Version(Version::from_iter([0, 15, 1])));
+        let ver = ver_expr.as_association().expect("Version assoc");
+        assert_eq!(field(&ver, "Type").as_str(), Some("Version"));
+        assert_eq!(field(&ver, "String").as_str(), Some("0.15.1"));
+        assert_eq!(field(&ver, "Components").as_list().unwrap().len(), 3);
+
+        let dec: Decimal = "12.3400".parse().unwrap();
+        let (dec_expr, _) = convert(&Value::Decimal(dec));
+        let dec_assoc = dec_expr.as_association().expect("Decimal assoc");
+        assert_eq!(field(&dec_assoc, "Type").as_str(), Some("Decimal"));
+        assert_eq!(field(&dec_assoc, "String").as_str(), Some("12.3400"));
+        assert_eq!(field(&dec_assoc, "Value").as_f64(), Some(12.34));
+    }
+
+    #[test]
+    fn bytes_quantities_colors_and_dates_map_natively() {
         let (bytes_expr, w1) = convert(&Value::Bytes(Bytes::new(vec![1, 2, 3])));
         assert_eq!(bytes_expr.as_byte_array(), Some(&[1, 2, 3][..]));
         assert!(w1.is_empty());
 
-        let (ver_expr, w2) = convert(&Value::Version(Version::from_iter([0, 15, 1])));
-        assert_eq!(ver_expr.as_str(), Some("0.15.1"));
-        assert!(w2.is_empty());
-    }
-
-    #[test]
-    fn quantities_colors_and_dates_map_natively() {
         let (len, _) = convert(&Value::Length(Abs::pt(12.0).into()));
         let normal = len.as_normal().expect("Quantity");
         assert!(normal.has_head(&Symbol::QUANTITY));
-        assert_eq!(Expr::from_raw(normal.elements()[1].clone()).as_str(), Some("DesktopPublishingPoints"));
+        assert_eq!(normal.get(1).and_then(Expr::as_str), Some("DesktopPublishingPoints"));
 
         let (em_len, _) = convert(&Value::Length(Em::new(1.5).into()));
         let em_entries = em_len.as_association().expect("assoc");
-        assert_eq!(em_entries[1].pair().unwrap().1.as_f64(), Some(1.5));
+        assert_eq!(field(&em_entries, "Em").as_f64(), Some(1.5));
 
         let (ang, _) = convert(&Value::Angle(Angle::deg(90.0)));
         assert!(ang.as_normal().unwrap().has_head(&Symbol::QUANTITY));

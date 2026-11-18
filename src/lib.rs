@@ -30,7 +30,7 @@ fn matheme_call(link: &mut Link) {
 
 /// The single source of truth for action names. Every entry must have a
 /// matching `$displayNames` key in `Kernel/Matheme.wl`.
-fn dispatch(link: &mut Link, action: &str, args: Vec<Entry>) -> Answer {
+fn dispatch(link: &mut Link, action: &str, args: &[Entry<'_>]) -> Answer {
     macro_rules! endpoint {
         ($endpoint:ty) => {{
             debug_assert_eq!(<$endpoint as Endpoint>::NAME, action);

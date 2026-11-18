@@ -1,24 +1,43 @@
 //! Ergonomic wrapper around Wolfram Language expressions.
 //!
-//! [`Expr`] owns a raw expression but exposes construction through `From` and
-//! inspection through typed accessors, so bridge code never matches on
-//! `ExprKind` for everyday values. Composite shapes have their own wrappers:
-//! [`Normal`] for `head[args…]` and [`Entry`] for association elements.
+//! [`Expr`] is a `#[repr(transparent)]` wrapper around `wolfram_library_link`'s
+//! raw expression, exposing zero-cost borrowed accessors (`as_*`), `From` /
+//! `TryFrom` conversions, and bidirectional Typst conversion via
+//! [`Expr::to_typst`] and [`Expr::from_typst`].
 
+use std::borrow::Borrow;
+use std::fmt;
+
+use typst::foundations::Value;
 use wolfram_library_link::expr::{Expr as RawExpr, ExprKind, RuleEntry, Symbol as RawSymbol};
 
+use crate::convert;
 use crate::entry::{Entry, Rule};
 use crate::normal::Normal;
 use crate::symbol::Symbol;
 
 /// An owned Wolfram Language expression.
+#[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expr(RawExpr);
 
 impl Expr {
-    /// Wrap an expression produced by the Wolfram expression library.
+    /// Wrap an owned expression produced by the Wolfram expression library.
     pub fn from_raw(raw: RawExpr) -> Self {
         Self(raw)
+    }
+
+    /// Borrow a raw expression as an [`Expr`] without cloning.
+    pub fn from_raw_ref(raw: &RawExpr) -> &Self {
+        // SAFETY: `Expr` is `#[repr(transparent)]` over `RawExpr`.
+        unsafe { &*(raw as *const RawExpr as *const Self) }
+    }
+
+    /// Borrow a slice of raw expressions as `&[Expr]` without cloning.
+    pub fn from_raw_slice(raw: &[RawExpr]) -> &[Self] {
+        // SAFETY: `Expr` is `#[repr(transparent)]` over `RawExpr`, so `[Expr]`
+        // and `[RawExpr]` have identical element layout and alignment.
+        unsafe { &*(raw as *const [RawExpr] as *const [Self]) }
     }
 
     /// Borrow the underlying expression (e.g. to put it on a WSTP link).
@@ -35,8 +54,8 @@ impl Expr {
         RawExpr::new(ExprKind::String(value.into())).into()
     }
 
-    pub fn symbol(symbol: impl Into<Symbol>) -> Self {
-        RawExpr::new(ExprKind::Symbol(RawSymbol::new(symbol.into().as_str()))).into()
+    pub fn symbol(symbol: impl Borrow<Symbol>) -> Self {
+        RawExpr::new(ExprKind::Symbol(RawSymbol::new(symbol.borrow().as_str()))).into()
     }
 
     pub fn boolean(value: bool) -> Self {
@@ -47,12 +66,16 @@ impl Expr {
         Self::symbol(Symbol::NULL)
     }
 
+    pub fn bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        RawExpr::new(ExprKind::ByteArray(bytes.into())).into()
+    }
+
     /// A normal expression `head[elements…]`.
     pub fn normal(
-        head: impl Into<Symbol>,
+        head: impl Borrow<Symbol>,
         elements: impl IntoIterator<Item = impl Into<Expr>>,
     ) -> Self {
-        let head = RawExpr::new(ExprKind::Symbol(RawSymbol::new(head.into().as_str())));
+        let head = RawExpr::new(ExprKind::Symbol(RawSymbol::new(head.borrow().as_str())));
         RawExpr::normal(
             head,
             elements.into_iter().map(|e| e.into().into_raw()).collect(),
@@ -75,6 +98,18 @@ impl Expr {
             entries.into_iter().map(Rule::into_raw).collect(),
         ))
         .into()
+    }
+
+    /// Convert this expression into a Typst [`Value`], collecting warnings for
+    /// unsupported nested values.
+    pub fn to_typst(&self, warnings: &mut Vec<String>) -> Value {
+        convert::to_typst(self, warnings)
+    }
+
+    /// Construct a Wolfram expression from a Typst [`Value`], collecting
+    /// warnings for opaque or lossy conversions.
+    pub fn from_typst(value: &Value, warnings: &mut Vec<String>) -> Self {
+        convert::from_typst(value, warnings)
     }
 
     pub fn as_str(&self) -> Option<&str> {
@@ -132,27 +167,22 @@ impl Expr {
         Normal::from_expr(&self.0)
     }
 
-    pub fn as_list(&self) -> Option<Vec<Expr>> {
+    /// Zero-copy slice of elements if this expression is a `System`List`.
+    pub fn as_list(&self) -> Option<&[Expr]> {
         let normal = self.as_normal()?;
-        normal.has_head(&Symbol::LIST).then(|| {
-            normal
-                .elements()
-                .iter()
-                .cloned()
-                .map(Expr::from_raw)
-                .collect()
-        })
+        normal.has_head(&Symbol::LIST).then(|| normal.elements())
     }
 
-    /// Association entries from both the WXF `ExprKind::Association` form and
-    /// the `System`Association[System`Rule[…], …]` form sent over WSTP.
-    pub fn as_association(&self) -> Option<Vec<Entry>> {
+    /// Borrowed association entries from both the WXF `ExprKind::Association`
+    /// form and the `System`Association[System`Rule[…], …]` form sent over WSTP.
+    pub fn as_association(&self) -> Option<Vec<Entry<'_>>> {
         match self.0.kind() {
             ExprKind::Association(entries) => Some(
                 entries
                     .iter()
-                    .map(|entry: &RuleEntry| {
-                        Entry::Rule(Rule::new(entry.key.clone(), entry.value.clone()))
+                    .map(|entry: &RuleEntry| Entry::Rule {
+                        key: Self::from_raw_ref(&entry.key),
+                        value: Self::from_raw_ref(&entry.value),
                     })
                     .collect(),
             ),
@@ -160,10 +190,16 @@ impl Expr {
                 let normal = Normal::new(normal);
                 normal
                     .has_head(&Symbol::ASSOCIATION)
-                    .then(|| crate::entry::parse(normal.elements()))
+                    .then(|| crate::entry::parse_slice(normal.elements()))
             }
             _ => None,
         }
+    }
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -203,6 +239,12 @@ impl From<Symbol> for Expr {
     }
 }
 
+impl From<&Symbol> for Expr {
+    fn from(value: &Symbol) -> Self {
+        Self::symbol(value)
+    }
+}
+
 impl From<i64> for Expr {
     fn from(value: i64) -> Self {
         RawExpr::from(value).into()
@@ -211,6 +253,12 @@ impl From<i64> for Expr {
 
 impl From<i32> for Expr {
     fn from(value: i32) -> Self {
+        RawExpr::from(i64::from(value)).into()
+    }
+}
+
+impl From<u32> for Expr {
+    fn from(value: u32) -> Self {
         RawExpr::from(i64::from(value)).into()
     }
 }
@@ -242,6 +290,14 @@ impl PartialEq<Symbol> for Expr {
     }
 }
 
+impl<'a> TryFrom<&'a Expr> for &'a str {
+    type Error = &'static str;
+
+    fn try_from(expr: &'a Expr) -> Result<Self, Self::Error> {
+        expr.as_str().ok_or("not a WL String")
+    }
+}
+
 impl TryFrom<&Expr> for String {
     type Error = &'static str;
 
@@ -266,6 +322,14 @@ impl TryFrom<&Expr> for i64 {
     }
 }
 
+impl TryFrom<&Expr> for f64 {
+    type Error = &'static str;
+
+    fn try_from(expr: &Expr) -> Result<Self, Self::Error> {
+        expr.as_f64().ok_or("not a WL Real")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,9 +339,10 @@ mod tests {
         assert_eq!(Expr::from("text").as_str(), Some("text"));
         assert_eq!(Expr::from(42_i64).as_i64(), Some(42));
         assert_eq!(Expr::from(7_i32).as_i64(), Some(7));
+        assert_eq!(Expr::from(9_u32).as_i64(), Some(9));
         assert_eq!(Expr::from(2.5_f64).as_f64(), Some(2.5));
         assert_eq!(Expr::from(true).as_bool(), Some(true));
-        assert_eq!(Expr::from(false).raw().to_string(), "System`False");
+        assert_eq!(Expr::from(false).to_string(), "System`False");
         assert_eq!(Expr::from(Some("ok")).as_str(), Some("ok"));
         assert_eq!(Expr::from(Option::<&str>::None), Symbol::NULL);
         assert_eq!(Expr::from(Some(9_i64)).as_i64(), Some(9));
@@ -286,15 +351,17 @@ mod tests {
     #[test]
     fn symbols_compare_through_the_wrapper() {
         assert!(Expr::from(Symbol::NULL).is_symbol(&Symbol::NULL));
-        assert_eq!(Expr::from(Symbol::TRUE), Symbol::TRUE);
+        assert_eq!(Expr::from(&Symbol::TRUE), Symbol::TRUE);
         assert_ne!(Expr::from(Symbol::FALSE), Symbol::TRUE);
     }
 
     #[test]
     fn try_from_extracts_scalar_expressions() {
+        assert_eq!(<&str>::try_from(&Expr::from("text")).unwrap(), "text");
         assert_eq!(String::try_from(&Expr::from("text")).unwrap(), "text");
         assert!(bool::try_from(&Expr::from("text")).is_err());
         assert_eq!(i64::try_from(&Expr::from(9)).unwrap(), 9);
+        assert_eq!(f64::try_from(&Expr::from(1.25)).unwrap(), 1.25);
     }
 
     #[test]

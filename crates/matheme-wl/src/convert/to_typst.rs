@@ -1,37 +1,35 @@
-//! Conversion of WL values into Typst `sys.inputs` values.
+//! Conversion of Wolfram [`Expr`] values into Typst `sys.inputs` [`Value`]s.
 //!
 //! A [`Converter`] borrows one warning sink for the whole (possibly nested)
-//! input, so callers get all problems in one pass instead of one error. The
-//! container shapes (list, association, byte array) are dispatched through
-//! [`Normal`]; no `ExprKind` matching happens here.
+//! input, so callers get all problems in one pass instead of failing on the
+//! first unsupported element.
 
 use typst::foundations::{Array, Bytes, Dict, Str, Value};
-use wolfram_library_link::expr::Expr as RawExpr;
 
-use crate::entry::{self, Entry};
+use crate::entry::Entry;
 use crate::expr::Expr;
 use crate::normal::Normal;
 use crate::symbol::Symbol;
 
 /// Convert a WL expression into a Typst value, collecting non-fatal problems.
-pub fn to_typst_value(expr: &Expr, warnings: &mut Vec<String>) -> Value {
+pub fn to_typst(expr: &Expr, warnings: &mut Vec<String>) -> Value {
     Converter::new(warnings).value(expr)
 }
 
-pub(crate) struct Converter<'a> {
+struct Converter<'a> {
     warnings: &'a mut Vec<String>,
 }
 
 impl<'a> Converter<'a> {
-    pub(crate) fn new(warnings: &'a mut Vec<String>) -> Self {
+    fn new(warnings: &'a mut Vec<String>) -> Self {
         Self { warnings }
     }
 
-    pub(crate) fn warn(&mut self, message: impl Into<String>) {
+    fn warn(&mut self, message: impl Into<String>) {
         self.warnings.push(message.into());
     }
 
-    pub(crate) fn value(&mut self, expr: &Expr) -> Value {
+    fn value(&mut self, expr: &Expr) -> Value {
         if let Some(text) = expr.as_str() {
             return Value::Str(Str::from(text));
         }
@@ -47,13 +45,13 @@ impl<'a> Converter<'a> {
         if let Some(name) = expr.as_symbol() {
             return self.symbol(name);
         }
-        if let Some(normal) = expr.as_normal() {
-            return self.normal(normal);
-        }
         if let Some(entries) = expr.as_association() {
             return self.association(entries);
         }
-        self.warn(format!("unsupported input expression: {}", expr.raw()));
+        if let Some(normal) = expr.as_normal() {
+            return self.normal(normal);
+        }
+        self.warn(format!("unsupported input expression: {expr}"));
         Value::None
     }
 
@@ -71,12 +69,9 @@ impl<'a> Converter<'a> {
         Value::None
     }
 
-    fn normal(&mut self, normal: Normal) -> Value {
+    fn normal(&mut self, normal: Normal<'_>) -> Value {
         if normal.has_head(&Symbol::LIST) {
             return self.array(normal.elements());
-        }
-        if normal.has_head(&Symbol::ASSOCIATION) {
-            return self.association(entry::parse(normal.elements()));
         }
         if normal.has_head(&Symbol::BYTE_ARRAY) {
             return self.byte_array(normal.elements());
@@ -88,18 +83,13 @@ impl<'a> Converter<'a> {
         Value::None
     }
 
-    /// Typst arrays are built element by element; list elements are cloned into
-    /// owned wrappers, which keeps the converter free of raw expression types.
-    fn array(&mut self, elements: &[RawExpr]) -> Value {
-        let values: Vec<Value> = elements
-            .iter()
-            .map(|element| self.value(&Expr::from_raw(element.clone())))
-            .collect();
+    fn array(&mut self, elements: &[Expr]) -> Value {
+        let values: Vec<Value> = elements.iter().map(|elem| self.value(elem)).collect();
         Value::Array(values.into_iter().collect::<Array>())
     }
 
     /// Association keys must be strings: Typst dictionaries are string-keyed.
-    fn association(&mut self, entries: Vec<Entry>) -> Value {
+    fn association(&mut self, entries: Vec<Entry<'_>>) -> Value {
         let mut dict = Dict::new();
         for entry in entries {
             let (key, value) = match entry.pair() {
@@ -114,10 +104,7 @@ impl<'a> Converter<'a> {
                     let value = self.value(value);
                     dict.insert(Str::from(name), value);
                 }
-                None => self.warn(format!(
-                    "association key {} is not a String; skipped",
-                    key.raw()
-                )),
+                None => self.warn(format!("association key {key} is not a String; skipped")),
             }
         }
         Value::Dict(dict)
@@ -125,20 +112,18 @@ impl<'a> Converter<'a> {
 
     /// `ByteArray[{…}]` is the WSTP wire form; the WXF form is read directly by
     /// [`Converter::value`] before the normal dispatcher is reached.
-    fn byte_array(&mut self, elements: &[RawExpr]) -> Value {
+    fn byte_array(&mut self, elements: &[Expr]) -> Value {
         let [list] = elements else {
             self.warn("ByteArray expects a single List of byte integers");
             return Value::None;
         };
-        let list = Expr::from_raw(list.clone());
-        let Some(elements) = list.as_normal().filter(|n| n.has_head(&Symbol::LIST)) else {
+        let Some(elements) = list.as_list() else {
             self.warn("ByteArray expects a List of byte integers");
             return Value::None;
         };
 
         let mut bytes = Vec::with_capacity(elements.len());
-        for (index, element) in elements.elements().iter().enumerate() {
-            let element = Expr::from_raw(element.clone());
+        for (index, element) in elements.iter().enumerate() {
             let Some(value) = element.as_i64() else {
                 self.warn(format!("ByteArray element {index} is not an Integer"));
                 return Value::None;
@@ -165,15 +150,13 @@ mod tests {
 
     fn convert(expr: &Expr) -> (Value, Vec<String>) {
         let mut warnings = Vec::new();
-        let value = to_typst_value(expr, &mut warnings);
+        let value = to_typst(expr, &mut warnings);
         (value, warnings)
     }
 
     #[test]
     fn wxf_byte_array_maps_to_typst_bytes() {
-        let (value, warnings) = convert(&Expr::from_raw(RawExpr::new(ExprKind::ByteArray(vec![
-            0, 1, 2, 255,
-        ]))));
+        let (value, warnings) = convert(&Expr::bytes(vec![0, 1, 2, 255]));
         match value {
             Value::Bytes(bytes) => assert_eq!(bytes.as_slice(), &[0, 1, 2, 255]),
             other => panic!("expected bytes, got {other:?}"),
@@ -201,7 +184,6 @@ mod tests {
 
     #[test]
     fn wstp_byte_array_expression_maps_to_typst_bytes() {
-        // What actually arrives over a WSTP LinkObject.
         let expr = Expr::normal(Symbol::BYTE_ARRAY, [Expr::list([0_i64, 1, 255])]);
         let (value, warnings) = convert(&expr);
         match value {
@@ -244,13 +226,12 @@ mod tests {
     fn non_string_keys_and_unknown_symbols_warn() {
         let expr = Expr::association([
             Rule::new(1_i64, "value"),
-            Rule::new("flag", Expr::symbol("System`Indeterminate")),
+            Rule::new("flag", Expr::symbol(Symbol::system("Indeterminate"))),
         ]);
         let (value, warnings) = convert(&expr);
         let Value::Dict(dict) = value else {
             panic!("expected dict")
         };
-        // Non-string keys are dropped; unsupported values are kept as `none`.
         assert_eq!(dict.iter().count(), 1);
         assert!(matches!(dict.get("flag"), Ok(Value::None)));
         assert_eq!(warnings.len(), 2);

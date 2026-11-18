@@ -5,8 +5,11 @@
 //! type at every call site, [`Normal`] mirrors what [`crate::Expr`] does for
 //! owned expressions: it hides `ExprKind` behind head/element accessors.
 
+use std::fmt;
+
 use wolfram_library_link::expr::{Expr as RawExpr, ExprKind, Normal as RawNormal};
 
+use crate::expr::Expr;
 use crate::symbol::Symbol;
 
 /// A borrowed normal expression: a head plus its elements.
@@ -46,13 +49,18 @@ impl<'a> Normal<'a> {
         self.head() == Some(head.as_str())
     }
 
-    /// The elements of the expression.
-    pub fn elements(&self) -> &'a [RawExpr] {
-        self.raw.elements()
+    /// The elements of the expression as borrowed [`Expr`] slices.
+    pub fn elements(&self) -> &'a [Expr] {
+        Expr::from_raw_slice(self.raw.elements())
+    }
+
+    /// Borrow a single element by index.
+    pub fn get(&self, index: usize) -> Option<&'a Expr> {
+        self.elements().get(index)
     }
 
     pub fn len(&self) -> usize {
-        self.elements().len()
+        self.raw.elements().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -60,10 +68,15 @@ impl<'a> Normal<'a> {
     }
 }
 
+impl fmt::Display for Normal<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::Expr;
 
     #[test]
     fn head_and_elements_are_exposed() {
@@ -72,6 +85,6 @@ mod tests {
         assert!(normal.has_head(&Symbol::LIST));
         assert_eq!(normal.head(), Some("System`List"));
         assert_eq!(normal.len(), 2);
-        assert_eq!(normal.elements()[0].kind(), &ExprKind::Integer(1));
+        assert_eq!(normal.get(0).and_then(Expr::as_i64), Some(1));
     }
 }
