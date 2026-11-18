@@ -42,8 +42,14 @@ impl Symbol {
     pub const NULL: Self = Self(Cow::Borrowed("System`Null"));
     /// `System`None`, the WL spelling of "no value" used by some APIs.
     pub const NONE: Self = Self(Cow::Borrowed("System`None"));
+    /// `System`Automatic`, the WL spelling of Typst's `auto`.
+    pub const AUTOMATIC: Self = Self(Cow::Borrowed("System`Automatic"));
     /// `System`All`, used for an unbounded query result.
     pub const ALL: Self = Self(Cow::Borrowed("System`All"));
+    /// `System`Indeterminate`, used for non-finite `NaN` floats.
+    pub const INDETERMINATE: Self = Self(Cow::Borrowed("System`Indeterminate"));
+    /// `System`DirectedInfinity`, used for `±inf` floats.
+    pub const DIRECTED_INFINITY: Self = Self(Cow::Borrowed("System`DirectedInfinity"));
     /// `System`List`.
     pub const LIST: Self = Self(Cow::Borrowed("System`List"));
     /// `System`Association`.
@@ -54,6 +60,16 @@ impl Symbol {
     pub const RULE_DELAYED: Self = Self(Cow::Borrowed("System`RuleDelayed"));
     /// `System`ByteArray`.
     pub const BYTE_ARRAY: Self = Self(Cow::Borrowed("System`ByteArray"));
+    /// `System`Quantity`.
+    pub const QUANTITY: Self = Self(Cow::Borrowed("System`Quantity"));
+    /// `System`RGBColor`.
+    pub const RGB_COLOR: Self = Self(Cow::Borrowed("System`RGBColor"));
+    /// `System`DateObject`.
+    pub const DATE_OBJECT: Self = Self(Cow::Borrowed("System`DateObject"));
+    /// `System`TimeObject`.
+    pub const TIME_OBJECT: Self = Self(Cow::Borrowed("System`TimeObject"));
+    /// `System`Span`.
+    pub const SPAN: Self = Self(Cow::Borrowed("System`Span"));
     /// `System`ReturnPacket`, the head wrapping a kernel evaluation result.
     pub const RETURN_PACKET: Self = Self(Cow::Borrowed("System`ReturnPacket"));
     /// `System`$InstallationDirectory`.

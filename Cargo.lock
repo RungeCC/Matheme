@@ -1396,8 +1396,11 @@ dependencies = [
  "matheme-wl",
  "matheme-world",
  "typst",
+ "typst-eval",
+ "typst-html",
  "typst-layout",
  "typst-pdf",
+ "typst-svg",
  "wolfram-library-link",
 ]
 

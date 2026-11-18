@@ -12,25 +12,26 @@ If[MemberQ[$Packages, "Matheme`"],
 
 BeginPackage["Matheme`", {"Wolfram`ErrorTools`"}];
 
-MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to PDF and returns an Association with PDF, Pages, Diagnostics and Formatted (a typst-cli style report). On failure it returns a Failure tagged MathemeCompileError carrying structured diagnostics. Warnings are issued as messages. Options: \"Inputs\" (default <||>), \"BasePath\" (default: current directory), \"AllowDownloads\" (default: False), \"TypstTemplate\" (default: None; a key of $TypstTemplates or a template).";
-MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and imports the PDF pages as vector Graphics. Accepts the same options as MathemeCompile and returns failures unchanged.";
-MathemeVersion::usage = "MathemeVersion[] returns <|\"Matheme\" -> version, \"Typst\" -> version, \"TypstCommit\" -> commit|>. Configuration is reported by MathemeSettings[].";
-MathemeSettings::usage = "MathemeSettings[] returns the effective compiler settings: FontPaths, SystemFonts, EmbeddedFonts, PackagePath, PackageCache, Proxy, Downloads and HostFontPaths. This call is read-only; use MathemeSetSettings or MathemeResetSettings to change state.";
-MathemeSetSettings::usage = "MathemeSetSettings[association] (or rules) applies a settings patch and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>. Omitted keys are left untouched; a key with value Null resets that field.";
-MathemeResetSettings::usage = "MathemeResetSettings[] restores every user-facing setting to its default (host-provided font paths survive) and returns the same shape as MathemeSetSettings.";
-MathemeReloadFonts::usage = "MathemeReloadFonts[] rescans all configured font sources and returns the number of faces found.";
-MathemeReloadPackages::usage = "MathemeReloadPackages[] rebuilds the package loader (dropping the cached Universe index) and returns package information.";
-MathemeWarmup::usage = "MathemeWarmup[] eagerly initializes the font cache, package loader and Universe index. Options: \"Fonts\", \"Packages\", \"PackageIndex\" (all True by default). Returns per-stage timings; PackageIndex needs network access.";
-MathemeQueryFonts::usage = "MathemeQueryFonts[] and MathemeQueryFonts[filters] return the cached font-book metadata (family, variant, flags, source, path, collection index and residency). Filters: Family, Source, Resident, Character; paging: Offset, MaxResults (default 50, All for everything). Queries never load a font file.";
-MathemeQueryPackages::usage = "MathemeQueryPackages[] and MathemeQueryPackages[filters] return the cached package metadata (locally installed packages plus the Universe index once fetched). Filters: Name, Namespace, Origin, Version; paging: Offset, MaxResults; opt-ins: Refresh (rescan local directories), AllowDownloads (fetch the Universe index).";
-MathemeClose::usage = "MathemeClose[] drops every library cache (fonts, packages, memoization), closes the WSTP LinkObject, unloads the library function and releases the DLL image. The library is reloaded automatically on the next call.";
+MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", or \"HTML\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\").";
+MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and imports the pages as vector Graphics.";
+MathemeVersion::usage = "MathemeVersion[] returns version metadata for Matheme, Typst, LibraryLink, and WSTP.";
+MathemeSettings::usage = "MathemeSettings[] returns the active compiler settings.";
+MathemeSetSettings::usage = "MathemeSetSettings[patch] updates settings (Null resets a field) and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
+MathemeResetSettings::usage = "MathemeResetSettings[] restores user settings to defaults and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
+MathemeReloadFonts::usage = "MathemeReloadFonts[] rescans configured font sources and returns face counts.";
+MathemeReloadPackages::usage = "MathemeReloadPackages[] rebuilds the package loader and clears the cached Universe index.";
+MathemeWarmup::usage = "MathemeWarmup[opts] eagerly initializes \"Fonts\", \"Packages\", and \"PackageIndex\" caches.";
+MathemeQueryFonts::usage = "MathemeQueryFonts[filters] queries cached font metadata without loading font files.";
+MathemeQueryPackages::usage = "MathemeQueryPackages[filters] queries cached local and Universe package metadata.";
+ClearMathemeCache::usage = "ClearMathemeCache[targets] drops \"Fonts\", \"Packages\", \"Memoization\", or All caches without unloading the library.";
+MathemeClose::usage = "MathemeClose[] clears all caches, closes the WSTP link, and unloads the DLL.";
 
-MathemeLibraryError::usage = "MathemeLibraryError is the Failure tag used when the WSTP library cannot be loaded or returns an unexpected result.";
-MathemeCallError::usage = "MathemeCallError is the Failure tag used when a library call reports a failure (invalid arguments, bad configuration, network errors).";
-MathemeCompileError::usage = "MathemeCompileError is the Failure tag used when Typst compilation fails. The Failure carries Diagnostics and Formatted.";
-MathemeDiagnostic::usage = "MathemeDiagnostic::warning is the message issued for every non-fatal diagnostic; use Off[MathemeDiagnostic::warning] to silence warnings.";
+MathemeLibraryError::usage = "MathemeLibraryError is the Failure tag for library load or protocol errors.";
+MathemeCallError::usage = "MathemeCallError is the Failure tag for invalid arguments, settings, or network errors.";
+MathemeCompileError::usage = "MathemeCompileError is the Failure tag for Typst compilation and evaluation errors.";
+MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal diagnostics.";
 
-$TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates. Pass one of its keys as \"TypstTemplate\" -> key to MathemeCompile, or supply a Function / StringTemplate / TemplateObject directly. Templates are applied to the source string before compilation; MiTeX templates need an explicit \"AllowDownloads\" -> True until the package is cached.";
+$TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates (pass a key to \"TypstTemplate\").";
 
 $TypstTemplates = <|
   "Equation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$ `` $"],
@@ -39,7 +40,7 @@ $TypstTemplates = <|
   "MiTeXEquation" -> (
     TemplateObject[{
       "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-      "#import \"@preview/mitex:0.2.4\": mitex\n",
+      "#import \"@preview/mitex:0.2.7\": mitex\n",
       "#mitex(\"", TemplateSlot[1], "\")"},
       CombinerFunction -> StringJoin,
       InsertionFunction -> (StringReplace[TextString[#], {"\\" -> "\\\\", "\"" -> "\\\""}] &),
@@ -48,7 +49,7 @@ $TypstTemplates = <|
   "MiTeXInlineEquation" -> (
     TemplateObject[{
       "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-      "#import \"@preview/mitex:0.2.4\": mi\n",
+      "#import \"@preview/mitex:0.2.7\": mi\n",
       "#mi(\"", TemplateSlot[1], "\")"},
       CombinerFunction -> StringJoin,
       InsertionFunction -> (StringReplace[TextString[#], {"\\" -> "\\\\", "\"" -> "\\\""}] &),
@@ -57,7 +58,7 @@ $TypstTemplates = <|
   "MiTeXText" -> (
     TemplateObject[{
       "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-      "#import \"@preview/mitex:0.2.4\": mitext\n",
+      "#import \"@preview/mitex:0.2.7\": mitext\n",
       "#mitext(\"", TemplateSlot[1], "\")"},
       CombinerFunction -> StringJoin,
       InsertionFunction -> (StringReplace[TextString[#], {"\\" -> "\\\\", "\"" -> "\\\""}] &),
@@ -89,6 +90,7 @@ $displayNames = <|
   "reloadPackages" -> "MathemeReloadPackages",
   "queryFonts" -> "MathemeQueryFonts",
   "queryPackages" -> "MathemeQueryPackages",
+  "clearCache" -> "ClearMathemeCache",
   "close" -> "MathemeClose"
 |>;
 
@@ -148,6 +150,43 @@ issueDiagnostics[name_, diagnostics_] := Scan[
   diagnostics
 ];
 
+(* Mathematica's FrontEnd uses narrow math glyphs for Unicode box-drawing
+   characters even in monospace Code cells, misaligning snippet borders and
+   caret markers. Normalize diagnostic borders to ASCII and wrap non-empty
+   reports in a Code-styled Cell so Notebook alignment stays exact. *)
+normalizeDiagnosticBorders[text_String] := Module[{lines},
+  lines = StringSplit[text, "\n", All];
+  lines = Map[
+    Function[line,
+      With[{step = StringReplace[line, {
+        StartOfString ~~ ws : WhitespaceCharacter ... ~~ "\:250c\:2500" :> ws <> "-->",
+        StartOfString ~~ ws : (WhitespaceCharacter ... ~~ (DigitCharacter ... ~~ WhitespaceCharacter ...)) ~~ "\:2502" :> ws <> "|",
+        StartOfString ~~ ws : WhitespaceCharacter ... ~~ "\:00b7" :> ws <> "."
+      }]},
+        If[StringMatchQ[step, WhitespaceCharacter ... ~~ "|" ~~ ("\:256d" | "\:2570" | "\:2500" | "^" | "-" | "'" | WhitespaceCharacter) ...],
+          StringReplace[step, {"\:256d" -> "/", "\:2570" -> "\\", "\:2500" -> "-"}],
+          step
+        ]
+      ]
+    ],
+    lines
+  ];
+  StringTrim[StringRiffle[lines, "\n"]]
+];
+
+formatDiagnosticCell[""] := "";
+formatDiagnosticCell[text_String] := Module[{formatted = normalizeDiagnosticBorders[text]},
+  If[formatted === "",
+    "",
+    DisplayForm[Cell[formatted, "Code",
+      CellFrame -> 0.5,
+      CellFrameColor -> GrayLevel[0.5, 0.25],
+      CellFrameMargins -> {{10, 10}, {8, 8}}
+    ]]
+  ]
+];
+formatDiagnosticCell[other_] := other;
+
 failureDetails[name_, result_] := <|
   "MessageTemplate" -> "Matheme `Operation` failed: `Detail`",
   "MessageParameters" -> <|
@@ -158,10 +197,10 @@ failureDetails[name_, result_] := <|
   "Operation" -> Lookup[$displayNames, name, name],
   "ErrorTag" -> Lookup[result, "ErrorTag", "Call"],
   "Diagnostics" -> Lookup[result, "Diagnostics", {}],
-  "Formatted" -> Lookup[result, "Formatted", ""]
+  "Formatted" -> formatDiagnosticCell[Lookup[result, "Formatted", ""]]
 |>;
 
-callUnchecked[name_String, arguments_Association] := Module[{result, tag},
+callUnchecked[name_String, arguments_Association] := Module[{result, tag, dropped},
   If[!loadFunctions[],
     With[{t = MathemeLibraryError},
       Raise[t, <|
@@ -183,7 +222,11 @@ callUnchecked[name_String, arguments_Association] := Module[{result, tag},
     tag = Lookup[$errorTags, Lookup[result, "ErrorTag", "Call"], MathemeCallError];
     With[{t = tag, details = failureDetails[name, result]}, Raise[t, details]]
   ];
-  KeyDrop[result, "Status"]
+  dropped = KeyDrop[result, "Status"];
+  If[KeyExistsQ[dropped, "Formatted"],
+    MapAt[formatDiagnosticCell, dropped, "Formatted"],
+    dropped
+  ]
 ];
 
 (* Every public call goes through the same pipeline: success returns the
@@ -222,18 +265,45 @@ applyTemplate[other_, _String] := raiseCallError[
 (* Compilation                                                              *)
 (* ------------------------------------------------------------------------ *)
 
-compileWith[source_, inputs_, base_, allowDownloads_] := callUnchecked["compile", <|
-  "Source" -> source,
-  "Inputs" -> inputs,
-  "BasePath" -> base,
-  "AllowDownloads" -> allowDownloads
-|>];
+normalizeTimestamp[Automatic] := Automatic;
+normalizeTimestamp[None | Null] := None;
+normalizeTimestamp[ts_Integer] := ts;
+normalizeTimestamp[assoc_Association] := assoc;
+normalizeTimestamp[dt_DateObject] := Module[{unix, tz},
+  unix = Quiet[UnixTime[dt]];
+  If[!IntegerQ[unix],
+    raiseCallError["Invalid DateObject for \"CreationTimestamp\"."]
+  ];
+  tz = Quiet[DateValue[dt, "TimeZone"]];
+  If[NumericQ[tz],
+    <|"Unix" -> unix, "OffsetMinutes" -> Round[60 * tz]|>,
+    unix
+  ]
+];
+normalizeTimestamp[other_] := raiseCallError[
+  "\"CreationTimestamp\" must be Automatic, None, a DateObject, or a Unix Integer; got `Type`.",
+  <|"Type" -> Head[other]|>
+];
+
+normalizeFeatures[list_List] := list;
+normalizeFeatures[single_String] := {single};
+normalizeFeatures[other_] := raiseCallError[
+  "\"Features\" must be a String or List of Strings; got `Type`.",
+  <|"Type" -> Head[other]|>
+];
 
 Options[MathemeCompile] = {
   "Inputs" -> <||>,
   "BasePath" -> Automatic,
   "AllowDownloads" -> False,
-  "TypstTemplate" -> None
+  "TypstTemplate" -> None,
+  "Format" -> "PDF",
+  "Pages" -> All,
+  "PDFStandard" -> Automatic,
+  "PDFTags" -> True,
+  "CreationTimestamp" -> Automatic,
+  "Features" -> {},
+  "Evaluate" -> None
 };
 Options[MathemeToGraphics] = Options[MathemeCompile];
 Options[compileChecked] = Options[MathemeCompile];
@@ -246,30 +316,46 @@ compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
       <|"Type" -> Head[rendered]|>
     ]
   ];
-  compileWith[
-    rendered,
-    OptionValue["Inputs"],
-    If[OptionValue["BasePath"] === Automatic, Directory[], OptionValue["BasePath"]],
-    TrueQ[OptionValue["AllowDownloads"]]
-  ]
+  callUnchecked["compile", <|
+    "Source" -> rendered,
+    "Inputs" -> OptionValue["Inputs"],
+    "BasePath" -> If[OptionValue["BasePath"] === Automatic, Directory[], OptionValue["BasePath"]],
+    "AllowDownloads" -> TrueQ[OptionValue["AllowDownloads"]],
+    "Format" -> OptionValue["Format"],
+    "Pages" -> OptionValue["Pages"],
+    "PDFStandard" -> OptionValue["PDFStandard"],
+    "PDFTags" -> OptionValue["PDFTags"],
+    "CreationTimestamp" -> normalizeTimestamp[OptionValue["CreationTimestamp"]],
+    "Features" -> normalizeFeatures[OptionValue["Features"]],
+    "Evaluate" -> OptionValue["Evaluate"]
+  |>]
 ];
 
-(* Template validation also raises through ErrorTools, so the public entry
-   handles both pre-call and library failures in a single Handle scope. *)
+(* Template and option validation also raise through ErrorTools, so the public
+   entry handles pre-call and library failures in one Handle scope. *)
 MathemeCompile[source_String, opts : OptionsPattern[]] :=
   Handle[compileChecked[source, opts], _Failure];
 
-toGraphics[result_] := Module[{pdf, graphics},
+toGraphics[result_] := Module[{pdf, svg, graphics},
   If[FailureQ[result] || !AssociationQ[result],
     result,
     pdf = Lookup[result, "PDF", Null];
-    If[Head[pdf] =!= ByteArray,
-      Join[result, <|"Graphics" -> {}|>],
-      graphics = ImportByteArray[pdf, {"PDF", "PageGraphics"}];
-      If[!ListQ[graphics],
-        raiseCallError["Failed to import PDF bytes as Graphics."],
-        Join[result, <|"Graphics" -> graphics|>]
-      ]
+    svg = Lookup[result, "SVG", Null];
+    Which[
+      Head[pdf] === ByteArray,
+        graphics = ImportByteArray[pdf, {"PDF", "PageGraphics"}];
+        If[!ListQ[graphics],
+          raiseCallError["Failed to import PDF bytes as Graphics."],
+          Join[result, <|"Graphics" -> graphics|>]
+        ],
+      ListQ[svg],
+        graphics = Map[ImportString[#, {"SVG", "Graphics"}] &, svg];
+        If[!AllTrue[graphics, Head[#] === Graphics &],
+          raiseCallError["Failed to import SVG output as Graphics."],
+          Join[result, <|"Graphics" -> graphics|>]
+        ],
+      True,
+        Join[result, <|"Graphics" -> {}|>]
     ]
   ]
 ];
@@ -278,7 +364,7 @@ MathemeToGraphics[source_String, opts : OptionsPattern[]] :=
   Handle[toGraphics[MathemeCompile[source, opts]], _Failure];
 
 (* ------------------------------------------------------------------------ *)
-(* State and queries                                                        *)
+(* State, queries, and cache lifecycle                                      *)
 (* ------------------------------------------------------------------------ *)
 
 MathemeVersion[] := callFunction["version"];
@@ -298,6 +384,18 @@ MathemeResetSettings[] := callFunction["resetSettings"];
 
 MathemeReloadFonts[] := callFunction["reloadFonts"];
 MathemeReloadPackages[] := callFunction["reloadPackages"];
+
+ClearMathemeCache[] := callFunction["clearCache", <|"Targets" -> All|>];
+ClearMathemeCache[All | "All"] := callFunction["clearCache", <|"Targets" -> All|>];
+ClearMathemeCache[target_String] := callFunction["clearCache", <|"Targets" -> {target}|>];
+ClearMathemeCache[targets : {___String}] := callFunction["clearCache", <|"Targets" -> targets|>];
+ClearMathemeCache[other_] := Handle[
+  raiseCallError[
+    "ClearMathemeCache expects \"Fonts\", \"Packages\", \"Memoization\", All, or a list of targets; got `Type`.",
+    <|"Type" -> Head[other]|>
+  ],
+  _Failure
+];
 
 MathemeQueryFonts[] := callFunction["queryFonts"];
 MathemeQueryFonts[filters_Association] := callFunction["queryFonts", filters];
@@ -379,7 +477,7 @@ Scan[
 ];
 Scan[
   Function[f, SyntaxInformation[f] = {"ArgumentsPattern" -> {___}}],
-  {MathemeQueryFonts, MathemeQueryPackages}
+  {MathemeQueryFonts, MathemeQueryPackages, ClearMathemeCache}
 ];
 
 End[];
@@ -390,7 +488,7 @@ Scan[
   {MathemeCompile, MathemeToGraphics, MathemeVersion, MathemeSettings,
    MathemeSetSettings, MathemeResetSettings, MathemeReloadFonts,
    MathemeReloadPackages, MathemeWarmup, MathemeQueryFonts,
-   MathemeQueryPackages, MathemeClose}
+   MathemeQueryPackages, ClearMathemeCache, MathemeClose}
 ];
 Scan[Protect, {MathemeLibraryError, MathemeCallError, MathemeCompileError,
   MathemeDiagnostic}];

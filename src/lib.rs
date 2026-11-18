@@ -2,23 +2,26 @@
 //!
 //! The crate exports one link function. [`call::serve`] reads a single
 //! `<|"Action" -> name, "Arguments" -> <|…|>|>` envelope, dispatches it to an
-//! [`endpoints::Endpoint`], and writes back the uniform result association.
+//! [`call::Endpoint`], and writes back the uniform result association.
 
+mod cache;
 mod call;
+mod compile;
 mod diagnostics;
-mod endpoints;
 mod query;
 mod settings;
+mod version;
 mod wolfram;
 
 use matheme_wl::Entry;
 use wolfram_library_link::{export, wstp::Link};
 
+use cache::{ClearCache, Close, ReloadFonts, ReloadPackages, Warmup};
 use call::{Answer, Endpoint};
-use endpoints::{
-    Close, Compile, QueryFonts, QueryPackages, ReloadFonts, ReloadPackages, ResetSettings,
-    SetSettings, Settings, Version, Warmup,
-};
+use compile::Compile;
+use query::{QueryFonts, QueryPackages};
+use settings::{ResetSettings, SetSettings, Settings};
+use version::Version;
 
 #[export(wstp)]
 fn matheme_call(link: &mut Link) {
@@ -45,6 +48,7 @@ fn dispatch(link: &mut Link, action: &str, args: Vec<Entry>) -> Answer {
         "reloadPackages" => endpoint!(ReloadPackages),
         "queryFonts" => endpoint!(QueryFonts),
         "queryPackages" => endpoint!(QueryPackages),
+        "clearCache" => endpoint!(ClearCache),
         "close" => endpoint!(Close),
         other => Answer::Failure(call::error(format!("unknown action: {other}"))),
     }

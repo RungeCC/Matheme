@@ -12,7 +12,7 @@ use world::query::{
     PackageOriginFilter, Page, UniverseMetadata,
 };
 
-use crate::call::{self, Failure, Outcome};
+use crate::call::{self, Answer, Endpoint, Failure, Outcome};
 
 /// Default page size. Small enough that a bare `MathemeQueryFonts[]` does not
 /// ship the whole font book over WSTP; `MaxResults -> All` opts out.
@@ -226,6 +226,37 @@ pub fn run_packages(query: &PackageQuery) -> Outcome {
     let answer = world::query::packages(&query.filter, &query.page);
     outcome.extend(packages_expr(&answer, &query.page));
     outcome
+}
+
+pub struct QueryFonts;
+
+impl Endpoint for QueryFonts {
+    const NAME: &'static str = "queryFonts";
+    type Input = FontQuery;
+
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+        FontQuery::parse(args)
+    }
+
+    fn invoke(input: Self::Input) -> Answer {
+        run_fonts(&input).into()
+    }
+}
+
+pub struct QueryPackages;
+
+impl Endpoint for QueryPackages {
+    const NAME: &'static str = "queryPackages";
+    const HOST_FONTS: bool = false;
+    type Input = PackageQuery;
+
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+        PackageQuery::parse(args)
+    }
+
+    fn invoke(input: Self::Input) -> Answer {
+        run_packages(&input).into()
+    }
 }
 
 #[cfg(test)]

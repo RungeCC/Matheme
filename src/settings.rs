@@ -6,11 +6,11 @@
 
 use std::path::PathBuf;
 
-use matheme_wl::{assoc, Entry, Expr, Symbol};
-use matheme_world::settings::{Patch, Settings, Update};
-use matheme_world::FontCounts;
+use matheme_wl::{assoc, rule, Entry, Expr, Symbol};
+use matheme_world::settings::{Patch, Settings as WorldSettings, Update};
+use matheme_world::{self as world, FontCounts};
 
-use crate::call::{self, Failure};
+use crate::call::{self, Answer, Endpoint, Failure, Outcome};
 
 const FIELDS: &[&str] = &[
     "FontPaths",
@@ -88,7 +88,7 @@ fn optional_string(value: &Expr) -> Result<Update<String>, Failure> {
 }
 
 /// Render the effective settings.
-pub fn expr(settings: &Settings) -> Expr {
+pub fn expr(settings: &WorldSettings) -> Expr {
     assoc! {
         "FontPaths" -> path_list_expr(&settings.font_paths),
         "SystemFonts" -> settings.system_fonts,
@@ -120,6 +120,79 @@ fn path_string(path: &std::path::Path) -> String {
 
 fn path_list_expr(paths: &[PathBuf]) -> Expr {
     Expr::list(paths.iter().map(|path| path_string(path)))
+}
+
+// ---------------------------------------------------------------------------
+// Settings / SetSettings / ResetSettings endpoints
+// ---------------------------------------------------------------------------
+
+pub struct Settings;
+
+impl Endpoint for Settings {
+    const NAME: &'static str = "settings";
+    const HOST_FONTS: bool = false;
+    type Input = ();
+
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
+    }
+
+    fn invoke((): ()) -> Answer {
+        Outcome::new([rule!("Settings" -> expr(&world::settings()))]).into()
+    }
+}
+
+pub struct SetSettings;
+
+impl Endpoint for SetSettings {
+    const NAME: &'static str = "setSettings";
+    type Input = Patch;
+
+    fn parse(args: Vec<Entry>) -> Result<Self::Input, Failure> {
+        parse(&args)
+    }
+
+    fn invoke(patch: Self::Input) -> Answer {
+        let mut warning = None;
+        if let Update::Set(ref proxy) = patch.proxy {
+            if let Err(err) = world::packages::validate_proxy(proxy) {
+                warning = Some(err);
+            }
+        }
+        let mut outcome = applied_outcome(world::apply(&patch));
+        if let Some(msg) = warning {
+            outcome.warn(msg);
+        }
+        outcome.into()
+    }
+}
+
+pub struct ResetSettings;
+
+impl Endpoint for ResetSettings {
+    const NAME: &'static str = "resetSettings";
+    type Input = ();
+
+    fn parse(args: Vec<Entry>) -> Result<(), Failure> {
+        call::ensure_empty(&args, Self::NAME)
+    }
+
+    fn invoke((): ()) -> Answer {
+        applied_outcome(world::apply(&reset_patch())).into()
+    }
+}
+
+fn applied_outcome(applied: world::Applied) -> Outcome {
+    Outcome::new([
+        rule!(
+            "Changed" -> assoc! {
+                "Fonts" -> applied.changes.fonts,
+                "Packages" -> applied.changes.packages,
+                "Downloads" -> applied.changes.downloads,
+            }
+        ),
+        rule!("Settings" -> expr(&applied.settings)),
+    ])
 }
 
 #[cfg(test)]

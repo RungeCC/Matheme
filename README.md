@@ -18,11 +18,12 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 
 | Path | Role |
 |---|---|
-| `crates/matheme-world/` | Typst dependency: `World`, font & package caches (`query.rs` holds both independent query surfaces), file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
-| `crates/matheme-wl/` | Pure WL-expression ↔ Typst-value conversion. `Expr`, `Normal`, `Entry`/`Rule` and `Symbol` wrappers expose `From`/`Into` and `as_*` accessors instead of raw `ExprKind` matching; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. `RuleDelayed` stays distinct from `Rule`. No WSTP dependency. |
-| `src/` | WSTP bridge: one exported WSTP function receives `<|"Action" -> name, "Arguments" -> <|…|>|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, `endpoints.rs` declares every action's expected arguments, plus WL value mappings (`settings.rs`, `query.rs`), diagnostics and Wolfram-specific discovery (`wolfram.rs`). |
+| `crates/matheme-world/` | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
+| `crates/matheme-wl/` | Pure bidirectional WL-expression ↔ Typst-value conversion (`to_typst_value` and `from_typst_value`). `Expr`, `Normal`, `Entry`/`Rule` and `Symbol` wrappers expose `From`/`Into` and `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
+| `src/` | WSTP bridge: one exported WSTP function receives `<|"Action" -> name, "Arguments" -> <|…|>|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, with dedicated modules for `compile.rs` (PDF/SVG/HTML + simultaneous `Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`. |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects. |
 | `scripts/` | WSTP SDK setup and one-shot build. |
+| `output/` | Generated build artifacts (gitignored): standalone paclet directory `output/Matheme/` and packaged `output/Matheme-*.paclet`. |
 
 Versions are pinned: `typst`/`typst-kit` `=0.15.1`, `wolfram-library-link`
 `=0.6.1` (see `Cargo.lock`). `MathemeVersion[]` reports the Typst version from
@@ -42,8 +43,11 @@ The script:
 
 1. runs `scripts/setup-wstp.sh`, which copies Wolfram 15's genuine
    `wstp64i4s.lib` (WS* symbols) from the **WSTP DeveloperKit** into `.tmp/`;
-2. `cargo build --release`;
-3. copies the DLL to `LibraryResources/Windows-x86-64/matheme.dll`.
+2. runs `cargo build --release`;
+3. assembles a standalone paclet directory at `output/Matheme/` (`PacletInfo.m`,
+   `Kernel/`, and `LibraryResources/Windows-x86-64/matheme.dll`);
+4. packages the distributable archive `output/Matheme-<version>.paclet` via
+   `CreatePacletArchive` (when `wolframscript` is available).
 
 Wolfram ships two SDKs: the MathLink one only has `ml64i4s.lib` (ML* symbols),
 which used to require a library alias plus 23 `/alternatename` linker shims.
@@ -53,8 +57,17 @@ Using the WSTP DeveloperKit library removes both workarounds and lets
 
 ## Load
 
+Load directly from the assembled paclet directory:
+
 ```wolfram
-PacletDirectoryLoad["/absolute/path/to/matheme"];
+PacletDirectoryLoad["/absolute/path/to/matheme/output/Matheme"];
+Get["Matheme`"];
+```
+
+Or install the packaged archive:
+
+```wolfram
+PacletInstall["/absolute/path/to/matheme/output/Matheme-0.1.0.paclet"];
 Get["Matheme`"];
 ```
 
@@ -127,10 +140,22 @@ Options (all names are strings):
 | `"BasePath"` | `Directory[]` | Root for `#include` / `#image` relative paths. |
 | `"AllowDownloads"` | `False` | If `True`, missing Universe packages may be downloaded. |
 | `"TypstTemplate"` | `None` | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see *Templates*). |
+| `"Format"` | `"PDF"` | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), or `"HTML"` (automatically enables the `"html"` feature). |
+| `"Pages"` | `All` | Page filter (`All`, integer, list of integers/`{start, end}`/`Span`, or range string such as `"1,3-5"`) for PDF and SVG exports. |
+| `"PDFStandard"` | `Automatic` | `Automatic`, a standard string (`"1.4"`–`"2.0"`, `"a-1b"`–`"a-4e"`, `"ua-1"`), or a list of standards. |
+| `"PDFTags"` | `True` | Whether to emit tagged PDF accessibility structure. |
+| `"CreationTimestamp"` | `Automatic` | `Automatic` (system clock), `None`, a `DateObject`, or a Unix timestamp integer. |
+| `"Features"` | `{}` | Experimental Typst features (`"html"`, `"bundle"`, `"a11y-extras"`). |
+| `"Evaluate"` | `None` | Optional Typst code expression, list, or association evaluated against the compiled document's scope and introspector, returned under `"Evaluated"`. |
+
+CLI-only flags such as `--watch`, `--open`, `--jobs`, `--timings`, `--deps`, `--diagnostic-format`, and `--ppi` (Wolfram handles rasterization via `Rasterize` / `MathemeToGraphics`) are intentionally not exposed.
 
 `Inputs` accepts strings, integers, reals, `True`/`False`/`Null`, lists,
 nested associations and `ByteArray` (mapped to Typst `bytes`); unsupported
-values become warnings in `Diagnostics`.
+values become warnings in `Diagnostics`. Conversely, `"Evaluated"` maps Typst
+values back to native Wolfram expressions (`Quantity`, `RGBColor`, `DateObject`,
+`TimeObject`, `ByteArray`, `Association`, `List`, `Automatic`, `Null`, and
+structured content/module associations).
 
 ```wolfram
 res = MathemeCompile[
@@ -152,15 +177,16 @@ The vector conversion uses Wolfram's built-in
 
 ### Diagnostics
 
-`Formatted` renders like `typst` CLI, with source snippets and CLI-style file
-names:
+`Formatted` renders like `typst` CLI in a `"Code"`-styled Notebook `Cell`
+(`DisplayForm[Cell[..., "Code"]]` when non-empty; `""` when there are no
+diagnostics), with source snippets and CLI-style file names:
 
 ```text
 error: unclosed delimiter
-  ┌─ <typst source>:2:16
-  │
-2 │ Value: #let x = (
-  │                 ^
+  --> <typst source>:2:16
+  |
+2 | Value: #let x = (
+  |                 ^
 ```
 
 Each entry of `Diagnostics` is an Association with `Severity`, `Message`,
@@ -192,7 +218,7 @@ Templates are applied in the Wolfram layer with `TemplateApply` (or called as
 a `Function`) before the resulting source is sent to the compiler; the Rust
 side knows nothing about templates. An unknown key returns a
 `MathemeCallError` Failure listing the available keys. MiTeX templates import
-`@preview/mitex:0.2.4`, so they need `"AllowDownloads" -> True` until the
+`@preview/mitex:0.2.7`, so they need `"AllowDownloads" -> True` until the
 package is cached — templates never turn downloads on implicitly.
 
 ### Packages and fonts
@@ -340,7 +366,7 @@ or wrong value types are our own Wolfram layer's bugs, so they become a
 
 | Function | Effect |
 |---|---|
-| `MathemeVersion[]` | `<\|"Matheme", "Typst", "TypstCommit"\|>` only. Configuration lives in `MathemeSettings[]`; cache contents live behind the query functions. |
+| `MathemeVersion[]` | Version and DLL metadata: `"Matheme"`, `"Typst"`, `"TypstCommit"`, `"Target"`, `"LibraryLink"`, and `"WSTP"`. |
 | `MathemeSettings[]` | Read the configuration (see *Settings*). |
 | `MathemeSetSettings[patch]` | Apply a settings patch. |
 | `MathemeResetSettings[]` | Restore every user-facing setting. |
@@ -348,6 +374,7 @@ or wrong value types are our own Wolfram layer's bugs, so they become a
 | `MathemeQueryPackages[]` | Query cached package metadata. |
 | `MathemeReloadFonts[]` | Rescan all configured font sources (e.g. after installing a font). |
 | `MathemeReloadPackages[]` | Rebuild the package loader and drop the cached Universe index. |
+| `ClearMathemeCache[targets]` | Drop selected caches (`"Fonts"`, `"Packages"`, `"Memoization"`, or `All`) without unloading the library. |
 | `MathemeClose[]` | Close the WSTP `LinkObject`, drop every library cache (fonts, packages, memoization), unload the single library function and release the DLL image. |
 
 ### Memory

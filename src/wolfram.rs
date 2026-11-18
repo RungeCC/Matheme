@@ -1,24 +1,65 @@
-//! Wolfram-specific discovery for the WSTP bridge.
+//! Wolfram-specific discovery and runtime library metadata.
 //!
 //! The world crate stays agnostic about Wolfram: this module asks the running
 //! kernel for `$InstallationDirectory` and hands the resulting font directory to
-//! `matheme_world::set_host_font_paths`. There is no filesystem guessing of
-//! install roots, and no environment variables: the only source of truth is the
-//! kernel itself.
+//! `matheme_world::set_host_font_paths`, and inspects the loaded LibraryLink /
+//! WSTP runtime for [`crate::version::Version`].
 
+use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use wolfram_library_link::{
     expr::{Expr as RawExpr, ExprKind, Symbol as RawSymbol},
     rtl,
-    wstp::Link,
+    wstp::{sys as wstp_sys, Link},
 };
 
 use matheme_wl::{Expr, Symbol};
 
 static INSTALLATION_DIR: OnceLock<PathBuf> = OnceLock::new();
 static HOST_FONTS_SET: OnceLock<()> = OnceLock::new();
+
+/// Runtime metadata for the loaded Matheme DLL, LibraryLink and WSTP layer.
+#[derive(Debug, Clone)]
+pub struct DllInfo {
+    pub target: String,
+    pub library_link_compiled: i64,
+    pub library_link_runtime: Option<i64>,
+    pub wstp_protocol: i64,
+    pub wstp_compiled_interface: i64,
+    pub wstp_compiled_revision: i64,
+    pub wstp_runtime: Option<(i64, i64, i64)>,
+}
+
+/// Query runtime version numbers from LibraryLink and WSTP. Returns compile-time
+/// metadata with `None` runtime fields when called outside a Wolfram Kernel
+/// (e.g. unit tests).
+pub fn dll_info() -> DllInfo {
+    let library_data = std::panic::catch_unwind(wolfram_library_link::get_library_data).ok();
+    let library_link_runtime = library_data.map(|data| unsafe { (*data.raw_library_data).VersionNumber });
+    let wstp_runtime = library_data.and_then(|data| unsafe {
+        let env = rtl::getWSLINKEnvironment(data.raw_library_data);
+        if env.is_null() {
+            return None;
+        }
+        let mut interface: c_int = 0;
+        let mut revision: c_int = 0;
+        let mut build: c_int = 0;
+        wstp_sys::WSVersionNumbers(env.cast(), &mut interface, &mut revision, &mut build);
+        Some((i64::from(interface), i64::from(revision), i64::from(build)))
+    });
+
+    DllInfo {
+        target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+        library_link_compiled: i64::from(wolfram_library_link::sys::WolframLibraryVersion),
+        library_link_runtime,
+        wstp_protocol: i64::from(wstp_sys::WSVERSION),
+        wstp_compiled_interface: i64::from(wstp_sys::WSINTERFACE),
+        wstp_compiled_revision: i64::from(wstp_sys::WSREVISION),
+        wstp_runtime,
+    }
+}
 
 /// Evaluate a WL expression on the bridge's WSTP link.
 ///

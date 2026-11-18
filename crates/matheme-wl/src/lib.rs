@@ -15,6 +15,7 @@
 
 mod entry;
 mod expr;
+mod from_typst;
 mod macros;
 mod normal;
 mod symbol;
@@ -22,6 +23,7 @@ mod typst_value;
 
 pub use entry::{Entry, Rule};
 pub use expr::Expr;
+pub use from_typst::from_typst_value;
 pub use normal::Normal;
 pub use symbol::Symbol;
 pub use typst_value::to_typst_value;
