@@ -1,6 +1,10 @@
 # Rust build output
 /target/
 
+# Assembled paclet directory and packaged .paclet archive
+/output/
+*.paclet
+
 # Local scratch space: probe scripts, logs, WSTP SDK alias (see scripts/setup-wstp.sh)
 /.tmp/
 
