@@ -40,9 +40,25 @@ pub struct Trace {
     pub text: String,
 }
 
+/// Diagnostic severity level (host-agnostic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+impl DiagnosticSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "Error",
+            Self::Warning => "Warning",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
-    pub severity: &'static str,
+    pub severity: DiagnosticSeverity,
     pub message: String,
     pub location: Option<Location>,
     pub hints: Vec<Hint>,
@@ -107,8 +123,8 @@ pub fn from_typst(diag: &SourceDiagnostic, world: &MathemeWorld) -> Diagnostic {
 
     Diagnostic {
         severity: match diag.severity {
-            Severity::Error => "Error",
-            Severity::Warning => "Warning",
+            Severity::Error => DiagnosticSeverity::Error,
+            Severity::Warning => DiagnosticSeverity::Warning,
         },
         message: diag.message.to_string(),
         hints: diag
@@ -142,7 +158,7 @@ pub fn from_typst(diag: &SourceDiagnostic, world: &MathemeWorld) -> Diagnostic {
 /// A host/bridge-level error (failed source load, internal evaluation failure).
 pub fn error(message: impl Into<String>) -> Diagnostic {
     Diagnostic {
-        severity: "Error",
+        severity: DiagnosticSeverity::Error,
         message: message.into(),
         location: None,
         hints: vec![],
@@ -154,7 +170,7 @@ pub fn error(message: impl Into<String>) -> Diagnostic {
 /// A host/bridge-level warning (bad option, offline hint, unsupported input value).
 pub fn warning(message: impl Into<String>) -> Diagnostic {
     Diagnostic {
-        severity: "Warning",
+        severity: DiagnosticSeverity::Warning,
         message: message.into(),
         location: None,
         hints: vec![],
@@ -181,10 +197,9 @@ pub fn format(
     }
     let mut text = String::from_utf8_lossy(buffer.as_slice()).into_owned();
     for diag in all.iter().filter(|d| d.custom) {
-        let prefix = if diag.severity == "Error" {
-            "error"
-        } else {
-            "hint"
+        let prefix = match diag.severity {
+            DiagnosticSeverity::Error => "error",
+            DiagnosticSeverity::Warning => "hint",
         };
         text.push_str(&format!("{prefix}: {}\n", diag.message));
     }

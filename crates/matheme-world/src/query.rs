@@ -10,7 +10,7 @@
 
 use typst::text::{FontFlags, FontInfo, FontStyle};
 
-use crate::fonts::{self, FontCache};
+use crate::fonts;
 use crate::packages;
 
 pub use crate::packages::{PackageEntry, PackageOrigin, UniverseMetadata};
@@ -98,6 +98,29 @@ impl Page {
             items.truncate(limit);
         }
     }
+
+    /// Count all items yielded by `iter`, materializing (via `materialize`) only
+    /// those that fall inside `[self.offset, self.offset + self.limit)`.
+    fn collect_window<T, U>(
+        &self,
+        iter: impl Iterator<Item = T>,
+        mut materialize: impl FnMut(T) -> U,
+    ) -> (usize, Vec<U>) {
+        let mut matched = 0usize;
+        let mut out = self.limit.map(Vec::with_capacity).unwrap_or_default();
+        for item in iter {
+            let idx = matched;
+            matched += 1;
+            if idx < self.offset {
+                continue;
+            }
+            if self.limit.is_some_and(|limit| out.len() >= limit) {
+                continue;
+            }
+            out.push(materialize(item));
+        }
+        (matched, out)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -126,22 +149,24 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
 }
 
 impl FontFilter {
-    fn matches(&self, face: &FontFace) -> bool {
-        if let Some(family) = &self.family {
-            if !contains_case_insensitive(&face.family, family) {
+    fn matches_fields(&self, family: &str, origin: FontOrigin, resident: bool) -> bool {
+        if let Some(needle) = &self.family {
+            if !contains_case_insensitive(family, needle) {
                 return false;
             }
         }
-        if self.origin.is_some_and(|origin| origin != face.origin) {
+        if self.origin.is_some_and(|expected| expected != origin) {
             return false;
         }
-        if self
-            .resident
-            .is_some_and(|resident| resident != face.resident)
-        {
+        if self.resident.is_some_and(|expected| expected != resident) {
             return false;
         }
         true
+    }
+
+    #[cfg(test)]
+    fn matches(&self, face: &FontFace) -> bool {
+        self.matches_fields(&face.family, face.origin, face.resident)
     }
 }
 
@@ -222,32 +247,22 @@ fn flag_names(info: &FontInfo) -> Vec<&'static str> {
     flags
 }
 
-fn collect_faces(cache: &FontCache, character: Option<char>) -> Vec<FontFace> {
-    let book = cache.book();
-    (0..cache.len())
-        .filter_map(|index| {
-            let info = book.info(index)?;
-            if character.is_some_and(|c| !info.coverage.contains(c as u32)) {
-                return None;
-            }
-            let metadata = cache.face(index)?;
-            Some(FontFace {
-                index,
-                family: info.family.clone(),
-                style: style_name(info.variant.style),
-                weight: info.variant.weight.to_number(),
-                stretch: info.variant.stretch.to_ratio().get(),
-                flags: flag_names(info),
-                origin: metadata.origin,
-                path: metadata
-                    .path
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                collection_index: metadata.collection_index,
-                resident: metadata.resident(),
-            })
-        })
-        .collect()
+fn build_face(index: usize, info: &FontInfo, metadata: &crate::fonts::FaceMetadata) -> FontFace {
+    FontFace {
+        index,
+        family: info.family.clone(),
+        style: style_name(info.variant.style),
+        weight: info.variant.weight.to_number(),
+        stretch: info.variant.stretch.to_ratio().get(),
+        flags: flag_names(info),
+        origin: metadata.origin,
+        path: metadata
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        collection_index: metadata.collection_index,
+        resident: metadata.resident(),
+    }
 }
 
 pub struct FontAnswer {
@@ -276,10 +291,27 @@ pub fn fonts(filter: &FontFilter, page: &Page) -> FontAnswer {
     let cache = fonts::font_cache();
     let total = cache.len();
     let resident = cache.resident_count();
-    let mut faces = collect_faces(&cache, filter.character);
-    faces.retain(|face| filter.matches(face));
-    let matched = faces.len();
-    page.slice(&mut faces);
+    let book = cache.book();
+
+    let matching = (0..total).filter_map(|index| {
+        let info = book.info(index)?;
+        if filter
+            .character
+            .is_some_and(|c| !info.coverage.contains(c as u32))
+        {
+            return None;
+        }
+        let metadata = cache.face(index)?;
+        if !filter.matches_fields(&info.family, metadata.origin, metadata.resident()) {
+            return None;
+        }
+        Some((index, info, metadata))
+    });
+
+    let (matched, faces) = page.collect_window(matching, |(index, info, metadata)| {
+        build_face(index, info, metadata)
+    });
+
     FontAnswer {
         total,
         matched,
@@ -295,14 +327,12 @@ pub fn packages(filter: &PackageFilter, page: &Page) -> PackageAnswer {
     let local_total = local.len();
     let universe_total = universe.as_ref().map_or(0, |entries| entries.len());
 
-    let mut entries: Vec<packages::PackageEntry> = Vec::with_capacity(local_total + universe_total);
-    entries.extend(local.iter().cloned());
-    if let Some(universe) = &universe {
-        entries.extend(universe.iter().cloned());
-    }
-    entries.retain(|entry| filter.matches(entry));
-    let matched = entries.len();
-    page.slice(&mut entries);
+    let matching = local
+        .iter()
+        .chain(universe.iter().flat_map(|entries| entries.iter()))
+        .filter(|entry| filter.matches(entry));
+
+    let (matched, entries) = page.collect_window(matching, Clone::clone);
 
     PackageAnswer {
         local_total,
@@ -415,5 +445,21 @@ mod tests {
         assert!(filter.matches(&entry("cetz", PackageOrigin::Data)));
         assert!(!filter.matches(&entry("cetz", PackageOrigin::Universe)));
         assert!(!filter.matches(&entry("other", PackageOrigin::Data)));
+    }
+
+    #[test]
+    fn collect_window_materializes_only_paged_items() {
+        let mut materialized = 0usize;
+        let page = Page {
+            offset: 2,
+            limit: Some(3),
+        };
+        let (matched, items) = page.collect_window(0..10, |n| {
+            materialized += 1;
+            n * 10
+        });
+        assert_eq!(matched, 10);
+        assert_eq!(items, vec![20, 30, 40]);
+        assert_eq!(materialized, 3);
     }
 }

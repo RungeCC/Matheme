@@ -25,7 +25,7 @@ pub use typst::layout::{PageRange, PageRanges};
 pub use typst::{Feature, Features};
 pub use typst_pdf::{PdfStandard, PdfStandards, Timestamp};
 
-use crate::diagnostics::{self, Diagnostic};
+use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity};
 use crate::world::{MathemeWorld, WorldDate};
 
 /// Evict memoized Typst entries older than this many compilations so memory
@@ -379,7 +379,7 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
 
         let errors: Vec<_> = diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == "Error")
+            .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
             .collect();
         let summary = errors
             .first()
@@ -578,6 +578,6 @@ mod tests {
 
         maybe_offline_hint(&mut diags, true);
         assert_eq!(diags.len(), 2);
-        assert_eq!(diags[1].severity, "Warning");
+        assert_eq!(diags[1].severity, DiagnosticSeverity::Warning);
     }
 }

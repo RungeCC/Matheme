@@ -33,6 +33,7 @@ impl FromExpr for ProxyUpdate {
         if text.is_empty() {
             Ok(Self(Update::Reset))
         } else {
+            world::packages::validate_proxy(&text)?;
             Ok(Self(Update::Set(text)))
         }
     }
@@ -119,18 +120,7 @@ pub fn run_get() -> Answer {
 }
 
 pub fn run_set(args: SettingsPatchArgs) -> Answer {
-    let patch = args.into_patch();
-    let mut warning = None;
-    if let Update::Set(ref proxy) = patch.proxy {
-        if let Err(err) = world::packages::validate_proxy(proxy) {
-            warning = Some(err);
-        }
-    }
-    let mut outcome = applied_outcome(world::apply(&patch));
-    if let Some(msg) = warning {
-        outcome.warn(msg);
-    }
-    outcome.into()
+    applied_outcome(world::apply(&args.into_patch())).into()
 }
 
 pub fn run_reset() -> Answer {
@@ -217,6 +207,18 @@ mod tests {
         assert_eq!(err.tag, "Call");
         assert!(
             err.message.contains("setSettings.SystemFonts: expected True or False"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn malformed_proxy_returns_a_failure() {
+        let err = with_entries([Rule::new("Proxy", "://not-a-valid-proxy")], parse)
+            .expect_err("malformed proxy");
+        assert_eq!(err.tag, "Call");
+        assert!(
+            err.message.contains("setSettings.Proxy: invalid proxy"),
             "{}",
             err.message
         );

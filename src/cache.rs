@@ -81,7 +81,10 @@ wl_args! {
 
 pub fn run_clear(input: ClearCacheArgs) -> Answer {
     let cleared = world::clear_caches(input.targets.0);
-    Outcome::new([rule!("Cleared" -> Expr::list(cleared))]).into()
+    Outcome::new([rule!(
+        "Cleared" -> Expr::list(cleared.into_iter().map(world::CacheTarget::as_str))
+    )])
+    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +153,10 @@ pub fn run_reload_packages() -> Answer {
 
 pub fn run_close() -> Answer {
     let released = world::clear_caches(CacheSelection::all());
-    Outcome::new([rule!("Released" -> Expr::list(released))]).into()
+    Outcome::new([rule!(
+        "Released" -> Expr::list(released.into_iter().map(world::CacheTarget::as_str))
+    )])
+    .into()
 }
 
 #[cfg(test)]

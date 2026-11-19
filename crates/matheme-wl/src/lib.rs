@@ -17,9 +17,20 @@ mod expr;
 mod macros;
 mod normal;
 mod symbol;
+#[cfg(feature = "wstp")]
+#[path = "wstp_helpers.rs"]
+pub mod wstp;
 
 pub use convert::{from_typst, to_typst};
 pub use entry::{Entry, Rule};
 pub use expr::Expr;
 pub use normal::Normal;
 pub use symbol::Symbol;
+
+/// Standard subdirectory under a Wolfram installation containing bundled TrueType fonts.
+pub fn wolfram_truetype_font_dir(install_dir: &std::path::Path) -> std::path::PathBuf {
+    install_dir
+        .join("SystemFiles")
+        .join("Fonts")
+        .join("TrueType")
+}

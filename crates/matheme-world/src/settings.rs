@@ -164,10 +164,6 @@ impl Patch {
 pub struct Applied {
     pub settings: Settings,
     pub changes: Changes,
-    /// Whether a font scan was run to reflect the new font settings.
-    pub fonts_reloaded: bool,
-    /// Whether the package loader was actually rebuilt (only if it was live).
-    pub packages_rebuilt: bool,
 }
 
 static SETTINGS: OnceLock<RwLock<Settings>> = OnceLock::new();
@@ -193,22 +189,15 @@ pub fn apply(patch: &Patch) -> Applied {
         packages::set_configured_downloads(settings.downloads);
     }
 
-    // Font settings are explicit user intent, so rebuild regardless of whether
-    // the cache was already live: the caller gets the resulting face counts
-    // back instead of a `Null`.
-    let fonts_reloaded = if changes.fonts {
-        fonts::reload_fonts();
-        true
-    } else {
-        false
-    };
-
-    Applied {
-        settings,
-        changes,
-        fonts_reloaded,
-        packages_rebuilt: changes.packages && packages::rebuild(),
+    if changes.fonts {
+        fonts::refresh();
     }
+
+    if changes.packages {
+        packages::rebuild();
+    }
+
+    Applied { settings, changes }
 }
 
 /// Set the host-provided font directories. Returns whether they changed.

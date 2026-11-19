@@ -6,11 +6,11 @@
 //! WSTP runtime for [`crate::version::Version`].
 
 use std::os::raw::c_int;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use wolfram_library_link::{
-    expr::{Expr as RawExpr, ExprKind, Symbol as RawSymbol},
+    expr::Expr as RawExpr,
     rtl,
     wstp::{sys as wstp_sys, Link},
 };
@@ -78,32 +78,7 @@ fn evaluate(link: &mut Link, query: &RawExpr) -> Result<RawExpr, String> {
             .unwrap_or_else(|| "unknown error processing WSTP link".into()));
     }
 
-    let return_head = RawSymbol::new(Symbol::RETURN_PACKET.as_str());
-    let message_head = RawSymbol::new("System`MessagePacket");
-    let text_head = RawSymbol::new("System`TextPacket");
-
-    // Drain any intermediate TextPacket/MessagePacket before ReturnPacket.
-    for _ in 0..16 {
-        let packet = link
-            .get_expr_with_resolver(&mut |name: &str| {
-                Some(RawSymbol::new(&format!("System`{name}")))
-            })
-            .map_err(|error| error.to_string())?;
-        match packet.kind() {
-            ExprKind::Normal(normal)
-                if normal.has_head(&return_head) && normal.elements().len() == 1 =>
-            {
-                return Ok(normal.elements()[0].clone());
-            }
-            ExprKind::Normal(normal)
-                if normal.has_head(&message_head) || normal.has_head(&text_head) =>
-            {
-                continue;
-            }
-            other => return Err(format!("expected ReturnPacket, got: {other}")),
-        }
-    }
-    Err("exceeded intermediate WSTP packet limit before ReturnPacket".into())
+    matheme_wl::wstp::read_return_packet(link, 16, false).map(|out| out.expr.into_raw())
 }
 
 /// Ask the kernel for `$InstallationDirectory`, caching only successful lookups
@@ -120,10 +95,6 @@ fn installation(link: &mut Link) -> Option<&'static PathBuf> {
     INSTALLATION_DIR.get()
 }
 
-fn bundled_font_dir(root: &Path) -> PathBuf {
-    root.join("SystemFiles").join("Fonts").join("TrueType")
-}
-
 /// Push the discovered directories into the Wolfram-agnostic world crate once
 /// per process so steady-state calls avoid taking the settings write lock.
 pub fn configure_world_fonts(link: &mut Link) {
@@ -131,7 +102,7 @@ pub fn configure_world_fonts(link: &mut Link) {
         return;
     }
     if let Some(root) = installation(link) {
-        matheme_world::set_host_font_paths(vec![bundled_font_dir(root)]);
+        matheme_world::set_host_font_paths(vec![matheme_wl::wolfram_truetype_font_dir(root)]);
         let _ = HOST_FONTS_SET.set(());
     }
 }

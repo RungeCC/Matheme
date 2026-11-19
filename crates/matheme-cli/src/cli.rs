@@ -161,15 +161,31 @@ pub struct EvalCmd {
     pub format: EvalFormat,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FontSourceArg {
+    Custom,
+    Host,
+    Embedded,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PackageOriginArg {
+    Local,
+    Data,
+    Cache,
+    Universe,
+}
+
 #[derive(Debug, Args)]
 pub struct FontsCmd {
     /// Case-insensitive substring filter on font family name.
     #[arg(long)]
     pub family: Option<String>,
 
-    /// Filter by font source (`custom`, `host`, `embedded`, `system`).
-    #[arg(long)]
-    pub source: Option<String>,
+    /// Filter by font source.
+    #[arg(long, value_enum)]
+    pub source: Option<FontSourceArg>,
 
     /// Filter to faces whose coverage contains this single character.
     #[arg(long)]
@@ -198,9 +214,9 @@ pub struct PackagesCmd {
     #[arg(long)]
     pub namespace: Option<String>,
 
-    /// Filter by origin (`local`, `data`, `cache`, `universe`).
-    #[arg(long)]
-    pub origin: Option<String>,
+    /// Filter by package origin.
+    #[arg(long, value_enum)]
+    pub origin: Option<PackageOriginArg>,
 
     /// Filter by exact version string.
     #[arg(long)]
@@ -277,5 +293,30 @@ mod tests {
             parse_key_val("k=a=b").unwrap(),
             ("k".to_string(), "a=b".to_string())
         );
+    }
+
+    #[test]
+    fn parses_font_source_and_package_origin_value_enums() {
+        let cli = Cli::try_parse_from(["matheme", "fonts", "--source", "embedded"])
+            .expect("valid font source");
+        assert!(matches!(
+            cli.command,
+            Command::Fonts(FontsCmd {
+                source: Some(FontSourceArg::Embedded),
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(["matheme", "fonts", "--source", "bogus"]).is_err());
+
+        let cli = Cli::try_parse_from(["matheme", "packages", "--origin", "local"])
+            .expect("valid package origin");
+        assert!(matches!(
+            cli.command,
+            Command::Packages(PackagesCmd {
+                origin: Some(PackageOriginArg::Local),
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(["matheme", "packages", "--origin", "bogus"]).is_err());
     }
 }

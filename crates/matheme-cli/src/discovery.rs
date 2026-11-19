@@ -6,6 +6,8 @@
 //! 3. `wolfram-app-discovery` (standard OS installation paths / registry)
 //! 4. `WolframKernel` / `MathKernel` executables on `PATH`
 
+use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use wolfram_app_discovery::WolframApp;
@@ -21,7 +23,7 @@ pub struct KernelCandidate {
 }
 
 fn bundled_font_dir(install_dir: &Path) -> Option<PathBuf> {
-    let dir = install_dir.join("SystemFiles").join("Fonts").join("TrueType");
+    let dir = matheme_wl::wolfram_truetype_font_dir(install_dir);
     dir.is_dir().then_some(dir)
 }
 
@@ -103,6 +105,61 @@ fn candidate_from_install_dir(
     })
 }
 
+/// Parse a version directory name (e.g. `"15.0"`, `"14.2.1"`, `"9.0"`) into
+/// numeric components so `"15.0"` sorts higher than `"9.0"`. Non-numeric names
+/// sort below numeric versions and fall back to lexicographical comparison.
+fn compare_version_dirs(a: &Path, b: &Path) -> Ordering {
+    let name_a = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let name_b = b.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    compare_version_names(name_a, name_b)
+}
+
+fn parse_numeric_version(name: &str) -> Option<Vec<u64>> {
+    if name.is_empty() {
+        return None;
+    }
+    name.split('.').map(|part| part.parse::<u64>().ok()).collect()
+}
+
+fn compare_version_names(a: &str, b: &str) -> Ordering {
+    match (parse_numeric_version(a), parse_numeric_version(b)) {
+        (Some(va), Some(vb)) => va.cmp(&vb).then_with(|| a.cmp(b)),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+        (None, None) => a.cmp(b),
+    }
+}
+
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+fn scan_product_dirs(
+    roots: impl IntoIterator<Item = PathBuf>,
+    products: &[&str],
+    found: &mut Vec<KernelCandidate>,
+) {
+    for root in roots {
+        for &product in products {
+            let product_dir = root.join(product);
+            let Ok(entries) = std::fs::read_dir(&product_dir) else {
+                continue;
+            };
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
+            // Prefer highest numeric version directory first.
+            versions.sort_by(|a, b| compare_version_dirs(b, a));
+            for dir in versions {
+                if let Some(c) =
+                    candidate_from_install_dir(dir, product.to_owned(), "standard install dir")
+                {
+                    found.push(c);
+                }
+            }
+        }
+    }
+}
+
 /// Scan standard OS installation directories (including Wolfram 14.1+/15.0's
 /// `Wolfram Research\Wolfram\<ver>` layout that older `wolfram-app-discovery`
 /// versions do not know about).
@@ -115,33 +172,8 @@ fn find_in_standard_dirs() -> Vec<KernelCandidate> {
             .into_iter()
             .filter_map(std::env::var_os)
             .map(|p| PathBuf::from(p).join("Wolfram Research"));
-
         let products = ["Wolfram", "Mathematica", "Wolfram Engine", "Wolfram Desktop"];
-        for root in roots {
-            for product in products {
-                let product_dir = root.join(product);
-                let Ok(entries) = std::fs::read_dir(&product_dir) else {
-                    continue;
-                };
-                let mut versions: Vec<PathBuf> = entries
-                    .filter_map(Result::ok)
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect();
-                // Prefer highest version directory first.
-                versions.sort();
-                versions.reverse();
-                for dir in versions {
-                    if let Some(c) = candidate_from_install_dir(
-                        dir,
-                        product.to_owned(),
-                        "standard install dir",
-                    ) {
-                        found.push(c);
-                    }
-                }
-            }
-        }
+        scan_product_dirs(roots, &products, &mut found);
     }
 
     #[cfg(target_os = "macos")]
@@ -170,30 +202,11 @@ fn find_in_standard_dirs() -> Vec<KernelCandidate> {
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        for root in ["/usr/local/Wolfram", "/opt/Wolfram"] {
-            for product in ["Wolfram", "Mathematica", "WolframEngine"] {
-                let product_dir = Path::new(root).join(product);
-                let Ok(entries) = std::fs::read_dir(&product_dir) else {
-                    continue;
-                };
-                let mut versions: Vec<PathBuf> = entries
-                    .filter_map(Result::ok)
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect();
-                versions.sort();
-                versions.reverse();
-                for dir in versions {
-                    if let Some(c) = candidate_from_install_dir(
-                        dir,
-                        product.to_owned(),
-                        "standard install dir",
-                    ) {
-                        found.push(c);
-                    }
-                }
-            }
-        }
+        let roots = ["/usr/local/Wolfram", "/opt/Wolfram"]
+            .into_iter()
+            .map(PathBuf::from);
+        let products = ["Wolfram", "Mathematica", "WolframEngine"];
+        scan_product_dirs(roots, &products, &mut found);
     }
 
     found
@@ -253,15 +266,10 @@ pub fn discover_kernels(explicit: Option<&Path>) -> Vec<KernelCandidate> {
     candidates.extend(find_on_path());
 
     // Deduplicate by canonicalized (or raw) kernel path, keeping highest-priority source.
-    let mut seen = Vec::<PathBuf>::new();
+    let mut seen = HashSet::<PathBuf>::new();
     candidates.retain(|c| {
         let key = std::fs::canonicalize(&c.kernel_path).unwrap_or_else(|_| c.kernel_path.clone());
-        if seen.contains(&key) {
-            false
-        } else {
-            seen.push(key);
-            true
-        }
+        seen.insert(key)
     });
 
     candidates
@@ -293,4 +301,26 @@ pub fn configure_wolfram_fonts(explicit_kernel: Option<&Path>) -> Option<PathBuf
     let font_dir = candidate.font_dir?;
     matheme_world::set_host_font_paths(vec![font_dir.clone()]);
     Some(font_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_version_dirs_sort_by_value_not_lexicographically() {
+        let mut dirs = [
+            PathBuf::from("9.0"),
+            PathBuf::from("15.0"),
+            PathBuf::from("14.2"),
+            PathBuf::from("14.10"),
+            PathBuf::from("beta"),
+        ];
+        dirs.sort_by(|a, b| compare_version_dirs(b, a));
+        let names: Vec<_> = dirs
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["15.0", "14.10", "14.2", "9.0", "beta"]);
+    }
 }

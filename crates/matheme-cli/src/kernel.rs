@@ -9,18 +9,13 @@
 use std::fmt;
 use std::path::Path;
 
-use matheme_wl::{Expr, Symbol};
+use matheme_wl::Expr;
 use typst::foundations::Value;
 use wolfram_expr::{Expr as RawExpr, ExprKind, Symbol as RawSymbol};
 use wstp::Link;
 
 /// Result of one Wolfram Kernel evaluation.
-#[derive(Debug, Clone)]
-pub struct EvalOutput {
-    pub expr: Expr,
-    pub messages: Vec<String>,
-    pub prints: Vec<String>,
-}
+pub type EvalOutput = matheme_wl::wstp::PacketOutput;
 
 #[derive(Debug)]
 pub struct KernelError(pub String);
@@ -136,10 +131,7 @@ impl KernelSession {
     }
 
     fn read_packet(&mut self) -> Result<RawExpr, KernelError> {
-        self.link
-            .get_expr_with_resolver(&mut |name: &str| {
-                Some(RawSymbol::new(&format!("System`{name}")))
-            })
+        matheme_wl::wstp::read_expr_resolved(&mut self.link)
             .map_err(|err| KernelError(format!("WSTP read error: {err}")))
     }
 
@@ -156,61 +148,7 @@ impl KernelSession {
             .flush()
             .map_err(|err| KernelError(format!("WSTP flush error: {err}")))?;
 
-        let return_head = RawSymbol::new(Symbol::RETURN_PACKET.as_str());
-        let text_head = RawSymbol::new("System`TextPacket");
-        let message_head = RawSymbol::new("System`MessagePacket");
-        let input_name_head = RawSymbol::new("System`InputNamePacket");
-        let output_name_head = RawSymbol::new("System`OutputNamePacket");
-
-        let mut messages = Vec::new();
-        let mut prints = Vec::new();
-        let mut pending_message = false;
-
-        for _ in 0..256 {
-            let pkt = self.read_packet()?;
-            match pkt.kind() {
-                ExprKind::Normal(normal)
-                    if normal.has_head(&return_head) && normal.elements().len() == 1 =>
-                {
-                    return Ok(EvalOutput {
-                        expr: Expr::from_raw(normal.elements()[0].clone()),
-                        messages,
-                        prints,
-                    });
-                }
-                ExprKind::Normal(normal) if normal.has_head(&message_head) => {
-                    pending_message = true;
-                }
-                ExprKind::Normal(normal)
-                    if normal.has_head(&text_head) && normal.elements().len() == 1 =>
-                {
-                    let text = Expr::from_raw_ref(&normal.elements()[0])
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| normal.elements()[0].to_string());
-                    if pending_message {
-                        messages.push(text);
-                        pending_message = false;
-                    } else {
-                        prints.push(text);
-                    }
-                }
-                ExprKind::Normal(normal)
-                    if normal.has_head(&input_name_head) || normal.has_head(&output_name_head) =>
-                {
-                    continue;
-                }
-                other => {
-                    return Err(KernelError(format!(
-                        "unexpected WSTP packet while waiting for ReturnPacket: {other}"
-                    )));
-                }
-            }
-        }
-
-        Err(KernelError(
-            "exceeded WSTP packet limit before ReturnPacket".into(),
-        ))
+        matheme_wl::wstp::read_return_packet(&mut self.link, 256, true).map_err(KernelError)
     }
 
     /// Evaluate a Wolfram Language code string via `ToExpression[code]`.

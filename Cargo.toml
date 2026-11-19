@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 matheme-world = { path = "crates/matheme-world" }
-matheme-wl = { path = "crates/matheme-wl" }
+matheme-wl = { path = "crates/matheme-wl", features = ["wstp"] }
 wolfram-library-link = "=0.6.1"
 typst = "=0.15.1"
 

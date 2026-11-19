@@ -48,21 +48,38 @@ impl CacheSelection {
     }
 }
 
-/// Drop the selected process-wide caches and return the names of the caches
-/// cleared.
-pub fn clear_caches(selection: CacheSelection) -> Vec<&'static str> {
+/// Individual process-wide cache domains that can be cleared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheTarget {
+    Fonts,
+    Packages,
+    Memoization,
+}
+
+impl CacheTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fonts => "Fonts",
+            Self::Packages => "Packages",
+            Self::Memoization => "Memoization",
+        }
+    }
+}
+
+/// Drop the selected process-wide caches and return the targets cleared.
+pub fn clear_caches(selection: CacheSelection) -> Vec<CacheTarget> {
     let mut cleared = Vec::with_capacity(3);
     if selection.fonts {
         reset_fonts();
-        cleared.push("Fonts");
+        cleared.push(CacheTarget::Fonts);
     }
     if selection.packages {
         reset_packages();
-        cleared.push("Packages");
+        cleared.push(CacheTarget::Packages);
     }
     if selection.memoization {
         comemo::evict(0);
-        cleared.push("Memoization");
+        cleared.push(CacheTarget::Memoization);
     }
     cleared
 }
@@ -83,9 +100,3 @@ pub fn reset_caches() {
 pub fn evict_caches(max_age: usize) {
     comemo::evict(max_age);
 }
-
-// Re-exported so the WSTP bridge can render diagnostics with the same
-// codespan-based formatter that typst-cli uses.
-pub use typst_kit::diagnostics::{
-    emit as emit_diagnostics, termcolor, DiagnosticFormat, DiagnosticWorld,
-};

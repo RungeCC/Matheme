@@ -19,7 +19,10 @@ use matheme_world::settings::{Patch, Update};
 use matheme_world::{datetime_from_unix, WorldDate};
 use typst::foundations::{Dict, Repr, Str, Value};
 
-use crate::cli::{Cli, Command, CompileCmd, EvalCmd, EvalFormat, FontsCmd, FormatArg, PackagesCmd};
+use crate::cli::{
+    Cli, Command, CompileCmd, EvalCmd, EvalFormat, FontSourceArg, FontsCmd, FormatArg,
+    PackageOriginArg, PackagesCmd,
+};
 use crate::kernel::KernelSession;
 
 fn main() -> ExitCode {
@@ -33,7 +36,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn apply_world_settings(cli: &Cli) {
+fn apply_world_settings(cli: &Cli, with_wolfram_fonts: bool) {
     let mut patch = Patch::default();
     if !cli.font_paths.is_empty() {
         patch.font_paths = Update::Set(cli.font_paths.clone());
@@ -55,7 +58,7 @@ fn apply_world_settings(cli: &Cli) {
     }
     matheme_world::apply(&patch);
 
-    if !cli.no_wolfram_fonts {
+    if with_wolfram_fonts && !cli.no_wolfram_fonts {
         let _ = discovery::configure_wolfram_fonts(cli.kernel.as_deref());
     }
 }
@@ -74,15 +77,15 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Version => cmd_version(cli.kernel.as_deref()),
         Command::Eval(cmd) => cmd_eval(&cli, cmd),
         Command::Fonts(cmd) => {
-            apply_world_settings(&cli);
+            apply_world_settings(&cli, true);
             cmd_fonts(cmd)
         }
         Command::Packages(cmd) => {
-            apply_world_settings(&cli);
+            apply_world_settings(&cli, false);
             cmd_packages(&cli, cmd)
         }
         Command::Compile(cmd) => {
-            apply_world_settings(&cli);
+            apply_world_settings(&cli, true);
             cmd_compile(&cli, cmd)
         }
     }
@@ -195,12 +198,12 @@ fn cmd_eval(cli: &Cli, cmd: &EvalCmd) -> Result<(), String> {
 }
 
 fn cmd_fonts(cmd: &FontsCmd) -> Result<(), String> {
-    let origin = match cmd.source.as_deref() {
-        Some(raw) => Some(
-            FontOrigin::parse(raw).ok_or_else(|| format!("unknown font source: {raw:?}"))?,
-        ),
-        None => None,
-    };
+    let origin = cmd.source.map(|src| match src {
+        FontSourceArg::Custom => FontOrigin::Custom,
+        FontSourceArg::Host => FontOrigin::Host,
+        FontSourceArg::Embedded => FontOrigin::Embedded,
+        FontSourceArg::System => FontOrigin::System,
+    });
     let filter = FontFilter {
         family: cmd.family.clone(),
         origin,
@@ -236,13 +239,12 @@ fn cmd_packages(cli: &Cli, cmd: &PackagesCmd) -> Result<(), String> {
             eprintln!("warning: failed to fetch Universe index: {err}");
         }
     }
-    let origin = match cmd.origin.as_deref() {
-        Some(raw) => Some(
-            PackageOriginFilter::parse(raw)
-                .ok_or_else(|| format!("unknown package origin: {raw:?}"))?,
-        ),
-        None => None,
-    };
+    let origin = cmd.origin.map(|orig| match orig {
+        PackageOriginArg::Local => PackageOriginFilter::Local,
+        PackageOriginArg::Data => PackageOriginFilter::Data,
+        PackageOriginArg::Cache => PackageOriginFilter::Cache,
+        PackageOriginArg::Universe => PackageOriginFilter::Universe,
+    });
     let filter = PackageFilter {
         name: cmd.name.clone(),
         namespace: cmd.namespace.clone(),
@@ -304,7 +306,24 @@ fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
     }
 }
 
+fn validate_compile_output(out_path: &Path, has_evaluate: bool) -> Result<(), String> {
+    if out_path == Path::new("-") && has_evaluate {
+        return Err(
+            "cannot write compiled output to stdout ('-') while using --evaluate; specify an output file path"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
+    let format = resolve_format(cmd);
+    let out_path = cmd
+        .output
+        .clone()
+        .unwrap_or_else(|| default_output_path(&cmd.input, format));
+    validate_compile_output(&out_path, !cmd.evaluate.is_empty())?;
+
     let source = if cmd.input == Path::new("-") {
         let mut buf = String::new();
         io::stdin()
@@ -327,7 +346,6 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
         None => PathBuf::from("."),
     };
 
-    let format = resolve_format(cmd);
     let pages = match cmd.pages.as_deref() {
         Some(spec) => Some(compile::parse_page_str(spec)?),
         None => None,
@@ -401,10 +419,6 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
                 eprint!("{}", success.formatted);
             }
 
-            let out_path = cmd
-                .output
-                .clone()
-                .unwrap_or_else(|| default_output_path(&cmd.input, format));
             write_output(&out_path, &success.output)?;
 
             if let Some(evaluated) = success.evaluated {
@@ -490,5 +504,17 @@ fn write_output(path: &Path, output: &CompileOutput) -> Result<(), String> {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_stdout_output_combined_with_evaluate() {
+        assert!(validate_compile_output(Path::new("-"), true).is_err());
+        assert!(validate_compile_output(Path::new("-"), false).is_ok());
+        assert!(validate_compile_output(Path::new("out.pdf"), true).is_ok());
     }
 }

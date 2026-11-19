@@ -10,7 +10,7 @@ use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
 
 use matheme_wl::{assoc, Entry, Expr, Rule};
-use wolfram_library_link::{expr::Symbol as RawSymbol, wstp::Link};
+use wolfram_library_link::wstp::Link;
 
 use crate::diagnostics::{self, Diagnostic};
 use crate::wolfram;
@@ -94,8 +94,7 @@ fn read_action<A>(
     link: &mut Link,
     parse_action: impl FnOnce(&str, &[Entry<'_>]) -> Result<A, Failure>,
 ) -> Result<A, Failure> {
-    let expr: Expr = link
-        .get_expr_with_resolver(&mut |name: &str| Some(RawSymbol::new(&format!("System`{name}"))))
+    let expr: Expr = matheme_wl::wstp::read_expr_resolved(link)
         .map_err(|err| error(format!("failed to read WSTP call: {err}")))?
         .into();
 

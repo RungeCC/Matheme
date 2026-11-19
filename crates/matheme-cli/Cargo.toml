@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-matheme-wl = { path = "../matheme-wl" }
+matheme-wl = { path = "../matheme-wl", features = ["wstp"] }
 matheme-world = { path = "../matheme-world" }
 typst = "=0.15.1"
 wolfram-app-discovery = "0.6.0"

@@ -19,7 +19,7 @@ fn location_expr(location: &Option<Location>) -> Expr {
 
 pub fn expr(diag: &Diagnostic) -> Expr {
     assoc! {
-        "Severity" -> diag.severity,
+        "Severity" -> diag.severity.as_str(),
         "Message" -> diag.message.as_str(),
         "Location" -> location_expr(&diag.location),
         "Hints" -> Expr::list(diag.hints.iter().map(|hint| {
