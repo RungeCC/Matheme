@@ -265,7 +265,15 @@ impl From<u32> for Expr {
 
 impl From<f64> for Expr {
     fn from(value: f64) -> Self {
-        RawExpr::real(value).into()
+        if value.is_finite() {
+            RawExpr::real(value).into()
+        } else if value.is_nan() {
+            Self::symbol(&Symbol::INDETERMINATE)
+        } else if value.is_sign_positive() {
+            Self::normal(&Symbol::DIRECTED_INFINITY, [1_i64])
+        } else {
+            Self::normal(&Symbol::DIRECTED_INFINITY, [-1_i64])
+        }
     }
 }
 
@@ -346,6 +354,21 @@ mod tests {
         assert_eq!(Expr::from(Some("ok")).as_str(), Some("ok"));
         assert_eq!(Expr::from(Option::<&str>::None), Symbol::NULL);
         assert_eq!(Expr::from(Some(9_i64)).as_i64(), Some(9));
+    }
+
+    #[test]
+    fn non_finite_floats_map_without_panicking() {
+        assert_eq!(Expr::from(f64::NAN), Symbol::INDETERMINATE);
+
+        let pos_inf = Expr::from(f64::INFINITY);
+        let pos = pos_inf.as_normal().expect("DirectedInfinity[1]");
+        assert!(pos.has_head(&Symbol::DIRECTED_INFINITY));
+        assert_eq!(pos.get(0).and_then(Expr::as_i64), Some(1));
+
+        let neg_inf = Expr::from(f64::NEG_INFINITY);
+        let neg = neg_inf.as_normal().expect("DirectedInfinity[-1]");
+        assert!(neg.has_head(&Symbol::DIRECTED_INFINITY));
+        assert_eq!(neg.get(0).and_then(Expr::as_i64), Some(-1));
     }
 
     #[test]

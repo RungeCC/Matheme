@@ -12,8 +12,8 @@
 use std::any::Any;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,38 +27,73 @@ use crate::settings::{self, Settings};
 /// Upper bound when buffering `/preview/index.json` in memory (32 MiB).
 const MAX_UNIVERSE_INDEX_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Two independent switches: the configured policy and a per-call opt-in.
+/// Two independent switches: the configured policy and a reference-counted
+/// per-call opt-in, plus a flag recording whether a download was blocked.
 struct DownloadGate {
     configured: AtomicBool,
-    call: AtomicBool,
+    call_depth: AtomicUsize,
+    blocked: AtomicBool,
 }
 
 impl DownloadGate {
     fn new(configured: bool) -> Self {
         Self {
             configured: AtomicBool::new(configured),
-            call: AtomicBool::new(false),
+            call_depth: AtomicUsize::new(0),
+            blocked: AtomicBool::new(false),
         }
     }
 
     fn allowed(&self) -> bool {
-        self.configured.load(Ordering::Relaxed) || self.call.load(Ordering::Relaxed)
+        self.configured.load(Ordering::Acquire) || self.call_depth.load(Ordering::Acquire) > 0
     }
 
     fn set_configured(&self, allowed: bool) {
-        self.configured.store(allowed, Ordering::Relaxed);
+        self.configured.store(allowed, Ordering::Release);
     }
 
-    fn set_call(&self, allowed: bool) {
-        self.call.store(allowed, Ordering::Relaxed);
+    fn acquire_call(&self) {
+        self.call_depth.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn release_call(&self) {
+        let prev = self.call_depth.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prev > 0, "DownloadGate::release_call underflow");
+    }
+
+    fn clear_blocked(&self) {
+        self.blocked.store(false, Ordering::Release);
+    }
+
+    fn mark_blocked(&self) {
+        self.blocked.store(true, Ordering::Release);
+    }
+
+    fn was_blocked(&self) -> bool {
+        self.blocked.load(Ordering::Acquire)
     }
 }
 
-struct CallDownloadGuard<'a>(&'a DownloadGate);
+/// RAII scope that activates a per-call download opt-in (when `allowed` is
+/// true) and tracks whether a package download was rejected while active.
+pub struct CallDownloadScope {
+    gate: Arc<DownloadGate>,
+    allowed: bool,
+}
 
-impl Drop for CallDownloadGuard<'_> {
+impl CallDownloadScope {
+    /// Returns `true` if `GatedDownloader` rejected a download because
+    /// downloads were disabled during this call.
+    pub fn download_blocked(&self) -> bool {
+        self.gate.was_blocked()
+    }
+}
+
+impl Drop for CallDownloadScope {
     fn drop(&mut self) {
-        self.0.set_call(false);
+        if self.allowed {
+            self.gate.release_call();
+        }
     }
 }
 
@@ -207,8 +242,6 @@ fn scan_local(root: &Path, origin: PackageOrigin) -> Vec<PackageEntry> {
 /// `local` is a filesystem listing that is invalidated whenever a package
 /// archive is downloaded; `universe` is filled by the downloader when typst
 /// fetches the index, so the query layer never needs a second network call.
-use std::sync::RwLock;
-
 #[derive(Debug)]
 pub struct MetadataCache {
     data_dir: Option<PathBuf>,
@@ -290,6 +323,7 @@ struct GatedDownloader {
     agent: ureq::Agent,
     gate: Arc<DownloadGate>,
     metadata: Arc<MetadataCache>,
+    tls_error: Option<String>,
 }
 
 fn is_universe_index(url: &str) -> bool {
@@ -299,10 +333,17 @@ fn is_universe_index(url: &str) -> bool {
 impl Downloader for GatedDownloader {
     fn stream(&self, _key: &dyn Any, url: &str) -> io::Result<(Option<usize>, Box<dyn Read>)> {
         if !self.gate.allowed() {
+            self.gate.mark_blocked();
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "package downloads are disabled (set Downloads -> True or AllowDownloads -> True)",
+                "package downloads are disabled",
             ));
+        }
+
+        if let Some(err) = &self.tls_error {
+            if url.starts_with("https://") {
+                return Err(io::Error::other(err.clone()));
+            }
         }
 
         let response = self.agent.get(url).call().map_err(|err| match err {
@@ -367,8 +408,10 @@ fn build(settings: &Settings) -> PackageRuntime {
     }
     // ureq's `native-tls` feature only adds an adapter; the connector must be
     // installed explicitly (Windows then uses schannel, no extra DLL).
-    if let Ok(tls) = ureq::native_tls::TlsConnector::new() {
-        agent = agent.tls_connector(Arc::new(tls));
+    let mut tls_error = None;
+    match ureq::native_tls::TlsConnector::new() {
+        Ok(tls) => agent = agent.tls_connector(Arc::new(tls)),
+        Err(err) => tls_error = Some(format!("failed to initialize native TLS connector: {err}")),
     }
 
     let data = match &settings.package_data {
@@ -388,6 +431,7 @@ fn build(settings: &Settings) -> PackageRuntime {
         agent: agent.build(),
         gate: Arc::clone(&gate),
         metadata: Arc::clone(&metadata),
+        tls_error,
     };
 
     PackageRuntime {
@@ -420,19 +464,19 @@ pub(crate) fn cached() -> Option<Arc<PackageRuntime>> {
     PACKAGES.cached()
 }
 
-/// Allow downloads for the current call only. The bridge resets this on every
-/// entry point, so a single `AllowDownloads -> True` does not leak.
-///
-/// Clearing the flag does not build the loader: introspection calls must stay
-/// read-only with respect to the caches.
-pub fn set_call_downloads(allowed: bool) {
-    if !allowed {
-        if let Some(runtime) = cached() {
-            runtime.gate.set_call(false);
-        }
-        return;
+/// Enter a scoped per-call download policy. When `allowed` is `true`, downloads
+/// are permitted until the returned [`CallDownloadScope`] is dropped (including
+/// on early returns or panics), so a per-call opt-in never leaks to later calls.
+pub fn enter_call_downloads(allowed: bool) -> CallDownloadScope {
+    let runtime = package_runtime();
+    runtime.gate.clear_blocked();
+    if allowed {
+        runtime.gate.acquire_call();
     }
-    package_runtime().gate.set_call(true);
+    CallDownloadScope {
+        gate: Arc::clone(&runtime.gate),
+        allowed,
+    }
 }
 
 /// Mirror a changed `Downloads` setting into the live loader, if it exists.
@@ -463,8 +507,7 @@ pub fn prefetch_universe_index() -> Result<String, String> {
     let spec: VersionlessPackageSpec = "@preview/cetz"
         .parse()
         .expect("valid versionless package spec");
-    runtime.gate.set_call(true);
-    let _guard = CallDownloadGuard(&runtime.gate);
+    let _scope = enter_call_downloads(true);
     runtime
         .packages
         .universe()
@@ -569,5 +612,39 @@ mod tests {
         assert_eq!(cache.cached_counts(), (Some(0), None));
         cache.set_universe(br#"[{"name":"cetz","version":"0.4.0"}]"#);
         assert_eq!(cache.cached_counts(), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn call_download_scope_resets_on_drop_and_tracks_blocked_downloads() {
+        let gate = Arc::new(DownloadGate::new(false));
+        assert!(!gate.allowed());
+
+        {
+            gate.acquire_call();
+            let _scope = CallDownloadScope {
+                gate: Arc::clone(&gate),
+                allowed: true,
+            };
+            assert!(gate.allowed());
+        }
+        assert!(!gate.allowed(), "per-call opt-in must reset on drop");
+
+        let downloader = GatedDownloader {
+            agent: ureq::AgentBuilder::new().build(),
+            gate: Arc::clone(&gate),
+            metadata: Arc::new(MetadataCache::new(None, None)),
+            tls_error: None,
+        };
+        let scope = CallDownloadScope {
+            gate: Arc::clone(&gate),
+            allowed: false,
+        };
+        assert!(!scope.download_blocked());
+        let err = downloader
+            .stream(&(), "https://packages.typst.org/preview/index.json")
+            .err()
+            .expect("downloads disabled should error");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(scope.download_blocked());
     }
 }

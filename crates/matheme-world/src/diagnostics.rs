@@ -139,6 +139,18 @@ pub fn from_typst(diag: &SourceDiagnostic, world: &MathemeWorld) -> Diagnostic {
     }
 }
 
+/// A host/bridge-level error (failed source load, internal evaluation failure).
+pub fn error(message: impl Into<String>) -> Diagnostic {
+    Diagnostic {
+        severity: "Error",
+        message: message.into(),
+        location: None,
+        hints: vec![],
+        trace: vec![],
+        custom: true,
+    }
+}
+
 /// A host/bridge-level warning (bad option, offline hint, unsupported input value).
 pub fn warning(message: impl Into<String>) -> Diagnostic {
     Diagnostic {
@@ -152,7 +164,7 @@ pub fn warning(message: impl Into<String>) -> Diagnostic {
 }
 
 /// Render Typst diagnostics with the CLI's codespan formatter, then append
-/// custom warnings as plain `hint:` lines.
+/// custom diagnostics as plain `error:` / `hint:` lines.
 pub fn format(
     world: &MathemeWorld,
     typst_diags: &[SourceDiagnostic],
@@ -169,7 +181,12 @@ pub fn format(
     }
     let mut text = String::from_utf8_lossy(buffer.as_slice()).into_owned();
     for diag in all.iter().filter(|d| d.custom) {
-        text.push_str(&format!("hint: {}\n", diag.message));
+        let prefix = if diag.severity == "Error" {
+            "error"
+        } else {
+            "hint"
+        };
+        text.push_str(&format!("{prefix}: {}\n", diag.message));
     }
     text
 }

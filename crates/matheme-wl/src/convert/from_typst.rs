@@ -53,7 +53,7 @@ impl<'a> Converter<'a> {
             Value::Auto => Expr::symbol(&Symbol::AUTOMATIC),
             Value::Bool(b) => Expr::boolean(*b),
             Value::Int(i) => Expr::from(*i),
-            Value::Float(f) => float_expr(*f),
+            Value::Float(f) => Expr::from(*f),
             Value::Decimal(d) => {
                 let text = d.to_string();
                 let approx = text.parse::<f64>().ok().filter(|v| v.is_finite());
@@ -184,18 +184,6 @@ fn version_expr(ver: &Version) -> Expr {
         "Type" -> "Version",
         "Components" -> components,
         "String" -> formatted,
-    }
-}
-
-fn float_expr(value: f64) -> Expr {
-    if value.is_finite() {
-        Expr::from(value)
-    } else if value.is_nan() {
-        Expr::symbol(&Symbol::INDETERMINATE)
-    } else if value.is_sign_positive() {
-        Expr::normal(&Symbol::DIRECTED_INFINITY, [1_i64])
-    } else {
-        Expr::normal(&Symbol::DIRECTED_INFINITY, [-1_i64])
     }
 }
 
@@ -404,5 +392,34 @@ mod tests {
         assert!(warnings.is_empty());
         let entries = expr.as_association().expect("assoc");
         assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn non_finite_compound_values_do_not_panic() {
+        let (fr_inf, _) = convert(&Value::Fraction(Fr::new(f64::INFINITY)));
+        let fr_entries = fr_inf.as_association().expect("Fraction assoc");
+        assert!(field(&fr_entries, "Value")
+            .as_normal()
+            .is_some_and(|n| n.has_head(&Symbol::DIRECTED_INFINITY)));
+
+        let (ang_inf, _) = convert(&Value::Angle(Angle::deg(f64::INFINITY)));
+        let ang_n = ang_inf.as_normal().expect("Quantity");
+        assert!(ang_n.has_head(&Symbol::QUANTITY));
+        assert!(ang_n
+            .get(0)
+            .and_then(Expr::as_normal)
+            .is_some_and(|n| n.has_head(&Symbol::DIRECTED_INFINITY)));
+
+        let (len_inf, _) = convert(&Value::Length(Abs::pt(f64::NEG_INFINITY).into()));
+        let len_n = len_inf.as_normal().expect("Quantity");
+        assert!(len_n.has_head(&Symbol::QUANTITY));
+        assert_eq!(
+            len_n
+                .get(0)
+                .and_then(Expr::as_normal)
+                .and_then(|n| n.get(0))
+                .and_then(Expr::as_i64),
+            Some(-1)
+        );
     }
 }

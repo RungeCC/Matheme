@@ -219,14 +219,8 @@ pub fn parse_features(names: &[String], format: OutputFormat) -> Result<Features
     Ok(selected.into_iter().collect())
 }
 
-fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, allow_downloads: bool) {
-    if allow_downloads {
-        return;
-    }
-    if diagnostics
-        .iter()
-        .any(|d| d.severity == "Error" && d.message.to_lowercase().contains("package"))
-    {
+fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, download_blocked: bool) {
+    if download_blocked {
         diagnostics.push(diagnostics::warning(
             "Package downloads are disabled; enable downloads to fetch missing packages.",
         ));
@@ -260,7 +254,7 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
         request.features
     };
 
-    crate::set_call_downloads(request.allow_downloads);
+    let download_scope = crate::enter_call_downloads(request.allow_downloads);
     let world = MathemeWorld::with_options(
         request.source,
         request.inputs,
@@ -379,7 +373,7 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
     };
 
     if failed {
-        maybe_offline_hint(&mut diagnostics, request.allow_downloads);
+        maybe_offline_hint(&mut diagnostics, download_scope.download_blocked());
         let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
         crate::evict_caches(COMEMO_MAX_AGE);
 
@@ -479,13 +473,15 @@ fn evaluate_spec(
     let main_source = match world.source(world.main()) {
         Ok(source) => source,
         Err(err) => {
-            diagnostics.push(diagnostics::warning(format!(
+            diagnostics.push(diagnostics::error(format!(
                 "failed to load main source for evaluation: {err}"
             )));
             return Err(());
         }
     };
 
+    // Warnings from `main_source` were already recorded during `typst::compile`
+    // above, so we intentionally do not re-emit `module_sink.warnings()`.
     let mut module_sink = Sink::new();
     let module = match typst_eval::eval(
         (world as &dyn World).track(),
@@ -568,5 +564,20 @@ mod tests {
         assert!(features.is_enabled(Feature::Html));
         assert!(features.is_enabled(Feature::A11yExtras));
         assert!(parse_features(&["bogus".into()], OutputFormat::Pdf).is_err());
+    }
+
+    #[test]
+    fn offline_hint_only_fires_when_download_was_actually_blocked() {
+        let mut diags = vec![diagnostics::error("cannot find variable package")];
+        maybe_offline_hint(&mut diags, false);
+        assert_eq!(
+            diags.len(),
+            1,
+            "unrelated error mentioning 'package' must not trigger offline hint"
+        );
+
+        maybe_offline_hint(&mut diags, true);
+        assert_eq!(diags.len(), 2);
+        assert_eq!(diags[1].severity, "Warning");
     }
 }

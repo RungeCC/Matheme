@@ -10,7 +10,6 @@ use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
 
 use matheme_wl::{assoc, Entry, Expr, Rule};
-use matheme_world as world;
 use wolfram_library_link::{expr::Symbol as RawSymbol, wstp::Link};
 
 use crate::diagnostics::{self, Diagnostic};
@@ -202,8 +201,6 @@ pub fn serve(link: &mut Link) {
         if action.needs_host_fonts() {
             wolfram::configure_world_fonts(link);
         }
-        // A per-call download opt-in never outlives the call that set it.
-        world::set_call_downloads(false);
         action.execute()
     }))
     .unwrap_or_else(|payload| {

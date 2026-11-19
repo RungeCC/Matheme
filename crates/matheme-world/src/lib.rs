@@ -18,8 +18,8 @@ pub use fonts::{
     FontCache, FontCounts,
 };
 pub use packages::{
-    package_status, prefetch_universe_index, reload_packages, reset as reset_packages,
-    set_call_downloads, warmup_packages, PackageStatus,
+    enter_call_downloads, package_status, prefetch_universe_index, reload_packages,
+    reset as reset_packages, warmup_packages, CallDownloadScope, PackageStatus,
 };
 pub use settings::{
     apply, set_host_font_paths, settings, Applied, Changes, Patch, Settings, Update,

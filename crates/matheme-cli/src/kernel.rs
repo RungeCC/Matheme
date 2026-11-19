@@ -33,9 +33,42 @@ impl fmt::Display for KernelError {
 
 impl std::error::Error for KernelError {}
 
+/// Tracks whether a session owns its kernel process and has already sent `Exit[]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExitPolicy {
+    owns_kernel: bool,
+    closed: bool,
+}
+
+impl ExitPolicy {
+    fn owned() -> Self {
+        Self {
+            owns_kernel: true,
+            closed: false,
+        }
+    }
+
+    fn attached() -> Self {
+        Self {
+            owns_kernel: false,
+            closed: false,
+        }
+    }
+
+    /// Returns `true` at most once, and only when this session owns the kernel.
+    fn take_exit(&mut self) -> bool {
+        if !self.owns_kernel || self.closed {
+            return false;
+        }
+        self.closed = true;
+        true
+    }
+}
+
 /// A live WSTP session attached to a `WolframKernel` process.
 pub struct KernelSession {
     link: Link,
+    exit_policy: ExitPolicy,
 }
 
 impl KernelSession {
@@ -56,7 +89,10 @@ impl KernelSession {
         link.activate()
             .map_err(|err| KernelError(format!("failed to activate WSTP link: {err}")))?;
 
-        let mut session = Self { link };
+        let mut session = Self {
+            link,
+            exit_policy: ExitPolicy::owned(),
+        };
         session.drain_startup()?;
         Ok(session)
     }
@@ -75,7 +111,10 @@ impl KernelSession {
         link.activate()
             .map_err(|err| KernelError(format!("failed to activate WSTP link: {err}")))?;
 
-        let mut session = Self { link };
+        let mut session = Self {
+            link,
+            exit_policy: ExitPolicy::attached(),
+        };
         session.drain_startup()?;
         Ok(session)
     }
@@ -195,8 +234,10 @@ impl KernelSession {
         Ok((value, warnings, output))
     }
 
-    /// Ask the kernel to exit cleanly before closing the link.
-    pub fn close(mut self) {
+    fn send_exit(&mut self) {
+        if !self.exit_policy.take_exit() {
+            return;
+        }
         let exit = RawExpr::normal(
             RawExpr::symbol(RawSymbol::new("System`EvaluatePacket")),
             vec![RawExpr::normal(
@@ -207,18 +248,40 @@ impl KernelSession {
         let _ = self.link.put_expr(&exit);
         let _ = self.link.flush();
     }
+
+    /// Ask an owned kernel to exit cleanly before closing the link.
+    ///
+    /// For sessions created via [`Self::connect`], this only closes the link
+    /// without terminating the external kernel.
+    pub fn close(mut self) {
+        self.send_exit();
+    }
 }
 
 impl Drop for KernelSession {
     fn drop(&mut self) {
-        let exit = RawExpr::normal(
-            RawExpr::symbol(RawSymbol::new("System`EvaluatePacket")),
-            vec![RawExpr::normal(
-                RawExpr::symbol(RawSymbol::new("System`Exit")),
-                vec![],
-            )],
+        self.send_exit();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_session_exits_once() {
+        let mut policy = ExitPolicy::owned();
+        assert!(policy.take_exit(), "first close/drop should send Exit[]");
+        assert!(!policy.take_exit(), "subsequent drop must not resend Exit[]");
+    }
+
+    #[test]
+    fn attached_session_never_exits_external_kernel() {
+        let mut policy = ExitPolicy::attached();
+        assert!(
+            !policy.take_exit(),
+            "attached --link-name session must never kill external kernel"
         );
-        let _ = self.link.put_expr(&exit);
-        let _ = self.link.flush();
+        assert!(!policy.take_exit());
     }
 }
