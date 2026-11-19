@@ -351,7 +351,7 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
         None => None,
     };
     let pdf_standards = compile::parse_pdf_standards(&cmd.pdf_standards)?;
-    let features = compile::parse_features(&cmd.features, format)?;
+    let features = compile::parse_features(&cmd.features)?;
 
     let (world_date, pdf_timestamp) = match cmd.creation_timestamp {
         Some(unix) => {

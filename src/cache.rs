@@ -124,7 +124,7 @@ pub fn run_warmup(input: WarmupArgs) -> Answer {
     if input.package_index {
         let start = std::time::Instant::now();
         match world::prefetch_universe_index() {
-            Ok(version) => outcome.extend([rule!("PackageIndex" -> version)]),
+            Ok(count) => outcome.extend([rule!("PackageIndex" -> count as i64)]),
             Err(err) => {
                 outcome.extend([rule!("PackageIndex" -> Expr::null())]);
                 outcome.warn(format!("failed to prefetch Universe index: {err}"));

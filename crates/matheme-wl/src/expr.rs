@@ -5,7 +5,7 @@
 //! `TryFrom` conversions, and bidirectional Typst conversion via
 //! [`Expr::to_typst`] and [`Expr::from_typst`].
 
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::fmt;
 
 use typst::foundations::Value;
@@ -153,13 +153,50 @@ impl Expr {
         }
     }
 
-    /// Bytes of a WXF `ByteArray`. Over WSTP the same value arrives as
-    /// `ByteArray[{…}]`, which [`Expr::as_normal`] exposes instead.
+    /// Bytes of a WXF `ByteArray`. Prefer [`Expr::to_bytes`] when callers need
+    /// to accept both WXF and WSTP (`ByteArray[{…}]`) wire forms.
     pub fn as_byte_array(&self) -> Option<&[u8]> {
         match self.0.kind() {
             ExprKind::ByteArray(bytes) => Some(bytes.as_slice()),
             _ => None,
         }
+    }
+
+    /// Extract raw bytes from either a WXF `ExprKind::ByteArray` (zero-copy) or
+    /// the WSTP `System`ByteArray[{b1, b2, …}]` wire form.
+    ///
+    /// Returns:
+    /// - `Ok(None)` if this expression is not a `ByteArray`;
+    /// - `Ok(Some(bytes))` if it is a valid `ByteArray`;
+    /// - `Err(reason)` if it has head `System`ByteArray` but malformed contents.
+    pub fn to_bytes(&self) -> Result<Option<Cow<'_, [u8]>>, String> {
+        if let Some(bytes) = self.as_byte_array() {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
+        let Some(normal) = self.as_normal().filter(|n| n.has_head(&Symbol::BYTE_ARRAY)) else {
+            return Ok(None);
+        };
+        let [list] = normal.elements() else {
+            return Err("ByteArray expects a single List of byte integers".into());
+        };
+        let Some(elements) = list.as_list() else {
+            return Err("ByteArray expects a List of byte integers".into());
+        };
+        let mut bytes = Vec::with_capacity(elements.len());
+        for (index, element) in elements.iter().enumerate() {
+            let Some(value) = element.as_i64() else {
+                return Err(format!("ByteArray element {index} is not an Integer"));
+            };
+            match u8::try_from(value) {
+                Ok(byte) => bytes.push(byte),
+                Err(_) => {
+                    return Err(format!(
+                        "ByteArray element {index} ({value}) is out of byte range"
+                    ));
+                }
+            }
+        }
+        Ok(Some(Cow::Owned(bytes)))
     }
 
     /// The normal expression behind this value, if it is compound.
@@ -180,9 +217,17 @@ impl Expr {
             ExprKind::Association(entries) => Some(
                 entries
                     .iter()
-                    .map(|entry: &RuleEntry| Entry::Rule {
-                        key: Self::from_raw_ref(&entry.key),
-                        value: Self::from_raw_ref(&entry.value),
+                    .map(|entry: &RuleEntry| {
+                        if entry.delayed {
+                            Entry::RuleDelayed {
+                                key: Self::from_raw_ref(&entry.key),
+                            }
+                        } else {
+                            Entry::Rule {
+                                key: Self::from_raw_ref(&entry.key),
+                                value: Self::from_raw_ref(&entry.value),
+                            }
+                        }
                     })
                     .collect(),
             ),
@@ -413,5 +458,30 @@ mod tests {
         let (key, value) = parsed[0].pair().expect("immediate rule");
         assert_eq!(key.as_str(), Some("key"));
         assert_eq!(value.as_str(), Some("value"));
+    }
+
+    #[test]
+    fn to_bytes_handles_wxf_and_wstp_uniformly() {
+        let wxf = Expr::bytes(vec![10, 20, 30]);
+        assert_eq!(wxf.to_bytes().unwrap().as_deref(), Some(&[10, 20, 30][..]));
+
+        let wstp = Expr::normal(Symbol::BYTE_ARRAY, [Expr::list([10_i64, 20, 30])]);
+        assert_eq!(wstp.to_bytes().unwrap().as_deref(), Some(&[10, 20, 30][..]));
+
+        assert_eq!(Expr::from("not bytes").to_bytes().unwrap(), None);
+
+        let bad = Expr::normal(Symbol::BYTE_ARRAY, [Expr::list([300_i64])]);
+        assert!(bad.to_bytes().is_err());
+    }
+
+    #[test]
+    fn wxf_association_preserves_delayed_rules() {
+        let expr = Expr::from_raw(RawExpr::new(ExprKind::Association(vec![
+            RuleEntry::rule(RawExpr::from("a"), RawExpr::from(1_i64)),
+            RuleEntry::rule_delayed(RawExpr::from("b"), RawExpr::from(2_i64)),
+        ])));
+        let entries = expr.as_association().expect("WXF association");
+        assert!(entries[0].pair().is_ok());
+        assert!(matches!(entries[1], Entry::RuleDelayed { .. }));
     }
 }

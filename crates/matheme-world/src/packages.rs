@@ -496,13 +496,14 @@ pub fn warmup_packages() -> PackageStatus {
 }
 
 /// Eagerly fetch and cache the Universe index (the `OnceCell` inside
-/// `UniversePackages`) without compiling a document. The per-call gate is
-/// opened temporarily via an RAII guard, so this works even when downloads are
-/// configured off.
+/// `UniversePackages`) without compiling a document, returning the number of
+/// cached Universe index entries. The per-call gate is opened temporarily via
+/// an RAII guard, so this works even when downloads are configured off.
 ///
 /// `typst-kit::UniversePackages` exposes no standalone index-fetch API, so we
-/// probe `@preview/cetz` to populate its internal index cell.
-pub fn prefetch_universe_index() -> Result<String, String> {
+/// probe `@preview/cetz` to populate its internal index cell without exposing
+/// the probe package's version as part of the public contract.
+pub fn prefetch_universe_index() -> Result<usize, String> {
     let runtime = package_runtime();
     let spec: VersionlessPackageSpec = "@preview/cetz"
         .parse()
@@ -512,7 +513,7 @@ pub fn prefetch_universe_index() -> Result<String, String> {
         .packages
         .universe()
         .latest_version(&spec)
-        .map(|version| version.to_string())
+        .map(|_| runtime.metadata.universe().map_or(0, |entries| entries.len()))
         .map_err(|err| err.to_string())
 }
 

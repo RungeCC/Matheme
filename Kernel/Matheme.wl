@@ -37,37 +37,22 @@ TypstForm::unspt = "TypstForm of `1` is not supported.";
 
 $TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates (pass a key to \"TypstTemplate\").";
 
+makeMiTeXTemplate[fnName_String] := TemplateObject[{
+    "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
+    "#import \"@preview/mitex:0.2.7\": " <> fnName <> "\n",
+    "#" <> fnName <> "(\"", TemplateSlot[1], "\")"},
+  CombinerFunction -> StringJoin,
+  InsertionFunction -> (StringReplace[TextString[#], {"\\" -> "\\\\", "\"" -> "\\\""}] &),
+  MetaInformation -> <| |>
+];
+
 $TypstTemplates = <|
   "Equation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$ `` $"],
   "InlineEquation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$``$"],
   "Text" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n``"],
-  "MiTeXEquation" -> (
-    TemplateObject[{
-      "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-      "#import \"@preview/mitex:0.2.7\": mitex\n",
-      "#mitex(\"", TemplateSlot[1], "\")"},
-      CombinerFunction -> StringJoin,
-      InsertionFunction -> (StringReplace[TextString[#], {"\\" -> "\\\\", "\"" -> "\\\""}] &),
-      MetaInformation -> <| |>]
-  ),
-  "MiTeXInlineEquation" -> (
-    TemplateObject[{
-      "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-      "#import \"@preview/mitex:0.2.7\": mi\n",
-      "#mi(\"", TemplateSlot[1], "\")"},
-      CombinerFunction -> StringJoin,
-      InsertionFunction -> (StringReplace[TextString[#], {"\\" -> "\\\\", "\"" -> "\\\""}] &),
-      MetaInformation -> <| |>]
-  ),
-  "MiTeXText" -> (
-    TemplateObject[{
-      "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
-      "#import \"@preview/mitex:0.2.7\": mitext\n",
-      "#mitext(\"", TemplateSlot[1], "\")"},
-      CombinerFunction -> StringJoin,
-      InsertionFunction -> (StringReplace[TextString[#], {"\\" -> "\\\\", "\"" -> "\\\""}] &),
-      MetaInformation -> <| |>]
-  )
+  "MiTeXEquation" -> makeMiTeXTemplate["mitex"],
+  "MiTeXInlineEquation" -> makeMiTeXTemplate["mi"],
+  "MiTeXText" -> makeMiTeXTemplate["mitext"]
 |>;
 Protect[$TypstTemplates];
 
@@ -191,18 +176,21 @@ formatDiagnosticCell[text_String] := Module[{formatted = normalizeDiagnosticBord
 ];
 formatDiagnosticCell[other_] := other;
 
-failureDetails[name_, result_] := <|
-  "MessageTemplate" -> "Matheme `Operation` failed: `Detail`",
-  "MessageParameters" -> <|
+failureDetails[name_, result_] := With[{formatted = Lookup[result, "Formatted", ""]},
+  <|
+    "MessageTemplate" -> "Matheme `Operation` failed: `Detail`",
+    "MessageParameters" -> <|
+      "Operation" -> Lookup[$displayNames, name, name],
+      "Detail" -> Lookup[result, "Message", "unknown error"]
+    |>,
+    "Message" -> Lookup[result, "Message", "unknown error"],
     "Operation" -> Lookup[$displayNames, name, name],
-    "Detail" -> Lookup[result, "Message", "unknown error"]
-  |>,
-  "Message" -> Lookup[result, "Message", "unknown error"],
-  "Operation" -> Lookup[$displayNames, name, name],
-  "ErrorTag" -> Lookup[result, "ErrorTag", "Call"],
-  "Diagnostics" -> Lookup[result, "Diagnostics", {}],
-  "Formatted" -> formatDiagnosticCell[Lookup[result, "Formatted", ""]]
-|>;
+    "ErrorTag" -> Lookup[result, "ErrorTag", "Call"],
+    "Diagnostics" -> Lookup[result, "Diagnostics", {}],
+    "Formatted" -> formatted,
+    "FormattedCell" -> formatDiagnosticCell[formatted]
+  |>
+];
 
 callUnchecked[name_String, arguments_Association] := Module[{result, tag, dropped},
   If[!loadFunctions[],
@@ -228,7 +216,7 @@ callUnchecked[name_String, arguments_Association] := Module[{result, tag, droppe
   ];
   dropped = KeyDrop[result, "Status"];
   If[KeyExistsQ[dropped, "Formatted"],
-    MapAt[formatDiagnosticCell, dropped, "Formatted"],
+    Append[dropped, "FormattedCell" -> formatDiagnosticCell[dropped["Formatted"]]],
     dropped
   ]
 ];
@@ -327,7 +315,7 @@ compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
     "Source" -> rendered,
     "Inputs" -> OptionValue["Inputs"],
     "BasePath" -> If[OptionValue["BasePath"] === Automatic, Directory[], OptionValue["BasePath"]],
-    "AllowDownloads" -> TrueQ[OptionValue["AllowDownloads"]],
+    "AllowDownloads" -> OptionValue["AllowDownloads"],
     "Format" -> OptionValue["Format"],
     "Pages" -> OptionValue["Pages"],
     "PDFStandard" -> OptionValue["PDFStandard"],
@@ -343,10 +331,10 @@ compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
 MathemeCompile[source_String, opts : OptionsPattern[]] :=
   Handle[compileChecked[source, opts], _Failure];
 MathemeCompile[TypstForm[expr_, tOpts : OptionsPattern[]], opts : OptionsPattern[]] :=
-  Module[{src = MathemeToTypst[expr, tOpts], merged},
-    merged = If[KeyExistsQ[Association[opts], "TypstTemplate"],
-      {opts},
-      Join[{opts}, {"TypstTemplate" -> "Equation"}]
+  Module[{src = MathemeToTypst[expr, tOpts], flatOpts = Flatten[{opts}], merged},
+    merged = If[KeyExistsQ[Association[flatOpts], "TypstTemplate"],
+      flatOpts,
+      Append[flatOpts, "TypstTemplate" -> "Equation"]
     ];
     MathemeCompile[src, Sequence @@ merged]
   ];
@@ -387,36 +375,35 @@ toGraphics[result_] := Module[{pdf, svg, graphics},
   ]
 ];
 
-MathemeToGraphics[source_String, opts : OptionsPattern[]] :=
-  Handle[toGraphics[MathemeCompile[source,
-    Sequence @@ If[KeyExistsQ[Association[opts], "Format"],
-      {opts},
-      Join[{opts}, {"Format" -> OptionValue[MathemeToGraphics, "Format"]}]
-    ]]], _Failure];
-MathemeToGraphics[t_TypstForm, opts : OptionsPattern[]] :=
-  Handle[toGraphics[MathemeCompile[t,
-    Sequence @@ If[KeyExistsQ[Association[opts], "Format"],
-      {opts},
-      Join[{opts}, {"Format" -> OptionValue[MathemeToGraphics, "Format"]}]
-    ]]], _Failure];
+MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
+  Module[{flatOpts = Flatten[{opts}], merged},
+    merged = If[KeyExistsQ[Association[flatOpts], "Format"],
+      flatOpts,
+      Append[flatOpts, "Format" -> OptionValue[MathemeToGraphics, "Format"]]
+    ];
+    Handle[toGraphics[MathemeCompile[source, Sequence @@ merged]], _Failure]
+  ];
 
 (* ------------------------------------------------------------------------ *)
 (* State, queries, and cache lifecycle                                      *)
 (* ------------------------------------------------------------------------ *)
 
-MathemeVersion[] := callFunction["version"];
-
-MathemeSettings[] := callFunction["settings"];
-MathemeSetSettings[settings_Association] := callFunction["setSettings", settings];
-MathemeSetSettings[opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
-  callFunction["setSettings", Association[opts]];
-MathemeSetSettings[other_] := Handle[
+callWithRules[action_String, _String, arg_Association] :=
+  callFunction[action, arg];
+callWithRules[action_String, _String, opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
+  callFunction[action, Association[opts]];
+callWithRules[_String, displayName_String, other_] := Handle[
   raiseCallError[
-    "MathemeSetSettings expects an Association or rules; got `Type`.",
-    <|"Type" -> Head[other]|>
+    "`Name` expects an Association or rules; got `Type`.",
+    <|"Name" -> displayName, "Type" -> Head[other]|>
   ],
   _Failure
 ];
+
+MathemeVersion[] := callFunction["version"];
+
+MathemeSettings[] := callFunction["settings"];
+MathemeSetSettings[arg__] := callWithRules["setSettings", "MathemeSetSettings", arg];
 MathemeResetSettings[] := callFunction["resetSettings"];
 
 MathemeReloadFonts[] := callFunction["reloadFonts"];
@@ -435,34 +422,16 @@ ClearMathemeCache[other_] := Handle[
 ];
 
 MathemeQueryFonts[] := callFunction["queryFonts"];
-MathemeQueryFonts[filters_Association] := callFunction["queryFonts", filters];
-MathemeQueryFonts[opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
-  callFunction["queryFonts", Association[opts]];
-MathemeQueryFonts[other_] := Handle[
-  raiseCallError[
-    "MathemeQueryFonts expects an Association or rules; got `Type`.",
-    <|"Type" -> Head[other]|>
-  ],
-  _Failure
-];
+MathemeQueryFonts[arg__] := callWithRules["queryFonts", "MathemeQueryFonts", arg];
 
 MathemeQueryPackages[] := callFunction["queryPackages"];
-MathemeQueryPackages[filters_Association] := callFunction["queryPackages", filters];
-MathemeQueryPackages[opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
-  callFunction["queryPackages", Association[opts]];
-MathemeQueryPackages[other_] := Handle[
-  raiseCallError[
-    "MathemeQueryPackages expects an Association or rules; got `Type`.",
-    <|"Type" -> Head[other]|>
-  ],
-  _Failure
-];
+MathemeQueryPackages[arg__] := callWithRules["queryPackages", "MathemeQueryPackages", arg];
 
 Options[MathemeWarmup] = {"Fonts" -> True, "Packages" -> True, "PackageIndex" -> True};
 MathemeWarmup[OptionsPattern[]] := callFunction["warmup", <|
-  "Fonts" -> TrueQ[OptionValue["Fonts"]],
-  "Packages" -> TrueQ[OptionValue["Packages"]],
-  "PackageIndex" -> TrueQ[OptionValue["PackageIndex"]]
+  "Fonts" -> OptionValue["Fonts"],
+  "Packages" -> OptionValue["Packages"],
+  "PackageIndex" -> OptionValue["PackageIndex"]
 |>];
 
 MathemeClose[] := Module[

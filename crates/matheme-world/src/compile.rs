@@ -7,6 +7,7 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use typst::comemo::Track;
 use typst::diag::{SourceDiagnostic, SourceResult};
@@ -40,17 +41,25 @@ pub enum OutputFormat {
     Html,
 }
 
+impl FromStr for OutputFormat {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        if name.eq_ignore_ascii_case("pdf") {
+            Ok(Self::Pdf)
+        } else if name.eq_ignore_ascii_case("svg") {
+            Ok(Self::Svg)
+        } else if name.eq_ignore_ascii_case("html") {
+            Ok(Self::Html)
+        } else {
+            Err(format!("unknown output format: {name:?}"))
+        }
+    }
+}
+
 impl OutputFormat {
     pub fn parse(name: &str) -> Option<Self> {
-        if name.eq_ignore_ascii_case("pdf") {
-            Some(Self::Pdf)
-        } else if name.eq_ignore_ascii_case("svg") {
-            Some(Self::Svg)
-        } else if name.eq_ignore_ascii_case("html") {
-            Some(Self::Html)
-        } else {
-            None
-        }
+        name.parse().ok()
     }
 
     pub fn target(self) -> Target {
@@ -101,7 +110,7 @@ pub struct CompileRequest {
     pub pdf_tagged: bool,
     pub pdf_timestamp: Option<Timestamp>,
     pub world_date: WorldDate,
-    pub features: Features,
+    pub features: Vec<Feature>,
     pub evaluate: Option<EvaluateSpec>,
     pub extra_diagnostics: Vec<Diagnostic>,
 }
@@ -198,25 +207,34 @@ pub fn parse_pdf_standards(names: &[String]) -> Result<PdfStandards, String> {
 }
 
 pub fn parse_feature(name: &str) -> Option<Feature> {
-    match name.to_ascii_lowercase().as_str() {
-        "html" => Some(Feature::Html),
-        "bundle" => Some(Feature::Bundle),
-        "a11y-extras" | "a11yextras" => Some(Feature::A11yExtras),
-        _ => None,
+    if name.eq_ignore_ascii_case("html") {
+        Some(Feature::Html)
+    } else if name.eq_ignore_ascii_case("bundle") {
+        Some(Feature::Bundle)
+    } else if name.eq_ignore_ascii_case("a11y-extras") || name.eq_ignore_ascii_case("a11yextras") {
+        Some(Feature::A11yExtras)
+    } else {
+        None
     }
 }
 
-pub fn parse_features(names: &[String], format: OutputFormat) -> Result<Features, String> {
-    let mut selected = Vec::with_capacity(names.len() + 1);
+pub fn parse_features(names: &[String]) -> Result<Vec<Feature>, String> {
+    let mut selected = Vec::with_capacity(names.len());
     for name in names {
         let feature = parse_feature(name)
             .ok_or_else(|| format!("unknown Typst feature: {name:?}"))?;
         selected.push(feature);
     }
-    if format == OutputFormat::Html && !selected.contains(&Feature::Html) {
-        selected.push(Feature::Html);
+    Ok(selected)
+}
+
+/// Build Typst's [`Features`] bitset, automatically enabling [`Feature::Html`]
+/// when targeting HTML output.
+fn resolve_features(mut requested: Vec<Feature>, format: OutputFormat) -> Features {
+    if format == OutputFormat::Html && !requested.contains(&Feature::Html) {
+        requested.push(Feature::Html);
     }
-    Ok(selected.into_iter().collect())
+    requested.into_iter().collect()
 }
 
 fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, download_blocked: bool) {
@@ -240,19 +258,7 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
             .join(request.base_path)
     };
 
-    let features = if request.format == OutputFormat::Html
-        && !request.features.is_enabled(Feature::Html)
-    {
-        let mut list = vec![Feature::Html];
-        for candidate in [Feature::Bundle, Feature::A11yExtras] {
-            if request.features.is_enabled(candidate) {
-                list.push(candidate);
-            }
-        }
-        list.into_iter().collect()
-    } else {
-        request.features
-    };
+    let features = resolve_features(request.features, request.format);
 
     let download_scope = crate::enter_call_downloads(request.allow_downloads);
     let world = MathemeWorld::with_options(
@@ -560,10 +566,11 @@ mod tests {
 
     #[test]
     fn parses_features_and_auto_enables_html() {
-        let features = parse_features(&["a11y-extras".into()], OutputFormat::Html).unwrap();
+        let parsed = parse_features(&["a11y-extras".into()]).unwrap();
+        let features = resolve_features(parsed, OutputFormat::Html);
         assert!(features.is_enabled(Feature::Html));
         assert!(features.is_enabled(Feature::A11yExtras));
-        assert!(parse_features(&["bogus".into()], OutputFormat::Pdf).is_err());
+        assert!(parse_features(&["bogus".into()]).is_err());
     }
 
     #[test]

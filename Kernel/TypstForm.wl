@@ -557,19 +557,16 @@ testNextNumber[(RowBox | SuperscriptBox | SubscriptBox | OverscriptBox |
 testNextNumber[_] := False;
 
 (* Separate adjacent numbers like 2 3 -> 2 med 3 so Typst does not merge them *)
-fixWhitespace[elem_List] := Module[{res = elem, locs, i, curr, prev, next},
-  locs = Flatten[Position[res, " ", 1]];
-  For[i = 1, i <= Length[locs], i++,
-    curr = locs[[i]];
-    If[curr > 1 && curr < Length[res],
-      prev = res[[curr - 1]];
-      next = res[[curr + 1]];
-      If[StringQ[prev] && StringMatchQ[prev, NumberString] && testNextNumber[next],
-        res = ReplacePart[res, curr -> "\:205f"]
-      ]
-    ]
-  ];
-  res
+fixWhitespace[elem_List] := Module[{n = Length[elem]},
+  Table[
+    If[elem[[i]] === " " && i > 1 && i < n &&
+        StringQ[elem[[i - 1]]] && StringMatchQ[elem[[i - 1]], NumberString] &&
+        testNextNumber[elem[[i + 1]]],
+      "\:205f",
+      elem[[i]]
+    ],
+    {i, n}
+  ]
 ];
 
 (* Wrap script expressions in (...) unless they are a single alphanumeric char *)
@@ -716,8 +713,6 @@ makeTypst[TemplateBox[{base_, super_}, "Superscript", ___]] :=
 makeTypst[tbox_TemplateBox, opts___] :=
   makeTypst[stripIdentityBoxes[BoxForm`TemplateBoxToDisplayBoxes[tbox]]];
 
-$typstShowQuotes = False;
-
 (* Strings *)
 makeTypst[str_String /; StringMatchQ[str, "\"" ~~ LetterCharacter ~~ "\""]] :=
   "\"" <> StringTake[str, {2, 2}] <> "\"";
@@ -728,24 +723,22 @@ makeTypst[str_String /; StringMatchQ[str, NumberString ~~ "`"]] :=
 makeTypst[str_String /; StringMatchQ[str, NumberString ~~ "`" ~~ NumberString]] :=
   toNumberForm[str];
 makeTypst[str_String /; StringLength[str] === 1] := makeTypstChar[str];
-makeTypst[str_String] := If[$typstShowQuotes,
-  makeString[str],
-  makeString[StringReplace[str, {"\\\"" -> "\"", "\"" -> ""}]]
-];
+makeTypst[str_String] :=
+  makeString[StringReplace[str, {"\\\"" -> "\"", "\"" -> ""}]];
 
 (* Special RowBox patterns *)
 makeTypst[RowBox[{"T", AdjustmentBox["E", ___], "X"}]] := "\"TeX\"";
 makeTypst[RowBox[{"L", StyleBox[AdjustmentBox["A", ___], ___], "T", AdjustmentBox["E", ___], "X"}]] := "\"LaTeX\"";
 
 (* Piecewise: GridBox[{{"\[Piecewise]", GridBox[...]}}, ...] or RowBox[{"\[Piecewise]", GridBox[...]}] *)
-makeTypst[GridBox[{{"\:f361", GridBox[grid_List, ___]}}, ___?OptionQ]] := Module[{rows},
+formatPiecewise[grid_List] := Module[{rows},
   rows = Map[StringRiffle[makeTypst /@ #, " & "] &, grid];
   "cases(" <> StringRiffle[rows, ", "] <> ")"
 ];
-makeTypst[RowBox[{"\:f361", GridBox[grid_List, ___]}]] := Module[{rows},
-  rows = Map[StringRiffle[makeTypst /@ #, " & "] &, grid];
-  "cases(" <> StringRiffle[rows, ", "] <> ")"
-];
+makeTypst[GridBox[{{"\:f361", GridBox[grid_List, ___]}}, ___?OptionQ]] :=
+  formatPiecewise[grid];
+makeTypst[RowBox[{"\:f361", GridBox[grid_List, ___]}]] :=
+  formatPiecewise[grid];
 
 (* Integrals *)
 makeTypst[RowBox[{"\:222b", RowBox[{integrand_, RowBox[{"\:f74c", var_}]}]}]] :=
@@ -769,26 +762,54 @@ makeTypst[RowBox[{l__, " ", "mod", " ", r__}]] :=
 makeTypst[RowBox[{"(*", c1___String, RowBox[{c2___String}], c3___String, "*)"}]] :=
   "\"(*" <> escapeTypstString[StringJoin[c1, c2, c3]] <> "*)\"";
 
-(* Balanced delimiters in RowBox *)
-makeTypst[RowBox[{l___, lb : $typstLeftDelimPattern, mid___, rb : $typstRightDelimPattern, r___}]] /;
-  Lookup[$typstMatchingDelimiter, lb, None] === rb &&
-  (lb === "{" || !MemberQ[{"(", "[", ")"}, lb] || delimiterBoxQ[mid]) :=
-Module[{ld, rd, inner},
-  ld = $typstLeftDelimiters[lb];
-  rd = $typstRightDelimiters[rb];
-  inner = joinTypstTokens[makeTypst /@ fixWhitespace[{mid}]];
-  joinTypstTokens[{
-    joinTypstTokens[makeTypst /@ {l}],
-    If[MemberQ[{"(", "["}, lb] && MemberQ[{")", "]"}, rb],
-      ld <> inner <> rd,
-      "lr(" <> ld <> " " <> inner <> " " <> rd <> ")"
-    ],
-    joinTypstTokens[makeTypst /@ {r}]
-  }]
+(* Linear stack scan for the first properly matched nearest delimiter pair
+   that requires lr(...) or structured grouping, avoiding greedy cross-pair
+   matches such as (a) + (b) and exponential pattern backtracking. *)
+findMatchingDelimiterSpan[elem_List] := Module[{stack = {}, i, tok, openIdx, openTok, mid},
+  For[i = 1, i <= Length[elem], i++,
+    tok = elem[[i]];
+    If[StringQ[tok],
+      If[Length[stack] > 0 && Lookup[$typstMatchingDelimiter, stack[[-1, 2]], None] === tok,
+        {openIdx, openTok} = stack[[-1]];
+        stack = Most[stack];
+        mid = Take[elem, {openIdx + 1, i - 1}];
+        If[openTok === "{" || !MemberQ[{"(", "["}, openTok] || delimiterBoxQ[mid],
+          Return[{openIdx, i}, Module]
+        ],
+        If[KeyExistsQ[$typstMatchingDelimiter, tok],
+          AppendTo[stack, {i, tok}]
+        ]
+      ]
+    ]
+  ];
+  None
 ];
 
-(* General RowBox *)
-makeTypst[RowBox[elem_List]] := joinTypstTokens[makeTypst /@ fixWhitespace[elem]];
+(* General RowBox with balanced delimiter pairing *)
+makeTypst[RowBox[elem_List]] := Module[{span, openIdx, closeIdx, lb, rb, l, mid, r, ld, rd, inner, wrapped},
+  span = findMatchingDelimiterSpan[elem];
+  If[span === None,
+    joinTypstTokens[makeTypst /@ fixWhitespace[elem]],
+    {openIdx, closeIdx} = span;
+    lb = elem[[openIdx]];
+    rb = elem[[closeIdx]];
+    l = Take[elem, openIdx - 1];
+    mid = Take[elem, {openIdx + 1, closeIdx - 1}];
+    r = Drop[elem, closeIdx];
+    ld = $typstLeftDelimiters[lb];
+    rd = $typstRightDelimiters[rb];
+    inner = makeTypst[RowBox[mid]];
+    wrapped = If[MemberQ[{"(", "["}, lb] && MemberQ[{")", "]"}, rb],
+      ld <> inner <> rd,
+      "lr(" <> ld <> " " <> inner <> " " <> rd <> ")"
+    ];
+    joinTypstTokens[{
+      If[l === {}, "", makeTypst[RowBox[l]]],
+      wrapped,
+      If[r === {}, "", makeTypst[RowBox[r]]]
+    }]
+  ]
+];
 
 (* Superscripts and Subscripts *)
 makeTypst[SuperscriptBox[base_, super_String, ___]] /;

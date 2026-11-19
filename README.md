@@ -2,16 +2,17 @@
 
 A bridge that lets the Wolfram Language typeset with [Typst](https://typst.app/).
 A Rust `cdylib` is loaded **in-process** by Wolfram 15 via WSTP `LinkObject`;
-Typst compiles source to PDF, and the Wolfram layer imports that PDF as native
-vector `Graphics`. No external process and no Frame-to-Graphics reimplementation.
+Typst compiles source to PDF, SVG, or HTML, and `MathemeToGraphics` imports the
+compiled output (default `"SVG"`, or `"PDF"`) as native vector `Graphics`. No
+external process and no Frame-to-Graphics reimplementation.
 The only callback into the kernel is an evaluation of
 `$InstallationDirectory` to locate Wolfram's bundled fonts; it is cached
 in process state and only refreshes the font book if the paths change.
 
 ```
-Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶ PDF bytes
+Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶ SVG / PDF / HTML
    ▲                                                          │
-   └──────────── ImportByteArray[..., {"PDF","PageGraphics"}] ◀┘
+   └──────────── ImportString / ImportByteArray (Graphics) ◀──┘
 ```
 
 ## Layout
@@ -169,18 +170,21 @@ res = MathemeCompile[
 
 ```wolfram
 res = MathemeToGraphics["= Hello $x^2$"];
-res["Graphics"]   (* list of Graphics, one per PDF page *)
+res["Graphics"]   (* list of Graphics, one per page *)
 ```
 
 Same options and return shape as `MathemeCompile`, plus a `"Graphics"` key.
-The vector conversion uses Wolfram's built-in
-`ImportByteArray[pdf, {"PDF", "PageGraphics"}]`, so text and paths stay vector.
+By default `"Format"` is `"SVG"` (imported via `ImportString[..., {"SVG", "Graphics"}]`
+after normalizing root `pt` dimensions for exact bounding boxes); pass
+`"Format" -> "PDF"` to use `ImportByteArray[pdf, {"PDF", "PageGraphics"}]` instead.
 
 ### Diagnostics
 
-`Formatted` renders like `typst` CLI in a `"Code"`-styled Notebook `Cell`
-(`DisplayForm[Cell[..., "Code"]]` when non-empty; `""` when there are no
-diagnostics), with source snippets and CLI-style file names:
+`Formatted` is always a plain-text `String` rendered like `typst` CLI (suitable
+for logging, `wolframscript`, and string assertions; `""` when there are no
+diagnostics). `FormattedCell` provides the Notebook-ready `"Code"`-styled
+`DisplayForm[Cell[..., "Code"]]` representation (with ASCII-normalized borders
+so FrontEnd alignment stays exact):
 
 ```text
 error: unclosed delimiter

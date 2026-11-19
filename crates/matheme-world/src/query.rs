@@ -8,6 +8,8 @@
 //! bytes, writes to disk or reaches the network; the only way to populate the
 //! Universe index is an explicit opt-in (or a compilation).
 
+use std::str::FromStr;
+
 use typst::text::{FontFlags, FontInfo, FontStyle};
 
 use crate::fonts;
@@ -25,6 +27,24 @@ pub enum FontOrigin {
     System,
 }
 
+impl FromStr for FontOrigin {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        if name.eq_ignore_ascii_case("custom") {
+            Ok(Self::Custom)
+        } else if name.eq_ignore_ascii_case("host") {
+            Ok(Self::Host)
+        } else if name.eq_ignore_ascii_case("embedded") {
+            Ok(Self::Embedded)
+        } else if name.eq_ignore_ascii_case("system") {
+            Ok(Self::System)
+        } else {
+            Err(format!("unknown font source: {name:?}"))
+        }
+    }
+}
+
 impl FontOrigin {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -36,15 +56,7 @@ impl FontOrigin {
     }
 
     pub fn parse(name: &str) -> Option<Self> {
-        [
-            (Self::Custom, "Custom"),
-            (Self::Host, "Host"),
-            (Self::Embedded, "Embedded"),
-            (Self::System, "System"),
-        ]
-        .into_iter()
-        .find(|(_, label)| name.eq_ignore_ascii_case(label))
-        .map(|(origin, _)| origin)
+        name.parse().ok()
     }
 }
 
@@ -58,19 +70,27 @@ pub enum PackageOriginFilter {
     Universe,
 }
 
+impl FromStr for PackageOriginFilter {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        if name.eq_ignore_ascii_case("local") {
+            Ok(Self::Local)
+        } else if name.eq_ignore_ascii_case("data") {
+            Ok(Self::Data)
+        } else if name.eq_ignore_ascii_case("cache") {
+            Ok(Self::Cache)
+        } else if name.eq_ignore_ascii_case("universe") {
+            Ok(Self::Universe)
+        } else {
+            Err(format!("unknown package origin: {name:?}"))
+        }
+    }
+}
+
 impl PackageOriginFilter {
     pub fn parse(name: &str) -> Option<Self> {
-        if name.eq_ignore_ascii_case("local") {
-            Some(Self::Local)
-        } else if name.eq_ignore_ascii_case("data") {
-            Some(Self::Data)
-        } else if name.eq_ignore_ascii_case("cache") {
-            Some(Self::Cache)
-        } else if name.eq_ignore_ascii_case("universe") {
-            Some(Self::Universe)
-        } else {
-            None
-        }
+        name.parse().ok()
     }
 
     fn matches(self, origin: PackageOrigin) -> bool {

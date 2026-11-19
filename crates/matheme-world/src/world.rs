@@ -33,27 +33,27 @@ pub enum WorldDate {
 /// Convert Unix epoch seconds (with optional timezone offset in minutes) into a
 /// Typst [`Datetime`].
 pub fn datetime_from_unix(unix_seconds: i64, offset_minutes: Option<i32>) -> Option<Datetime> {
-    let adjusted = unix_seconds.checked_add(i64::from(offset_minutes.unwrap_or(0)) * 60)?;
-    let days = adjusted.div_euclid(86_400);
-    let secs_of_day = adjusted.rem_euclid(86_400);
+    let utc = time::OffsetDateTime::from_unix_timestamp(unix_seconds).ok()?;
+    let dt = match offset_minutes {
+        Some(mins) => {
+            if mins.unsigned_abs() >= 24 * 60 {
+                return None;
+            }
+            let offset_secs = mins.checked_mul(60)?;
+            let offset = time::UtcOffset::from_whole_seconds(offset_secs).ok()?;
+            utc.to_offset(offset)
+        }
+        None => utc,
+    };
 
-    // Howard Hinnant's civil-from-days algorithm (exact over the Gregorian calendar).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = (yoe as i64) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = y + if m <= 2 { 1 } else { 0 };
-
-    let hour = (secs_of_day / 3_600) as u8;
-    let minute = ((secs_of_day % 3_600) / 60) as u8;
-    let second = (secs_of_day % 60) as u8;
-
-    Datetime::from_ymd_hms(year.try_into().ok()?, m as u8, d as u8, hour, minute, second)
+    Datetime::from_ymd_hms(
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+    )
 }
 
 /// A per-call World: source, inputs and the file cache live only for this
@@ -185,5 +185,22 @@ mod tests {
             (sample.year(), sample.month(), sample.day(), sample.hour()),
             (Some(2026), Some(11), Some(18), Some(20))
         );
+
+        // Pre-epoch date: 1969-12-31T23:59:59Z
+        let before_epoch = datetime_from_unix(-1, None).unwrap();
+        assert_eq!(
+            (
+                before_epoch.year(),
+                before_epoch.month(),
+                before_epoch.day(),
+                before_epoch.hour(),
+                before_epoch.minute(),
+                before_epoch.second(),
+            ),
+            (Some(1969), Some(12), Some(31), Some(23), Some(59), Some(59))
+        );
+
+        // Out-of-range offset (> 24h) is rejected cleanly.
+        assert!(datetime_from_unix(0, Some(25 * 60)).is_none());
     }
 }

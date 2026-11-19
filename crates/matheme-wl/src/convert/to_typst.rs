@@ -39,8 +39,13 @@ impl<'a> Converter<'a> {
         if let Some(value) = expr.as_f64() {
             return Value::Float(value);
         }
-        if let Some(bytes) = expr.as_byte_array() {
-            return Value::Bytes(Bytes::new(bytes.to_vec()));
+        match expr.to_bytes() {
+            Ok(Some(bytes)) => return Value::Bytes(Bytes::new(bytes.into_owned())),
+            Err(reason) => {
+                self.warn(reason);
+                return Value::None;
+            }
+            Ok(None) => {}
         }
         if let Some(name) = expr.as_symbol() {
             return self.symbol(name);
@@ -72,9 +77,6 @@ impl<'a> Converter<'a> {
     fn normal(&mut self, normal: Normal<'_>) -> Value {
         if normal.has_head(&Symbol::LIST) {
             return self.array(normal.elements());
-        }
-        if normal.has_head(&Symbol::BYTE_ARRAY) {
-            return self.byte_array(normal.elements());
         }
         self.warn(format!(
             "unsupported expression head {} mapped to none",
@@ -108,37 +110,6 @@ impl<'a> Converter<'a> {
             }
         }
         Value::Dict(dict)
-    }
-
-    /// `ByteArray[{…}]` is the WSTP wire form; the WXF form is read directly by
-    /// [`Converter::value`] before the normal dispatcher is reached.
-    fn byte_array(&mut self, elements: &[Expr]) -> Value {
-        let [list] = elements else {
-            self.warn("ByteArray expects a single List of byte integers");
-            return Value::None;
-        };
-        let Some(elements) = list.as_list() else {
-            self.warn("ByteArray expects a List of byte integers");
-            return Value::None;
-        };
-
-        let mut bytes = Vec::with_capacity(elements.len());
-        for (index, element) in elements.iter().enumerate() {
-            let Some(value) = element.as_i64() else {
-                self.warn(format!("ByteArray element {index} is not an Integer"));
-                return Value::None;
-            };
-            match u8::try_from(value) {
-                Ok(byte) => bytes.push(byte),
-                Err(_) => {
-                    self.warn(format!(
-                        "ByteArray element {index} ({value}) is out of byte range"
-                    ));
-                    return Value::None;
-                }
-            }
-        }
-        Value::Bytes(Bytes::new(bytes))
     }
 }
 

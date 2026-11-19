@@ -9,13 +9,13 @@ use std::path::PathBuf;
 
 use matheme_wl::{from_typst, rule, to_typst, Entry, Expr, Rule, Symbol};
 use matheme_world::compile::{
-    self, CompileOutput, CompileRequest, EvaluateSpec, EvaluatedValues, Feature, Features,
-    OutputFormat, PageRange, PageRanges, PdfStandards, Timestamp,
+    self, CompileOutput, CompileRequest, EvaluateSpec, EvaluatedValues, Feature, OutputFormat,
+    PageRange, PageRanges, PdfStandards, Timestamp,
 };
 use matheme_world::{datetime_from_unix, WorldDate};
 use typst::foundations::Dict;
 
-use crate::args::{self, AssocExpr, FromExpr};
+use crate::args::{self, AssocExpr, FromArgs, FromExpr};
 use crate::call::{Answer, Failure, Outcome};
 use crate::diagnostics;
 use crate::wl_args;
@@ -120,6 +120,14 @@ impl FromExpr for PdfStandardsInput {
     }
 }
 
+wl_args! {
+    #[action = "timestamp"]
+    struct TimestampAssocArgs {
+        "Unix" => unix: i64,
+        "OffsetMinutes" => offset_minutes: Option<i64> = None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TimestampInput {
     pub world_date: WorldDate,
@@ -149,37 +157,14 @@ impl FromExpr for TimestampInput {
             });
         }
         if let Some(entries) = expr.as_association() {
-            let mut unix: Option<i64> = None;
-            let mut offset_mins: Option<i32> = None;
-
-            for entry in &entries {
-                let (k, v) = entry.pair()?;
-                let name = k
-                    .as_str()
-                    .ok_or_else(|| format!("association key must be a String, got: {k}"))?;
-                match name {
-                    "Unix" => {
-                        if unix.is_some() {
-                            return Err("duplicate timestamp key: Unix".into());
-                        }
-                        unix = Some(i64::from_expr(v)?);
-                    }
-                    "OffsetMinutes" => {
-                        if offset_mins.is_some() {
-                            return Err("duplicate timestamp key: OffsetMinutes".into());
-                        }
-                        let raw = i64::from_expr(v)?;
-                        offset_mins = Some(
-                            i32::try_from(raw)
-                                .map_err(|_| "OffsetMinutes out of range".to_owned())?,
-                        );
-                    }
-                    other => return Err(format!("unknown timestamp key: {other}")),
-                }
-            }
-
-            let unix = unix.ok_or_else(|| "missing required timestamp key: Unix".to_owned())?;
-            let dt = datetime_from_unix(unix, offset_mins)
+            let parsed = TimestampAssocArgs::parse_args(&entries).map_err(|f| f.message)?;
+            let offset_mins = match parsed.offset_minutes {
+                Some(raw) => Some(
+                    i32::try_from(raw).map_err(|_| "OffsetMinutes out of range".to_owned())?,
+                ),
+                None => None,
+            };
+            let dt = datetime_from_unix(parsed.unix, offset_mins)
                 .ok_or_else(|| "timestamp is out of range".to_owned())?;
             let ts = match offset_mins {
                 Some(mins) => Timestamp::new_local(dt, mins)
@@ -187,7 +172,7 @@ impl FromExpr for TimestampInput {
                 None => Timestamp::new_utc(dt),
             };
             return Ok(Self {
-                world_date: WorldDate::Fixed(unix),
+                world_date: WorldDate::Fixed(parsed.unix),
                 pdf_timestamp: Some(ts),
             });
         }
@@ -205,22 +190,7 @@ impl FromExpr for FeaturesInput {
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         let names = Vec::<String>::from_expr(expr)
             .map_err(|_| "must be a List of feature strings".to_owned())?;
-        let mut features = Vec::with_capacity(names.len());
-        for name in &names {
-            let feature = compile::parse_feature(name)
-                .ok_or_else(|| format!("unknown Typst feature: {name:?}"))?;
-            features.push(feature);
-        }
-        Ok(Self(features))
-    }
-}
-
-impl FeaturesInput {
-    fn into_features(mut self, format: OutputFormat) -> Features {
-        if format == OutputFormat::Html && !self.0.contains(&Feature::Html) {
-            self.0.push(Feature::Html);
-        }
-        self.0.into_iter().collect()
+        compile::parse_features(&names).map(Self)
     }
 }
 
@@ -331,7 +301,6 @@ pub fn run(input: CompileArgs) -> Answer {
         .map(diagnostics::warning)
         .collect();
 
-    let features = input.features.into_features(input.format);
     let request = CompileRequest {
         source: input.source,
         inputs,
@@ -343,7 +312,7 @@ pub fn run(input: CompileArgs) -> Answer {
         pdf_tagged: input.pdf_tagged,
         pdf_timestamp: input.timestamp.pdf_timestamp,
         world_date: input.timestamp.world_date,
-        features,
+        features: input.features.0,
         evaluate: input.evaluate.0,
         extra_diagnostics,
     };
@@ -421,8 +390,7 @@ mod tests {
         assert_eq!(parsed.format, OutputFormat::Svg);
         assert!(!parsed.pdf_tagged);
         assert_eq!(parsed.timestamp.world_date, WorldDate::Fixed(1_795_003_200));
-        let features = parsed.features.into_features(parsed.format);
-        assert!(features.is_enabled(Feature::A11yExtras));
+        assert!(parsed.features.0.contains(&Feature::A11yExtras));
         assert_eq!(
             parsed.evaluate.0,
             Some(EvaluateSpec::List(vec!["1 + 2".into(), "x".into()]))

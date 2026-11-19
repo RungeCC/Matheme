@@ -1530,6 +1530,7 @@ dependencies = [
  "comemo",
  "serde",
  "serde_json",
+ "time",
  "typst",
  "typst-eval",
  "typst-html",
