@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use wolfram_library_link::{
-    expr::Expr as RawExpr,
     rtl,
     wstp::{sys as wstp_sys, Link},
 };
 
 use matheme_wl::{Expr, Symbol};
+use matheme_wstp::{WstpError, WstpLink};
 
 static INSTALLATION_DIR: OnceLock<PathBuf> = OnceLock::new();
 static HOST_FONTS_SET: OnceLock<()> = OnceLock::new();
@@ -61,24 +61,24 @@ pub fn dll_info() -> DllInfo {
     }
 }
 
-/// Evaluate a WL expression on the bridge's WSTP link.
+/// Evaluate a WL expression on the bridge's WSTP link via [`WstpLink::eval_with`].
 ///
 /// This mirrors `wolfram_library_link::try_evaluate`, except that the returned
-/// expression is read with a symbol resolver: Wolfram 15 sends `ReturnPacket`
-/// without a context, which the crate's plain `get_expr()` cannot parse.
-fn evaluate(link: &mut Link, query: &RawExpr) -> Result<RawExpr, String> {
-    link.put_eval_packet(query)
-        .map_err(|error| format!("{error:?}"))?;
-
-    let raw_link = unsafe { link.raw_link() };
-    let processed = unsafe { rtl::processWSLINK(raw_link.cast()) };
-    if processed == 0 {
-        return Err(link
-            .error_message()
-            .unwrap_or_else(|| "unknown error processing WSTP link".into()));
-    }
-
-    matheme_wl::wstp::read_return_packet(link, 16, false).map(|out| out.expr.into_raw())
+/// expression is read with a context-resolving reader: Wolfram 15 sends
+/// `ReturnPacket` without a context, which the stock `get_expr()` cannot parse.
+fn evaluate(link: &mut Link, query: &Expr) -> Result<Expr, WstpError> {
+    WstpLink::new(link)
+        .eval_with(query, 16, false, |raw_link| {
+            let processed = unsafe { rtl::processWSLINK(raw_link.raw_link().cast()) };
+            if processed == 0 {
+                Err(WstpError::new(raw_link.error_message().unwrap_or_else(
+                    || "unknown error processing WSTP link".into(),
+                )))
+            } else {
+                Ok(())
+            }
+        })
+        .map(|out| out.expr)
 }
 
 /// Ask the kernel for `$InstallationDirectory`, caching only successful lookups
@@ -88,8 +88,7 @@ fn installation(link: &mut Link) -> Option<&'static PathBuf> {
         return Some(dir);
     }
     let query = Expr::from(Symbol::INSTALLATION_DIRECTORY);
-    let raw = evaluate(link, query.raw()).ok()?;
-    let value = Expr::from_raw(raw);
+    let value = evaluate(link, &query).ok()?;
     let dir = PathBuf::from(value.as_str()?);
     let _ = INSTALLATION_DIR.set(dir);
     INSTALLATION_DIR.get()
@@ -102,7 +101,7 @@ pub fn configure_world_fonts(link: &mut Link) {
         return;
     }
     if let Some(root) = installation(link) {
-        matheme_world::set_host_font_paths(vec![matheme_wl::wolfram_truetype_font_dir(root)]);
+        matheme_world::set_host_font_paths(vec![matheme_wstp::wolfram_truetype_font_dir(root)]);
         let _ = HOST_FONTS_SET.set(());
     }
 }

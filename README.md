@@ -21,6 +21,7 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 |---|---|
 | `crates/matheme-world/` | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
 | `crates/matheme-wl/` | Pure bidirectional WL-expression ↔ Typst-value conversion (`convert::to_typst` / `Expr::to_typst` and `convert::from_typst` / `Expr::from_typst`). `Expr`, `Normal<'a>`, `Entry<'a>`/`Rule` and `Symbol` wrappers expose `From`/`TryFrom` and zero-copy `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
+| `crates/matheme-wstp/` | Shared WSTP transport wrapper (`WstpLink<'a>`, `EvalOutput`, `WstpError`) providing context-resolving reads and a unified `EvaluatePacket` → `ReturnPacket` evaluation pipeline shared by `src/` and `matheme-cli`. |
 | `src/` | WSTP bridge: one exported WSTP function receives `<|"Action" -> name, "Arguments" -> <|…|>|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, with dedicated modules for `compile.rs` (PDF/SVG/HTML + simultaneous `Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`. |
 | `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects. |
 | `scripts/` | WSTP SDK setup and one-shot build. |

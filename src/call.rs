@@ -10,6 +10,7 @@ use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
 
 use matheme_wl::{assoc, Entry, Expr, Rule};
+use matheme_wstp::WstpLink;
 use wolfram_library_link::wstp::Link;
 
 use crate::diagnostics::{self, Diagnostic};
@@ -94,9 +95,9 @@ fn read_action<A>(
     link: &mut Link,
     parse_action: impl FnOnce(&str, &[Entry<'_>]) -> Result<A, Failure>,
 ) -> Result<A, Failure> {
-    let expr: Expr = matheme_wl::wstp::read_expr_resolved(link)
-        .map_err(|err| error(format!("failed to read WSTP call: {err}")))?
-        .into();
+    let expr = WstpLink::new(link)
+        .read_expr()
+        .map_err(|err| error(format!("failed to read WSTP call: {err}")))?;
 
     // A LinkObject function always delivers its WL arguments as a List; the
     // package passes exactly one expression, the Action/Arguments envelope.
@@ -207,7 +208,7 @@ pub fn serve(link: &mut Link) {
     });
 
     // Never panic across the FFI boundary if the WSTP link itself failed.
-    let _ = link.put_expr(render(answer).raw());
+    let _ = WstpLink::new(link).put_expr(&render(answer));
 }
 
 /// Parse an association test fixture and feed its entries into `f`.

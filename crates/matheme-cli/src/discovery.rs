@@ -23,7 +23,7 @@ pub struct KernelCandidate {
 }
 
 fn bundled_font_dir(install_dir: &Path) -> Option<PathBuf> {
-    let dir = matheme_wl::wolfram_truetype_font_dir(install_dir);
+    let dir = matheme_wstp::wolfram_truetype_font_dir(install_dir);
     dir.is_dir().then_some(dir)
 }
 

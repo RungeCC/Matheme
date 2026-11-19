@@ -6,27 +6,16 @@
 //! decodes `ReturnPacket[...]` responses into [`matheme_wl::Expr`] / Typst
 //! [`typst::foundations::Value`].
 
-use std::fmt;
 use std::path::Path;
 
-use matheme_wl::Expr;
+use matheme_wstp::{Link, WstpLink};
 use typst::foundations::Value;
-use wolfram_expr::{Expr as RawExpr, ExprKind, Symbol as RawSymbol};
-use wstp::Link;
 
 /// Result of one Wolfram Kernel evaluation.
-pub type EvalOutput = matheme_wl::wstp::PacketOutput;
+pub type EvalOutput = matheme_wstp::EvalOutput;
 
-#[derive(Debug)]
-pub struct KernelError(pub String);
-
-impl fmt::Display for KernelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for KernelError {}
+/// Error returned by [`KernelSession`] operations.
+pub type KernelError = matheme_wstp::WstpError;
 
 /// Tracks whether a session owns its kernel process and has already sent `Exit[]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,15 +69,15 @@ impl KernelSession {
             &linkname,
         ];
         let mut link = Link::open_with_args(&argv)
-            .map_err(|err| KernelError(format!("failed to launch Wolfram kernel ({path_str}): {err}")))?;
+            .map_err(|err| KernelError::new(format!("failed to launch Wolfram kernel ({path_str}): {err}")))?;
         link.activate()
-            .map_err(|err| KernelError(format!("failed to activate WSTP link: {err}")))?;
+            .map_err(|err| KernelError::new(format!("failed to activate WSTP link: {err}")))?;
 
         let mut session = Self {
             link,
             exit_policy: ExitPolicy::owned(),
         };
-        session.drain_startup()?;
+        session.wstp().drain_until_input_name(32)?;
         Ok(session)
     }
 
@@ -102,62 +91,25 @@ impl KernelSession {
             link_name,
         ];
         let mut link = Link::open_with_args(&argv)
-            .map_err(|err| KernelError(format!("failed to connect to WSTP link {link_name:?}: {err}")))?;
+            .map_err(|err| KernelError::new(format!("failed to connect to WSTP link {link_name:?}: {err}")))?;
         link.activate()
-            .map_err(|err| KernelError(format!("failed to activate WSTP link: {err}")))?;
+            .map_err(|err| KernelError::new(format!("failed to activate WSTP link: {err}")))?;
 
         let mut session = Self {
             link,
             exit_policy: ExitPolicy::attached(),
         };
-        session.drain_startup()?;
+        session.wstp().drain_until_input_name(32)?;
         Ok(session)
     }
 
-    /// Read the kernel's initial `InputNamePacket["In[1]:= "]` banner.
-    fn drain_startup(&mut self) -> Result<(), KernelError> {
-        let input_name_head = RawSymbol::new("System`InputNamePacket");
-        for _ in 0..32 {
-            let packet = self.read_packet()?;
-            if let ExprKind::Normal(normal) = packet.kind() {
-                if normal.has_head(&input_name_head) {
-                    return Ok(());
-                }
-            }
-        }
-        Err(KernelError(
-            "did not receive initial InputNamePacket from Wolfram kernel".into(),
-        ))
-    }
-
-    fn read_packet(&mut self) -> Result<RawExpr, KernelError> {
-        matheme_wl::wstp::read_expr_resolved(&mut self.link)
-            .map_err(|err| KernelError(format!("WSTP read error: {err}")))
-    }
-
-    /// Evaluate a raw Wolfram Language expression via `EvaluatePacket[expr]`.
-    pub fn eval_expr(&mut self, expr: &Expr) -> Result<EvalOutput, KernelError> {
-        let packet = RawExpr::normal(
-            RawExpr::symbol(RawSymbol::new("System`EvaluatePacket")),
-            vec![expr.raw().clone()],
-        );
-        self.link
-            .put_expr(&packet)
-            .map_err(|err| KernelError(format!("WSTP write error: {err}")))?;
-        self.link
-            .flush()
-            .map_err(|err| KernelError(format!("WSTP flush error: {err}")))?;
-
-        matheme_wl::wstp::read_return_packet(&mut self.link, 256, true).map_err(KernelError)
+    fn wstp(&mut self) -> WstpLink<'_> {
+        WstpLink::new(&mut self.link)
     }
 
     /// Evaluate a Wolfram Language code string via `ToExpression[code]`.
     pub fn eval_code(&mut self, wl_code: &str) -> Result<EvalOutput, KernelError> {
-        let to_expr = RawExpr::normal(
-            RawExpr::symbol(RawSymbol::new("System`ToExpression")),
-            vec![RawExpr::string(wl_code)],
-        );
-        self.eval_expr(&Expr::from_raw(to_expr))
+        self.wstp().eval_code(wl_code)
     }
 
     /// Evaluate Wolfram Language code and convert the result into a native
@@ -176,15 +128,7 @@ impl KernelSession {
         if !self.exit_policy.take_exit() {
             return;
         }
-        let exit = RawExpr::normal(
-            RawExpr::symbol(RawSymbol::new("System`EvaluatePacket")),
-            vec![RawExpr::normal(
-                RawExpr::symbol(RawSymbol::new("System`Exit")),
-                vec![],
-            )],
-        );
-        let _ = self.link.put_expr(&exit);
-        let _ = self.link.flush();
+        self.wstp().send_exit();
     }
 
     /// Ask an owned kernel to exit cleanly before closing the link.

@@ -1497,6 +1497,7 @@ version = "0.1.0"
 dependencies = [
  "matheme-wl",
  "matheme-world",
+ "matheme-wstp",
  "typst",
  "wolfram-library-link",
 ]
@@ -1508,9 +1509,9 @@ dependencies = [
  "clap",
  "matheme-wl",
  "matheme-world",
+ "matheme-wstp",
  "typst",
  "wolfram-app-discovery",
- "wolfram-expr",
  "wstp",
 ]
 
@@ -1520,7 +1521,6 @@ version = "0.1.0"
 dependencies = [
  "typst",
  "wolfram-library-link",
- "wstp",
 ]
 
 [[package]]
@@ -1539,6 +1539,15 @@ dependencies = [
  "typst-pdf",
  "typst-svg",
  "ureq",
+]
+
+[[package]]
+name = "matheme-wstp"
+version = "0.1.0"
+dependencies = [
+ "matheme-wl",
+ "wolfram-expr",
+ "wstp",
 ]
 
 [[package]]
