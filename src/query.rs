@@ -5,121 +5,94 @@
 //! values into [`matheme_world::query`] filters and renders the answers; the
 //! world crate owns the data and all filtering logic.
 
-use matheme_wl::{assoc, rule, Entry, Expr, Rule, Symbol};
+use matheme_wl::{assoc, rule, Expr, Rule, Symbol};
 use matheme_world as world;
 use world::query::{
     FontAnswer, FontFace, FontFilter, FontOrigin, PackageAnswer, PackageEntry, PackageFilter,
     PackageOriginFilter, Page, UniverseMetadata,
 };
 
-use crate::call::{self, Answer, Endpoint, Failure, Outcome};
+use crate::args::{self, AllOr, FromExpr};
+use crate::call::{Answer, Outcome};
+use crate::wl_args;
 
 /// Default page size. Small enough that a bare `MathemeQueryFonts[]` does not
 /// ship the whole font book over WSTP; `MaxResults -> All` opts out.
 const DEFAULT_LIMIT: usize = 50;
 
-/// Expected arguments of `MathemeQueryFonts`: an optional Association of font
-/// filters and paging keys.
-#[derive(Debug, Clone)]
-pub struct FontQuery {
-    pub filter: FontFilter,
-    pub page: Page,
-}
-
-/// Expected arguments of `MathemeQueryPackages`: an optional Association of
-/// package filters, paging keys and the two explicit opt-ins.
-#[derive(Debug, Clone)]
-pub struct PackageQuery {
-    pub filter: PackageFilter,
-    pub page: Page,
-    pub allow_downloads: bool,
-    pub refresh: bool,
-}
-
-fn default_page() -> Page {
-    Page {
-        offset: 0,
-        limit: Some(DEFAULT_LIMIT),
+impl FromExpr for FontOrigin {
+    fn from_expr(expr: &Expr) -> Result<Self, String> {
+        args::named(expr, Self::parse, "font source")
     }
 }
 
-/// The two paging keys shared by both query surfaces.
-fn page_entry(page: &mut Page, name: &str, value: &Expr) -> Result<bool, Failure> {
-    match name {
-        "MaxResults" => {
-            page.limit = if value.is_symbol(&Symbol::ALL) {
-                None
-            } else {
-                Some(call::nonnegative(value, "MaxResults")? as usize)
-            };
-            Ok(true)
-        }
-        "Offset" => {
-            page.offset = call::nonnegative(value, "Offset")? as usize;
-            Ok(true)
-        }
-        _ => Ok(false),
+impl FromExpr for PackageOriginFilter {
+    fn from_expr(expr: &Expr) -> Result<Self, String> {
+        args::named(expr, Self::parse, "package origin")
     }
 }
 
-impl FontQuery {
-    pub fn parse(args: &[Entry<'_>]) -> Result<Self, Failure> {
-        let mut query = Self {
-            filter: FontFilter::default(),
-            page: default_page(),
-        };
-        for entry in args {
-            let (key, value) = call::pair(entry)?;
-            let name = call::key(key)?;
-            if page_entry(&mut query.page, name, value)? {
-                continue;
-            }
-            match name {
-                "Family" => query.filter.family = Some(call::string(value)?),
-                "Source" => {
-                    query.filter.origin =
-                        Some(call::named(value, FontOrigin::parse, "font source")?)
-                }
-                "Resident" => query.filter.resident = Some(call::boolean(value)?),
-                "Character" => query.filter.character = Some(call::character(value)?),
-                other => return Err(call::error(format!("unknown font query key: {other}"))),
-            }
-        }
-        Ok(query)
+wl_args! {
+    #[action = "queryFonts"]
+    #[derive(Debug, Clone)]
+    pub struct FontQueryArgs {
+        "Family" => pub family: Option<String> = None,
+        "Source" => pub origin: Option<FontOrigin> = None,
+        "Resident" => pub resident: Option<bool> = None,
+        "Character" => pub character: Option<char> = None,
+        "MaxResults" => pub limit: AllOr<usize> = AllOr(Some(DEFAULT_LIMIT)),
+        "Offset" => pub offset: usize = 0,
     }
 }
 
-impl PackageQuery {
-    pub fn parse(args: &[Entry<'_>]) -> Result<Self, Failure> {
-        let mut query = Self {
-            filter: PackageFilter::default(),
-            page: default_page(),
-            allow_downloads: false,
-            refresh: false,
-        };
-        for entry in args {
-            let (key, value) = call::pair(entry)?;
-            let name = call::key(key)?;
-            if page_entry(&mut query.page, name, value)? {
-                continue;
-            }
-            match name {
-                "Name" => query.filter.name = Some(call::string(value)?),
-                "Namespace" => query.filter.namespace = Some(call::string(value)?),
-                "Origin" => {
-                    query.filter.origin = Some(call::named(
-                        value,
-                        PackageOriginFilter::parse,
-                        "package origin",
-                    )?)
-                }
-                "Version" => query.filter.version = Some(call::string(value)?),
-                "AllowDownloads" => query.allow_downloads = call::boolean(value)?,
-                "Refresh" => query.refresh = call::boolean(value)?,
-                other => return Err(call::error(format!("unknown package query key: {other}"))),
-            }
+impl FontQueryArgs {
+    fn filter(&self) -> FontFilter {
+        FontFilter {
+            family: self.family.clone(),
+            origin: self.origin,
+            resident: self.resident,
+            character: self.character,
         }
-        Ok(query)
+    }
+
+    fn page(&self) -> Page {
+        Page {
+            offset: self.offset,
+            limit: self.limit.0,
+        }
+    }
+}
+
+wl_args! {
+    #[action = "queryPackages"]
+    #[derive(Debug, Clone)]
+    pub struct PackageQueryArgs {
+        "Name" => pub name: Option<String> = None,
+        "Namespace" => pub namespace: Option<String> = None,
+        "Origin" => pub origin: Option<PackageOriginFilter> = None,
+        "Version" => pub version: Option<String> = None,
+        "MaxResults" => pub limit: AllOr<usize> = AllOr(Some(DEFAULT_LIMIT)),
+        "Offset" => pub offset: usize = 0,
+        "AllowDownloads" => pub allow_downloads: bool = false,
+        "Refresh" => pub refresh: bool = false,
+    }
+}
+
+impl PackageQueryArgs {
+    fn filter(&self) -> PackageFilter {
+        PackageFilter {
+            name: self.name.clone(),
+            namespace: self.namespace.clone(),
+            origin: self.origin,
+            version: self.version.clone(),
+        }
+    }
+
+    fn page(&self) -> Page {
+        Page {
+            offset: self.offset,
+            limit: self.limit.0,
+        }
     }
 }
 
@@ -206,14 +179,16 @@ fn packages_expr(answer: &PackageAnswer, page: &Page) -> Vec<Rule> {
 }
 
 /// Execute a font query. Reading the book never loads a font file.
-pub fn run_fonts(query: &FontQuery) -> Outcome {
-    let answer = world::query::fonts(&query.filter, &query.page);
-    Outcome::new(fonts_expr(&answer, &query.page))
+pub fn run_fonts(query: FontQueryArgs) -> Answer {
+    let filter = query.filter();
+    let page = query.page();
+    let answer = world::query::fonts(&filter, &page);
+    Outcome::new(fonts_expr(&answer, &page)).into()
 }
 
 /// Execute a package query. `Refresh` and `AllowDownloads` are the only two
 /// opt-ins: a plain query neither rescans the disk nor reaches the network.
-pub fn run_packages(query: &PackageQuery) -> Outcome {
+pub fn run_packages(query: PackageQueryArgs) -> Answer {
     let mut outcome = Outcome::new(Vec::new());
     if query.refresh {
         world::query::refresh_local();
@@ -223,45 +198,17 @@ pub fn run_packages(query: &PackageQuery) -> Outcome {
             outcome.warn(format!("failed to fetch Universe index: {err}"));
         }
     }
-    let answer = world::query::packages(&query.filter, &query.page);
-    outcome.extend(packages_expr(&answer, &query.page));
-    outcome
-}
-
-pub struct QueryFonts;
-
-impl Endpoint for QueryFonts {
-    const NAME: &'static str = "queryFonts";
-    type Input = FontQuery;
-
-    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
-        FontQuery::parse(args)
-    }
-
-    fn invoke(input: Self::Input) -> Answer {
-        run_fonts(&input).into()
-    }
-}
-
-pub struct QueryPackages;
-
-impl Endpoint for QueryPackages {
-    const NAME: &'static str = "queryPackages";
-    const HOST_FONTS: bool = false;
-    type Input = PackageQuery;
-
-    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
-        PackageQuery::parse(args)
-    }
-
-    fn invoke(input: Self::Input) -> Answer {
-        run_packages(&input).into()
-    }
+    let filter = query.filter();
+    let page = query.page();
+    let answer = world::query::packages(&filter, &page);
+    outcome.extend(packages_expr(&answer, &page));
+    outcome.into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::FromArgs;
     use crate::call::with_entries;
 
     #[test]
@@ -274,14 +221,14 @@ mod tests {
                 Rule::new("MaxResults", 7_i64),
                 Rule::new("Offset", 2_i64),
             ],
-            FontQuery::parse,
+            FontQueryArgs::parse_args,
         )
         .expect("valid font query");
-        assert_eq!(query.filter.family.as_deref(), Some("libertinus"));
-        assert_eq!(query.filter.origin, Some(FontOrigin::Embedded));
-        assert_eq!(query.filter.resident, Some(true));
-        assert_eq!(query.page.limit, Some(7));
-        assert_eq!(query.page.offset, 2);
+        assert_eq!(query.family.as_deref(), Some("libertinus"));
+        assert_eq!(query.origin, Some(FontOrigin::Embedded));
+        assert_eq!(query.resident, Some(true));
+        assert_eq!(query.page().limit, Some(7));
+        assert_eq!(query.page().offset, 2);
     }
 
     #[test]
@@ -294,13 +241,13 @@ mod tests {
                 Rule::new("AllowDownloads", true),
                 Rule::new("Refresh", true),
             ],
-            PackageQuery::parse,
+            PackageQueryArgs::parse_args,
         )
         .expect("valid package query");
-        assert_eq!(query.filter.name.as_deref(), Some("cetz"));
-        assert_eq!(query.filter.origin, Some(PackageOriginFilter::Universe));
-        assert_eq!(query.page.limit, None);
-        assert_eq!(max_results_expr(&query.page), Symbol::ALL);
+        assert_eq!(query.name.as_deref(), Some("cetz"));
+        assert_eq!(query.origin, Some(PackageOriginFilter::Universe));
+        assert_eq!(query.page().limit, None);
+        assert_eq!(max_results_expr(&query.page()), Symbol::ALL);
         assert!(query.allow_downloads);
         assert!(query.refresh);
     }
@@ -308,22 +255,22 @@ mod tests {
     #[test]
     fn no_arguments_uses_the_default_page() {
         assert_eq!(
-            FontQuery::parse(&[]).unwrap().page.limit,
+            FontQueryArgs::parse_args(&[]).unwrap().page().limit,
             Some(DEFAULT_LIMIT)
         );
         assert_eq!(
-            PackageQuery::parse(&[]).unwrap().page.limit,
+            PackageQueryArgs::parse_args(&[]).unwrap().page().limit,
             Some(DEFAULT_LIMIT)
         );
     }
 
     #[test]
     fn unknown_keys_return_a_failure() {
-        let err = with_entries([Rule::new("Mystery", 1_i64)], FontQuery::parse)
+        let err = with_entries([Rule::new("Mystery", 1_i64)], FontQueryArgs::parse_args)
             .expect_err("unknown font query key");
         assert_eq!(err.tag, "Call");
         assert!(
-            err.message.contains("unknown font query key"),
+            err.message.contains("unknown queryFonts key: Mystery"),
             "{}",
             err.message
         );
@@ -338,7 +285,7 @@ mod tests {
                 [Expr::from("Family"), Expr::from("Libertinus")],
             )],
         );
-        let err = FontQuery::parse(&association.as_association().expect("association"))
+        let err = FontQueryArgs::parse_args(&association.as_association().expect("association"))
             .expect_err("delayed rule");
         assert_eq!(err.tag, "Call");
         assert!(err.message.contains("RuleDelayed"), "{}", err.message);

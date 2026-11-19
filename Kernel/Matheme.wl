@@ -14,6 +14,9 @@ BeginPackage["Matheme`", {"Wolfram`ErrorTools`"}];
 
 MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", or \"HTML\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\").";
 MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and imports the pages as vector Graphics.";
+TypstForm::usage = "TypstForm[expr] prints as a Typst math expression approximation of expr.";
+MathemeToTypst::usage = "MathemeToTypst[expr, opts] converts expr to a Typst math String.";
+BoxesToTypst::usage = "BoxesToTypst[boxes] converts a Wolfram Language Box expression to a Typst math String.";
 MathemeVersion::usage = "MathemeVersion[] returns version metadata for Matheme, Typst, LibraryLink, and WSTP.";
 MathemeSettings::usage = "MathemeSettings[] returns the active compiler settings.";
 MathemeSetSettings::usage = "MathemeSetSettings[patch] updates settings (Null resets a field) and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
@@ -30,6 +33,7 @@ MathemeLibraryError::usage = "MathemeLibraryError is the Failure tag for library
 MathemeCallError::usage = "MathemeCallError is the Failure tag for invalid arguments, settings, or network errors.";
 MathemeCompileError::usage = "MathemeCompileError is the Failure tag for Typst compilation and evaluation errors.";
 MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal diagnostics.";
+TypstForm::unspt = "TypstForm of `1` is not supported.";
 
 $TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates (pass a key to \"TypstTemplate\").";
 
@@ -305,7 +309,10 @@ Options[MathemeCompile] = {
   "Features" -> {},
   "Evaluate" -> None
 };
-Options[MathemeToGraphics] = Options[MathemeCompile];
+Options[MathemeToGraphics] = Normal[Join[
+  Association[Options[MathemeCompile]],
+  <|"Format" -> "SVG"|>
+]];
 Options[compileChecked] = Options[MathemeCompile];
 
 compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
@@ -335,6 +342,26 @@ compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
    entry handles pre-call and library failures in one Handle scope. *)
 MathemeCompile[source_String, opts : OptionsPattern[]] :=
   Handle[compileChecked[source, opts], _Failure];
+MathemeCompile[TypstForm[expr_, tOpts : OptionsPattern[]], opts : OptionsPattern[]] :=
+  Module[{src = MathemeToTypst[expr, tOpts], merged},
+    merged = If[KeyExistsQ[Association[opts], "TypstTemplate"],
+      {opts},
+      Join[{opts}, {"TypstTemplate" -> "Equation"}]
+    ];
+    MathemeCompile[src, Sequence @@ merged]
+  ];
+
+(* Wolfram's SVG importer converts width/height from pt to px (4/3) when
+   computing PlotRange while keeping path coordinates in viewBox user units.
+   Strip the "pt" suffix on the root <svg> dimensions so PlotRange matches
+   the actual geometry 1:1. *)
+normalizeSvgUnits[svg_String] := StringReplace[svg,
+  StartOfString ~~ head : ("<svg" ~~ Shortest[___] ~~ ">") :>
+    StringReplace[head, {
+      ("width=\"" ~~ w : NumberString ~~ "pt\"") :> ("width=\"" <> w <> "\""),
+      ("height=\"" ~~ h : NumberString ~~ "pt\"") :> ("height=\"" <> h <> "\"")
+    }]
+];
 
 toGraphics[result_] := Module[{pdf, svg, graphics},
   If[FailureQ[result] || !AssociationQ[result],
@@ -342,16 +369,16 @@ toGraphics[result_] := Module[{pdf, svg, graphics},
     pdf = Lookup[result, "PDF", Null];
     svg = Lookup[result, "SVG", Null];
     Which[
+      ListQ[svg],
+        graphics = Map[ImportString[normalizeSvgUnits[#], {"SVG", "Graphics"}] &, svg];
+        If[!AllTrue[graphics, Head[#] === Graphics &],
+          raiseCallError["Failed to import SVG output as Graphics."],
+          Join[result, <|"Graphics" -> graphics|>]
+        ],
       Head[pdf] === ByteArray,
         graphics = ImportByteArray[pdf, {"PDF", "PageGraphics"}];
         If[!ListQ[graphics],
           raiseCallError["Failed to import PDF bytes as Graphics."],
-          Join[result, <|"Graphics" -> graphics|>]
-        ],
-      ListQ[svg],
-        graphics = Map[ImportString[#, {"SVG", "Graphics"}] &, svg];
-        If[!AllTrue[graphics, Head[#] === Graphics &],
-          raiseCallError["Failed to import SVG output as Graphics."],
           Join[result, <|"Graphics" -> graphics|>]
         ],
       True,
@@ -361,7 +388,17 @@ toGraphics[result_] := Module[{pdf, svg, graphics},
 ];
 
 MathemeToGraphics[source_String, opts : OptionsPattern[]] :=
-  Handle[toGraphics[MathemeCompile[source, opts]], _Failure];
+  Handle[toGraphics[MathemeCompile[source,
+    Sequence @@ If[KeyExistsQ[Association[opts], "Format"],
+      {opts},
+      Join[{opts}, {"Format" -> OptionValue[MathemeToGraphics, "Format"]}]
+    ]]], _Failure];
+MathemeToGraphics[t_TypstForm, opts : OptionsPattern[]] :=
+  Handle[toGraphics[MathemeCompile[t,
+    Sequence @@ If[KeyExistsQ[Association[opts], "Format"],
+      {opts},
+      Join[{opts}, {"Format" -> OptionValue[MathemeToGraphics, "Format"]}]
+    ]]], _Failure];
 
 (* ------------------------------------------------------------------------ *)
 (* State, queries, and cache lifecycle                                      *)
@@ -466,7 +503,7 @@ MathemeClose[] := Module[
 
 Scan[
   Function[f, SyntaxInformation[f] = {"ArgumentsPattern" -> {_, OptionsPattern[]}}],
-  {MathemeCompile, MathemeToGraphics}
+  {MathemeCompile, MathemeToGraphics, TypstForm, MathemeToTypst, BoxesToTypst}
 ];
 SyntaxInformation[MathemeWarmup] = {"ArgumentsPattern" -> {OptionsPattern[]}};
 SyntaxInformation[MathemeSetSettings] = {"ArgumentsPattern" -> {___}};
@@ -480,12 +517,15 @@ Scan[
   {MathemeQueryFonts, MathemeQueryPackages, ClearMathemeCache}
 ];
 
+Get[FileNameJoin[{DirectoryName[$InputFileName], "TypstForm.wl"}]];
+
 End[];
 
 (* Public functions and the public failure/message symbols are read-only. *)
 Scan[
   SetAttributes[#, {Protected, ReadProtected}] &,
-  {MathemeCompile, MathemeToGraphics, MathemeVersion, MathemeSettings,
+  {MathemeCompile, MathemeToGraphics, TypstForm, MathemeToTypst, BoxesToTypst,
+   MathemeVersion, MathemeSettings,
    MathemeSetSettings, MathemeResetSettings, MathemeReloadFonts,
    MathemeReloadPackages, MathemeWarmup, MathemeQueryFonts,
    MathemeQueryPackages, ClearMathemeCache, MathemeClose}

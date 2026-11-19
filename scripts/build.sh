@@ -16,7 +16,7 @@ rm -rf "$paclet_dir"
 mkdir -p "$paclet_dir/Kernel" "$lib_dir"
 
 cp PacletInfo.m "$paclet_dir/PacletInfo.m"
-cp Kernel/init.m Kernel/Matheme.wl "$paclet_dir/Kernel/"
+cp Kernel/*.m Kernel/*.wl "$paclet_dir/Kernel/"
 cp target/release/matheme.dll "$lib_dir/matheme.dll"
 
 rm -f "$root"/output/Matheme-*.paclet

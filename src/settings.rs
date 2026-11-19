@@ -6,43 +6,65 @@
 
 use std::path::PathBuf;
 
-use matheme_wl::{assoc, rule, Entry, Expr, Symbol};
+use matheme_wl::{assoc, rule, Expr, Symbol};
 use matheme_world::settings::{Patch, Settings as WorldSettings, Update};
 use matheme_world::{self as world, FontCounts};
 
-use crate::call::{self, Answer, Endpoint, Failure, Outcome};
+use crate::args::{FromExpr, Resettable, SetOnly};
+use crate::call::{Answer, Outcome};
+use crate::wl_args;
 
-const FIELDS: &[&str] = &[
-    "FontPaths",
-    "SystemFonts",
-    "EmbeddedFonts",
-    "PackagePath",
-    "PackageCache",
-    "Proxy",
-    "Downloads",
-];
+/// Proxy field value: `Null` or empty string resets the proxy, otherwise sets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyUpdate(pub Update<String>);
 
-/// Read a patch from association entries.
-pub fn parse(entries: &[Entry<'_>]) -> Result<Patch, Failure> {
-    let mut patch = Patch::default();
-    for entry in entries {
-        let (key, value) = call::pair(entry)?;
-        let name = call::key(key)?;
-        if !FIELDS.contains(&name) {
-            return Err(call::error(format!("unknown settings key: {name}")));
+impl Default for ProxyUpdate {
+    fn default() -> Self {
+        Self(Update::Keep)
+    }
+}
+
+impl FromExpr for ProxyUpdate {
+    fn from_expr(expr: &Expr) -> Result<Self, String> {
+        if expr.is_symbol(&Symbol::NULL) {
+            return Ok(Self(Update::Reset));
         }
-        match name {
-            "FontPaths" => patch.font_paths = path_list(value)?,
-            "SystemFonts" => patch.system_fonts = Update::Set(call::boolean(value)?),
-            "EmbeddedFonts" => patch.embedded_fonts = Update::Set(call::boolean(value)?),
-            "PackagePath" => patch.package_data = optional_path(value)?,
-            "PackageCache" => patch.package_cache = optional_path(value)?,
-            "Proxy" => patch.proxy = optional_string(value)?,
-            "Downloads" => patch.downloads = Update::Set(call::boolean(value)?),
-            _ => unreachable!("field is in FIELDS"),
+        let text = String::from_expr(expr)?;
+        if text.is_empty() {
+            Ok(Self(Update::Reset))
+        } else {
+            Ok(Self(Update::Set(text)))
         }
     }
-    Ok(patch)
+}
+
+wl_args! {
+    #[action = "setSettings"]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SettingsPatchArgs {
+        "FontPaths" => pub font_paths: Resettable<Vec<PathBuf>> = Resettable::default(),
+        "SystemFonts" => pub system_fonts: SetOnly<bool> = SetOnly::default(),
+        "EmbeddedFonts" => pub embedded_fonts: SetOnly<bool> = SetOnly::default(),
+        "PackagePath" => pub package_data: Resettable<PathBuf> = Resettable::default(),
+        "PackageCache" => pub package_cache: Resettable<PathBuf> = Resettable::default(),
+        "Proxy" => pub proxy: ProxyUpdate = ProxyUpdate::default(),
+        "Downloads" => pub downloads: SetOnly<bool> = SetOnly::default(),
+    }
+}
+
+impl SettingsPatchArgs {
+    pub fn into_patch(self) -> Patch {
+        Patch {
+            font_paths: self.font_paths.0,
+            system_fonts: self.system_fonts.0,
+            embedded_fonts: self.embedded_fonts.0,
+            package_data: self.package_data.0,
+            package_cache: self.package_cache.0,
+            proxy: self.proxy.0,
+            downloads: self.downloads.0,
+            reset: false,
+        }
+    }
 }
 
 /// A patch that restores every user-facing field to its default.
@@ -50,40 +72,6 @@ pub fn reset_patch() -> Patch {
     Patch {
         reset: true,
         ..Patch::default()
-    }
-}
-
-fn path_list(value: &Expr) -> Result<Update<Vec<PathBuf>>, Failure> {
-    if value.is_symbol(&Symbol::NULL) {
-        return Ok(Update::Reset);
-    }
-    let items = value
-        .as_list()
-        .ok_or_else(|| call::error("FontPaths must be a List of strings or Null"))?;
-    items
-        .iter()
-        .map(|item| call::string(item).map(PathBuf::from))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Update::Set)
-}
-
-fn optional_path(value: &Expr) -> Result<Update<PathBuf>, Failure> {
-    if value.is_symbol(&Symbol::NULL) {
-        return Ok(Update::Reset);
-    }
-    Ok(Update::Set(PathBuf::from(call::string(value)?)))
-}
-
-fn optional_string(value: &Expr) -> Result<Update<String>, Failure> {
-    if value.is_symbol(&Symbol::NULL) {
-        return Ok(Update::Reset);
-    }
-    let text = call::string(value)?;
-    // An empty proxy means "no proxy", which is the same as resetting.
-    if text.is_empty() {
-        Ok(Update::Reset)
-    } else {
-        Ok(Update::Set(text))
     }
 }
 
@@ -123,63 +111,30 @@ fn path_list_expr(paths: &[PathBuf]) -> Expr {
 }
 
 // ---------------------------------------------------------------------------
-// Settings / SetSettings / ResetSettings endpoints
+// Settings / SetSettings / ResetSettings handlers
 // ---------------------------------------------------------------------------
 
-pub struct Settings;
-
-impl Endpoint for Settings {
-    const NAME: &'static str = "settings";
-    const HOST_FONTS: bool = false;
-    type Input = ();
-
-    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
-        call::ensure_empty(args, Self::NAME)
-    }
-
-    fn invoke((): ()) -> Answer {
-        Outcome::new([rule!("Settings" -> expr(&world::settings()))]).into()
-    }
+pub fn run_get() -> Answer {
+    Outcome::new([rule!("Settings" -> expr(&world::settings()))]).into()
 }
 
-pub struct SetSettings;
-
-impl Endpoint for SetSettings {
-    const NAME: &'static str = "setSettings";
-    type Input = Patch;
-
-    fn parse(args: &[Entry<'_>]) -> Result<Self::Input, Failure> {
-        parse(args)
-    }
-
-    fn invoke(patch: Self::Input) -> Answer {
-        let mut warning = None;
-        if let Update::Set(ref proxy) = patch.proxy {
-            if let Err(err) = world::packages::validate_proxy(proxy) {
-                warning = Some(err);
-            }
+pub fn run_set(args: SettingsPatchArgs) -> Answer {
+    let patch = args.into_patch();
+    let mut warning = None;
+    if let Update::Set(ref proxy) = patch.proxy {
+        if let Err(err) = world::packages::validate_proxy(proxy) {
+            warning = Some(err);
         }
-        let mut outcome = applied_outcome(world::apply(&patch));
-        if let Some(msg) = warning {
-            outcome.warn(msg);
-        }
-        outcome.into()
     }
+    let mut outcome = applied_outcome(world::apply(&patch));
+    if let Some(msg) = warning {
+        outcome.warn(msg);
+    }
+    outcome.into()
 }
 
-pub struct ResetSettings;
-
-impl Endpoint for ResetSettings {
-    const NAME: &'static str = "resetSettings";
-    type Input = ();
-
-    fn parse(args: &[Entry<'_>]) -> Result<(), Failure> {
-        call::ensure_empty(args, Self::NAME)
-    }
-
-    fn invoke((): ()) -> Answer {
-        applied_outcome(world::apply(&reset_patch())).into()
-    }
+pub fn run_reset() -> Answer {
+    applied_outcome(world::apply(&reset_patch())).into()
 }
 
 fn applied_outcome(applied: world::Applied) -> Outcome {
@@ -198,8 +153,13 @@ fn applied_outcome(applied: world::Applied) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::FromArgs;
     use crate::call::with_entries;
     use matheme_wl::Rule;
+
+    fn parse(entries: &[matheme_wl::Entry<'_>]) -> Result<Patch, crate::call::Failure> {
+        SettingsPatchArgs::parse_args(entries).map(SettingsPatchArgs::into_patch)
+    }
 
     #[test]
     fn booleans_and_paths_are_read() {
@@ -244,15 +204,19 @@ mod tests {
     fn unknown_keys_return_a_failure() {
         let err = with_entries([Rule::new("Mystery", 1_i64)], parse).expect_err("unknown key");
         assert_eq!(err.tag, "Call");
-        assert!(err.message.contains("unknown settings key"), "{}", err.message);
+        assert!(
+            err.message.contains("unknown setSettings key: Mystery"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
-    fn wrong_types_return_a_failure() {
+    fn wrong_types_return_a_failure_with_field_context() {
         let err = with_entries([Rule::new("SystemFonts", "yes")], parse).expect_err("wrong type");
         assert_eq!(err.tag, "Call");
         assert!(
-            err.message.contains("expected True or False"),
+            err.message.contains("setSettings.SystemFonts: expected True or False"),
             "{}",
             err.message
         );

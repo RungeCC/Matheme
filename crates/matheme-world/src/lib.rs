@@ -4,6 +4,8 @@
 //! through [`settings::set_host_font_paths`].
 
 mod cache;
+pub mod compile;
+pub mod diagnostics;
 pub mod fonts;
 mod loader;
 pub mod packages;

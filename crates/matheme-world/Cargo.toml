@@ -6,6 +6,11 @@ publish = false
 
 [dependencies]
 typst = "=0.15.1"
+typst-eval = "=0.15.1"
+typst-html = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-pdf = "=0.15.1"
+typst-svg = "=0.15.1"
 # Must match typst's comemo so `comemo::evict` clears the same global cache.
 comemo = "0.5.1"
 typst-kit = { version = "=0.15.1", features = [
@@ -20,6 +25,3 @@ ureq = { version = "2", default-features = false, features = ["native-tls", "gzi
 # Used to keep a parsed copy of the Universe index that typst downloads.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[dev-dependencies]
-typst-layout = "=0.15.1"

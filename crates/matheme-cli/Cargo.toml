@@ -1,0 +1,18 @@
+[package]
+name = "matheme-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "matheme"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+matheme-wl = { path = "../matheme-wl" }
+matheme-world = { path = "../matheme-world" }
+typst = "=0.15.1"
+wolfram-app-discovery = "0.6.0"
+wolfram-expr = "0.6.0"
+wstp = "0.6.0"

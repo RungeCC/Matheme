@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/matheme-world", "crates/matheme-wl"]
+members = ["crates/matheme-world", "crates/matheme-wl", "crates/matheme-cli"]
 resolver = "2"
 
 [package]
@@ -17,11 +17,6 @@ matheme-world = { path = "crates/matheme-world" }
 matheme-wl = { path = "crates/matheme-wl" }
 wolfram-library-link = "=0.6.1"
 typst = "=0.15.1"
-typst-eval = "=0.15.1"
-typst-html = "=0.15.1"
-typst-layout = "=0.15.1"
-typst-pdf = "=0.15.1"
-typst-svg = "=0.15.1"
 
 [profile.release]
 opt-level = 2
