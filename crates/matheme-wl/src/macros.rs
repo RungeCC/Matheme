@@ -24,12 +24,12 @@ macro_rules! rule {
     };
 }
 
-/// Build one immediate rule, `key -> value`.
+/// Build a `Vec<Rule>` from `key -> value` entries.
 #[macro_export]
 macro_rules! rules {
-  ($($key:literal -> $value:expr),* $(,)?) => {
-      vec![$($crate::rule!($key -> $value)),*]
-  };
+    ($($key:literal -> $value:expr),* $(,)?) => {
+        vec![$($crate::rule!($key -> $value)),*]
+    };
 }
 
 /// Build an Association expression from `key -> value` entries.
@@ -49,6 +49,19 @@ mod tests {
         let rule = crate::rule!("Key" -> 7_i64);
         assert_eq!(rule.key().as_str(), Some("Key"));
         assert_eq!(rule.value().as_i64(), Some(7));
+    }
+
+    #[test]
+    fn rules_builds_vec_of_immediate_rules() {
+        let list = crate::rules![
+            "Status" -> "Success",
+            "Pages" -> 3_i64,
+        ];
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].key().as_str(), Some("Status"));
+        assert_eq!(list[0].value().as_str(), Some("Success"));
+        assert_eq!(list[1].key().as_str(), Some("Pages"));
+        assert_eq!(list[1].value().as_i64(), Some(3));
     }
 
     #[test]

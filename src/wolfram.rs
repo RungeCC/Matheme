@@ -15,7 +15,7 @@ use wolfram_library_link::{
 };
 
 use matheme_wl::{Expr, Symbol};
-use matheme_wstp::{WstpError, WstpLink};
+use matheme_wstp::{EvalOptions, WstpError, WstpLink};
 
 static INSTALLATION_DIR: OnceLock<PathBuf> = OnceLock::new();
 static HOST_FONTS_SET: OnceLock<()> = OnceLock::new();
@@ -67,18 +67,26 @@ pub fn dll_info() -> DllInfo {
 /// expression is read with a context-resolving reader: Wolfram 15 sends
 /// `ReturnPacket` without a context, which the stock `get_expr()` cannot parse.
 fn evaluate(link: &mut Link, query: &Expr) -> Result<Expr, WstpError> {
-    WstpLink::new(link)
-        .eval_with(query, 16, false, |raw_link| {
+    let result = WstpLink::new(link)
+        .eval_with(query, EvalOptions::library_link(), |raw_link| {
             let processed = unsafe { rtl::processWSLINK(raw_link.raw_link().cast()) };
             if processed == 0 {
-                Err(WstpError::new(raw_link.error_message().unwrap_or_else(
+                Err(WstpError::transport(raw_link.error_message().unwrap_or_else(
                     || "unknown error processing WSTP link".into(),
                 )))
             } else {
                 Ok(())
             }
         })
-        .map(|out| out.expr)
+        .map(|out| out.expr);
+
+    if matches!(
+        &result,
+        Err(WstpError::Protocol(_) | WstpError::PacketLimit { .. })
+    ) {
+        WstpLink::new(link).try_resync_packet();
+    }
+    result
 }
 
 /// Ask the kernel for `$InstallationDirectory`, caching only successful lookups

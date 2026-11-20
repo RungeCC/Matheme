@@ -7,8 +7,9 @@
 //! [`typst::foundations::Value`].
 
 use std::path::Path;
+use std::time::Duration;
 
-use matheme_wstp::{Link, WstpLink};
+use matheme_wstp::{Link, WstpError, WstpLink};
 use typst::foundations::Value;
 
 /// Result of one Wolfram Kernel evaluation.
@@ -16,6 +17,9 @@ pub type EvalOutput = matheme_wstp::EvalOutput;
 
 /// Error returned by [`KernelSession`] operations.
 pub type KernelError = matheme_wstp::WstpError;
+
+const LAUNCH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const CONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Tracks whether a session owns its kernel process and has already sent `Exit[]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +57,7 @@ impl ExitPolicy {
 pub struct KernelSession {
     link: Link,
     exit_policy: ExitPolicy,
+    poisoned: bool,
 }
 
 impl KernelSession {
@@ -68,16 +73,20 @@ impl KernelSession {
             "-linkname",
             &linkname,
         ];
-        let mut link = Link::open_with_args(&argv)
-            .map_err(|err| KernelError::new(format!("failed to launch Wolfram kernel ({path_str}): {err}")))?;
+        let mut link = Link::open_with_args(&argv).map_err(|err| {
+            KernelError::transport(format!("failed to launch Wolfram kernel ({path_str}): {err}"))
+        })?;
         link.activate()
-            .map_err(|err| KernelError::new(format!("failed to activate WSTP link: {err}")))?;
+            .map_err(|err| KernelError::transport(format!("failed to activate WSTP link: {err}")))?;
 
         let mut session = Self {
             link,
             exit_policy: ExitPolicy::owned(),
+            poisoned: false,
         };
-        session.wstp().drain_until_input_name(32)?;
+        session
+            .wstp()
+            .drain_until_input_name(32, LAUNCH_HANDSHAKE_TIMEOUT)?;
         Ok(session)
     }
 
@@ -90,16 +99,20 @@ impl KernelSession {
             "-linkname",
             link_name,
         ];
-        let mut link = Link::open_with_args(&argv)
-            .map_err(|err| KernelError::new(format!("failed to connect to WSTP link {link_name:?}: {err}")))?;
+        let mut link = Link::open_with_args(&argv).map_err(|err| {
+            KernelError::transport(format!("failed to connect to WSTP link {link_name:?}: {err}"))
+        })?;
         link.activate()
-            .map_err(|err| KernelError::new(format!("failed to activate WSTP link: {err}")))?;
+            .map_err(|err| KernelError::transport(format!("failed to activate WSTP link: {err}")))?;
 
         let mut session = Self {
             link,
             exit_policy: ExitPolicy::attached(),
+            poisoned: false,
         };
-        session.wstp().drain_until_input_name(32)?;
+        session
+            .wstp()
+            .drain_until_input_name(32, CONNECT_HANDSHAKE_TIMEOUT)?;
         Ok(session)
     }
 
@@ -109,7 +122,18 @@ impl KernelSession {
 
     /// Evaluate a Wolfram Language code string via `ToExpression[code]`.
     pub fn eval_code(&mut self, wl_code: &str) -> Result<EvalOutput, KernelError> {
-        self.wstp().eval_code(wl_code)
+        if self.poisoned {
+            return Err(WstpError::Poisoned(
+                "previous WSTP failure left the kernel link desynchronized".into(),
+            ));
+        }
+        match self.wstp().eval_code(wl_code) {
+            Ok(out) => Ok(out),
+            Err(err) => {
+                self.poisoned = true;
+                Err(err)
+            }
+        }
     }
 
     /// Evaluate Wolfram Language code and convert the result into a native
