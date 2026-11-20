@@ -1,7 +1,7 @@
 //! Cache lifecycle endpoints: `ClearMathemeCache`, `MathemeWarmup`,
 //! `MathemeReloadFonts`, `MathemeReloadPackages`, and `MathemeClose`.
 
-use matheme_wl::{rule, Expr, Rule, Symbol};
+use matheme_wl::{rule, rules, Expr, Rule, Symbol};
 use matheme_world::{self as world, CacheSelection};
 
 use crate::args::FromExpr;
@@ -10,14 +10,14 @@ use crate::settings;
 use crate::wl_args;
 
 pub(crate) fn package_entries(status: &world::PackageStatus) -> Vec<Rule> {
-    vec![
-        rule!("Packages" -> status.count as i64),
-        rule!("PackageData" -> status.data.as_deref()),
-        rule!("PackageCache" -> status.cache.as_deref()),
-        rule!("DownloadsAllowed" -> status.downloads),
-        rule!("DownloadsActive" -> status.downloads_active),
-        rule!("Proxy" -> status.proxy.as_deref()),
-        rule!("ProxyError" -> status.proxy_error.as_deref()),
+    rules! [
+        "Packages" -> status.count as i64,
+        "PackageData" -> status.data.as_deref(),
+        "PackageCache" -> status.cache.as_deref(),
+        "DownloadsAllowed" -> status.downloads,
+        "DownloadsActive" -> status.downloads_active,
+        "Proxy" -> status.proxy.as_deref(),
+        "ProxyError" -> status.proxy_error.as_deref(),
     ]
 }
 

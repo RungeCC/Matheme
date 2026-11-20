@@ -24,6 +24,14 @@ macro_rules! rule {
     };
 }
 
+/// Build one immediate rule, `key -> value`.
+#[macro_export]
+macro_rules! rules {
+  ($($key:literal -> $value:expr),* $(,)?) => {
+      vec![$($crate::rule!($key -> $value)),*]
+  };
+}
+
 /// Build an Association expression from `key -> value` entries.
 #[macro_export]
 macro_rules! assoc {

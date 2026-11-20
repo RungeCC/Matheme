@@ -5,7 +5,7 @@
 //! values into [`matheme_world::query`] filters and renders the answers; the
 //! world crate owns the data and all filtering logic.
 
-use matheme_wl::{assoc, rule, Expr, Rule, Symbol};
+use matheme_wl::{assoc, rules, Expr, Rule, Symbol};
 use matheme_world as world;
 use world::query::{
     FontAnswer, FontFace, FontFilter, FontOrigin, PackageAnswer, PackageEntry, PackageFilter,
@@ -153,28 +153,28 @@ fn package_entry_expr(entry: &PackageEntry) -> Expr {
 }
 
 fn fonts_expr(answer: &FontAnswer, page: &Page) -> Vec<Rule> {
-    vec![
-        rule!("Total" -> answer.total as i64),
-        rule!("Matched" -> answer.matched as i64),
-        rule!("Returned" -> answer.faces.len() as i64),
-        rule!("Offset" -> page.offset as i64),
-        rule!("MaxResults" -> max_results_expr(page)),
-        rule!("Resident" -> answer.resident as i64),
-        rule!("Results" -> Expr::list(answer.faces.iter().map(font_face_expr))),
+    rules![
+        "Total" -> answer.total as i64,
+        "Matched" -> answer.matched as i64,
+        "Returned" -> answer.faces.len() as i64,
+        "Offset" -> page.offset as i64,
+        "MaxResults" -> max_results_expr(page),
+        "Resident" -> answer.resident as i64,
+        "Results" -> Expr::list(answer.faces.iter().map(font_face_expr)),
     ]
 }
 
 fn packages_expr(answer: &PackageAnswer, page: &Page) -> Vec<Rule> {
-    vec![
-        rule!("Total" -> answer.total() as i64),
-        rule!("Matched" -> answer.matched as i64),
-        rule!("Returned" -> answer.entries.len() as i64),
-        rule!("Offset" -> page.offset as i64),
-        rule!("MaxResults" -> max_results_expr(page)),
-        rule!("Local" -> answer.local_total as i64),
-        rule!("UniverseIndexCached" -> answer.universe_cached),
-        rule!("Universe" -> answer.universe_total as i64),
-        rule!("Results" -> Expr::list(answer.entries.iter().map(package_entry_expr))),
+    rules![
+        "Total" -> answer.total() as i64,
+        "Matched" -> answer.matched as i64,
+        "Returned" -> answer.entries.len() as i64,
+        "Offset" -> page.offset as i64,
+        "MaxResults" -> max_results_expr(page),
+        "Local" -> answer.local_total as i64,
+        "UniverseIndexCached" -> answer.universe_cached,
+        "Universe" -> answer.universe_total as i64,
+        "Results" -> Expr::list(answer.entries.iter().map(package_entry_expr)),
     ]
 }
 
