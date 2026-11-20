@@ -1531,6 +1531,7 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+ "ttf-parser",
  "typst",
  "typst-eval",
  "typst-html",

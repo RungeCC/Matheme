@@ -2,17 +2,16 @@
 
 A bridge that lets the Wolfram Language typeset with [Typst](https://typst.app/).
 A Rust `cdylib` is loaded **in-process** by Wolfram 15 via WSTP `LinkObject`;
-Typst compiles source to PDF, SVG, or HTML, and `MathemeToGraphics` imports the
-compiled output (default `"SVG"`, or `"PDF"`) as native vector `Graphics`. No
-external process and no Frame-to-Graphics reimplementation.
+Typst compiles source directly to native Wolfram vector `Graphics` (or to PDF,
+SVG, or HTML). No external process and no `PDFTools` / `ImportString` bottleneck.
 The only callback into the kernel is an evaluation of
 `$InstallationDirectory` to locate Wolfram's bundled fonts; it is cached
 in process state and only refreshes the font book if the paths change.
 
 ```
-Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶ SVG / PDF / HTML
+Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶ Graphics / SVG / PDF / HTML
    ▲                                                          │
-   └──────────── ImportString / ImportByteArray (Graphics) ◀──┘
+   └────────────────── Native Graphics[FilledCurve[…]] ◀──────┘
 ```
 
 ## Layout
@@ -142,7 +141,7 @@ Options (all names are strings):
 | `"BasePath"`          | `Directory[]` | Root for `#include` / `#image` relative paths.                                                                                                       |
 | `"AllowDownloads"`    | `False`       | If `True`, missing Universe packages may be downloaded.                                                                                              |
 | `"TypstTemplate"`     | `None`        | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see _Templates_).                                     |
-| `"Format"`            | `"PDF"`       | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), or `"HTML"` (automatically enables the `"html"` feature).                            |
+| `"Format"`            | `"PDF"`       | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), `"HTML"` (automatically enables the `"html"` feature), or `"Graphics"` (list of native Wolfram vector `Graphics`). |
 | `"Pages"`             | `All`         | Page filter (`All`, integer, list of integers/`{start, end}`/`Span`, or range string such as `"1,3-5"`) for PDF and SVG exports.                     |
 | `"PDFStandard"`       | `Automatic`   | `Automatic`, a standard string (`"1.4"`–`"2.0"`, `"a-1b"`–`"a-4e"`, `"ua-1"`), or a list of standards.                                               |
 | `"PDFTags"`           | `True`        | Whether to emit tagged PDF accessibility structure.                                                                                                  |
@@ -175,10 +174,12 @@ res["Graphics"]   (* list of Graphics, one per page *)
 ```
 
 Same options and return shape as `MathemeCompile`, plus a `"Graphics"` key.
-By default `"Format"` is `"SVG"` (imported via `ImportString[..., {"SVG", "Graphics"}]`
-after normalizing root `pt` dimensions); pass `"Format" -> "PDF"` to use
-`ImportByteArray[pdf, {"PDF", "PageGraphics"}]` instead. Both paths set
-`PlotRange -> All` so glyph descenders and overhangs are never clipped.
+By default `"Format"` is `"Graphics"`, which extracts glyph outlines (`ttf-parser`)
+and shapes directly from Typst's internal `Frame` tree in Rust and sends native
+`Graphics[FilledCurve[...]]` expressions over WSTP (~1–2 ms per page, bypassing
+Wolfram's `PDFTools` importer and its Unicode-math PDF bugs). Pass
+`"Format" -> "SVG"` or `"Format" -> "PDF"` to round-trip through
+`ImportString` / `ImportByteArray` instead.
 
 ### Diagnostics
 

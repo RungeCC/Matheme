@@ -10,6 +10,7 @@ mod cache;
 mod call;
 mod compile;
 mod diagnostics;
+mod graphics;
 mod query;
 mod settings;
 mod version;

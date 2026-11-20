@@ -298,6 +298,7 @@ fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
         OutputFormat::Pdf => "pdf",
         OutputFormat::Svg => "svg",
         OutputFormat::Html => "html",
+        OutputFormat::Graphics => "wl",
     };
     if input == Path::new("-") {
         PathBuf::from("-")
@@ -503,6 +504,9 @@ fn write_output(path: &Path, output: &CompileOutput) -> Result<(), String> {
                 }
                 Ok(())
             }
+        }
+        CompileOutput::Graphics { .. } => {
+            Err("Graphics format is only supported via the Wolfram LibraryLink bridge".into())
         }
     }
 }

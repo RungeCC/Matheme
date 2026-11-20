@@ -7,6 +7,7 @@ mod cache;
 pub mod compile;
 pub mod diagnostics;
 pub mod fonts;
+pub mod graphics;
 mod loader;
 pub mod packages;
 pub mod query;

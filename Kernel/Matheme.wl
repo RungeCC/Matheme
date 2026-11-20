@@ -12,7 +12,7 @@ If[MemberQ[$Packages, "Matheme`"],
 
 BeginPackage["Matheme`", {"Wolfram`ErrorTools`"}];
 
-MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", or \"HTML\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\").";
+MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", \"HTML\", or \"Graphics\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\").";
 MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and imports the pages as vector Graphics.";
 TypstForm::usage = "TypstForm[expr] prints as a Typst math expression approximation of expr.";
 MathemeToTypst::usage = "MathemeToTypst[expr, opts] converts expr to a Typst math String.";
@@ -299,7 +299,7 @@ Options[MathemeCompile] = {
 };
 Options[MathemeToGraphics] = Normal[Join[
   Association[Options[MathemeCompile]],
-  <|"Format" -> "SVG"|>
+  <|"Format" -> "Graphics"|>
 ]];
 Options[compileChecked] = Options[MathemeCompile];
 
@@ -363,9 +363,12 @@ uncropGraphics[other_] := other;
 toGraphics[result_] := Module[{pdf, svg, graphics},
   If[FailureQ[result] || !AssociationQ[result],
     result,
+    graphics = Lookup[result, "Graphics", Null];
     pdf = Lookup[result, "PDF", Null];
     svg = Lookup[result, "SVG", Null];
     Which[
+      ListQ[graphics] && AllTrue[graphics, Head[#] === Graphics &],
+        result,
       ListQ[svg],
         graphics = Map[ImportString[normalizeSvgUnits[#], {"SVG", "Graphics"}] &, svg];
         If[!AllTrue[graphics, Head[#] === Graphics &],

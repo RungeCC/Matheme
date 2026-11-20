@@ -27,6 +27,7 @@ pub use typst::{Feature, Features};
 pub use typst_pdf::{PdfStandard, PdfStandards, Timestamp};
 
 use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity};
+use crate::graphics::{self, VectorPage};
 use crate::world::{MathemeWorld, WorldDate};
 
 /// Evict memoized Typst entries older than this many compilations so memory
@@ -39,6 +40,7 @@ pub enum OutputFormat {
     Pdf,
     Svg,
     Html,
+    Graphics,
 }
 
 impl FromStr for OutputFormat {
@@ -51,6 +53,8 @@ impl FromStr for OutputFormat {
             Ok(Self::Svg)
         } else if name.eq_ignore_ascii_case("html") {
             Ok(Self::Html)
+        } else if name.eq_ignore_ascii_case("graphics") {
+            Ok(Self::Graphics)
         } else {
             Err(format!("unknown output format: {name:?}"))
         }
@@ -64,7 +68,7 @@ impl OutputFormat {
 
     pub fn target(self) -> Target {
         match self {
-            Self::Pdf | Self::Svg => Target::Paged,
+            Self::Pdf | Self::Svg | Self::Graphics => Target::Paged,
             Self::Html => Target::Html,
         }
     }
@@ -96,6 +100,10 @@ pub enum CompileOutput {
     },
     Html {
         html: String,
+    },
+    Graphics {
+        pages: Vec<VectorPage>,
+        total_pages: usize,
     },
 }
 
@@ -274,7 +282,7 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
     let mut evaluated: Option<EvaluatedValues> = None;
 
     let failed = match request.format {
-        OutputFormat::Pdf | OutputFormat::Svg => {
+        OutputFormat::Pdf | OutputFormat::Svg | OutputFormat::Graphics => {
             let warned = typst::compile::<PagedDocument>(&world);
             record_typst_diags(&world, &warned.warnings, &mut typst_diags, &mut diagnostics);
             match warned.output {
@@ -306,6 +314,12 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
                                 pages: svgs,
                                 total_pages,
                             });
+                            Ok(())
+                        }
+                        OutputFormat::Graphics => {
+                            let pages =
+                                graphics::export_graphics(&document, request.pages.as_ref());
+                            output = Some(CompileOutput::Graphics { pages, total_pages });
                             Ok(())
                         }
                         OutputFormat::Html => unreachable!(),
