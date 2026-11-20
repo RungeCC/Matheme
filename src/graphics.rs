@@ -7,16 +7,17 @@ use matheme_world::graphics::{
 };
 
 pub fn page_to_expr(page: &VectorPage) -> Expr {
+    let [[x0, x1], [y0, y1]] = page.plot_range;
+    let plot_width = (x1 - x0).abs().max(1e-6);
+    let img_w = (x1 - x0).ceil().max(1.0);
+    let img_h = (y1 - y0).ceil().max(1.0);
+
     let mut elements = Vec::with_capacity(page.primitives.len());
     for primitive in &page.primitives {
-        if let Some(expr) = primitive_to_expr(primitive) {
+        if let Some(expr) = primitive_to_expr(primitive, plot_width) {
             elements.push(expr);
         }
     }
-
-    let [[x0, x1], [y0, y1]] = page.plot_range;
-    let img_w = (x1 - x0).ceil().max(1.0);
-    let img_h = (y1 - y0).ceil().max(1.0);
 
     Expr::normal(
         Symbol::system("Graphics"),
@@ -47,16 +48,16 @@ pub fn page_to_expr(page: &VectorPage) -> Expr {
     )
 }
 
-fn primitive_to_expr(primitive: &VectorPrimitive) -> Option<Expr> {
+fn primitive_to_expr(primitive: &VectorPrimitive, plot_width: f64) -> Option<Expr> {
     match primitive {
         VectorPrimitive::Paths {
             paths,
             fill,
             stroke,
             ..
-        } => paths_to_expr(paths, *fill, stroke.as_ref()),
+        } => paths_to_expr(paths, *fill, stroke.as_ref(), plot_width),
         VectorPrimitive::Line { start, end, stroke } => {
-            let mut group = stroke_directives(stroke);
+            let mut group = stroke_directives(stroke, plot_width);
             group.push(Expr::normal(
                 Symbol::system("Line"),
                 [Expr::list([point_expr(*start), point_expr(*end)])],
@@ -89,6 +90,7 @@ fn paths_to_expr(
     paths: &[Vec<Subpath>],
     fill: Option<Rgba>,
     stroke: Option<&StrokeStyle>,
+    plot_width: f64,
 ) -> Option<Expr> {
     let valid_paths: Vec<&[Subpath]> = paths
         .iter()
@@ -127,7 +129,7 @@ fn paths_to_expr(
             ));
             group.push(Expr::normal(
                 Symbol::system("EdgeForm"),
-                [Expr::list(stroke_directives(stroke_style))],
+                [Expr::list(stroke_directives(stroke_style, plot_width))],
             ));
             for subpaths in valid_paths {
                 group.push(filled_curve_expr(subpaths));
@@ -148,7 +150,7 @@ fn paths_to_expr(
                 fill_group.push(filled_curve_expr(subpaths));
             }
 
-            let mut stroke_group = stroke_directives(stroke_style);
+            let mut stroke_group = stroke_directives(stroke_style, plot_width);
             for subpaths in &valid_paths {
                 stroke_group.push(joined_curve_expr(subpaths));
             }
@@ -156,7 +158,7 @@ fn paths_to_expr(
             Some(Expr::list([Expr::list(fill_group), Expr::list(stroke_group)]))
         }
         (None, Some(stroke_style)) => {
-            let mut group = stroke_directives(stroke_style);
+            let mut group = stroke_directives(stroke_style, plot_width);
             for subpaths in valid_paths {
                 group.push(joined_curve_expr(subpaths));
             }
@@ -243,12 +245,12 @@ fn rgba_expr(c: Rgba) -> Expr {
     }
 }
 
-fn stroke_directives(s: &StrokeStyle) -> Vec<Expr> {
+fn stroke_directives(s: &StrokeStyle, plot_width: f64) -> Vec<Expr> {
     let mut out = Vec::with_capacity(5);
     out.push(rgba_expr(s.color));
     out.push(Expr::normal(
-        Symbol::system("AbsoluteThickness"),
-        [s.thickness],
+        Symbol::system("Thickness"),
+        [s.thickness / plot_width],
     ));
     let cap_name = match s.cap {
         LineCapStyle::Butt => "Butt",
@@ -270,8 +272,8 @@ fn stroke_directives(s: &StrokeStyle) -> Vec<Expr> {
     if let Some((ref pattern, _phase)) = s.dash {
         if !pattern.is_empty() {
             out.push(Expr::normal(
-                Symbol::system("AbsoluteDashing"),
-                [Expr::list(pattern.iter().copied())],
+                Symbol::system("Dashing"),
+                [Expr::list(pattern.iter().map(|len| *len / plot_width))],
             ));
         }
     }
