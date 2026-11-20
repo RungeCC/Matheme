@@ -13,7 +13,7 @@ If[MemberQ[$Packages, "Matheme`"],
 BeginPackage["Matheme`", {"Wolfram`ErrorTools`"}];
 
 MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", \"HTML\", or \"Graphics\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\").";
-MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and imports the pages as vector Graphics.";
+MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and returns vector Graphics pages (directly from Typst's Frame tree by default, or imported when \"Format\" is \"SVG\" or \"PDF\").";
 TypstForm::usage = "TypstForm[expr] prints as a Typst math expression approximation of expr.";
 MathemeToTypst::usage = "MathemeToTypst[expr, opts] converts expr to a Typst math String.";
 BoxesToTypst::usage = "BoxesToTypst[boxes] converts a Wolfram Language Box expression to a Typst math String.";
@@ -352,11 +352,44 @@ normalizeSvgUnits[svg_String] := StringReplace[svg,
 ];
 
 (* PDF and SVG importers set PlotRange strictly to the page MediaBox/viewBox,
-   which can clip glyph descenders or italic overhangs when margin is 0pt.
-   PlotRange -> All lets Wolfram compute the full primitive bounding box. *)
-uncropGraphics[g_Graphics] := Graphics[
-  First[g],
-  Sequence @@ Normal[Append[Association[Rest[List @@ g]], PlotRange -> All]]
+   which can clip glyph descenders or italic overhangs when margin is 0pt;
+   switching blindly to PlotRange -> All would add default PlotRangePadding,
+   leave ImageSize stale, and drop fixed page margins (e.g. A4 PDF pages).
+   Unify all formats with "Format" -> "Graphics": take the union of the page
+   box and the actual primitive content bounds via AbsoluteOptions, and set
+   PlotRangePadding -> None, ImagePadding -> None, and exact ImageSize -> {w, h}. *)
+uncropGraphics[g_Graphics] := Module[
+  {opts, origPR, absPR, x0, x1, y0, y1, w, h},
+  opts = Association[Rest[List @@ g]];
+  origPR = Lookup[opts, PlotRange, None];
+  absPR = PlotRange /. Quiet[
+    AbsoluteOptions[
+      Graphics[First[g], PlotRange -> All, PlotRangePadding -> None],
+      PlotRange
+    ]
+  ];
+  If[
+    MatrixQ[origPR, NumericQ] && Dimensions[origPR] === {2, 2} &&
+    MatrixQ[absPR, NumericQ] && Dimensions[absPR] === {2, 2},
+    {x0, x1} = MinMax[Join[origPR[[1]], absPR[[1]]]];
+    {y0, y1} = MinMax[Join[origPR[[2]], absPR[[2]]]];
+    w = Max[1., x1 - x0];
+    h = Max[1., y1 - y0];
+    Graphics[
+      First[g],
+      Sequence @@ Normal[Join[opts, <|
+        PlotRange -> {{x0, x1}, {y0, y1}},
+        PlotRangePadding -> None,
+        ImagePadding -> None,
+        ImageSize -> {w, h},
+        AspectRatio -> Automatic
+      |>]]
+    ],
+    Graphics[
+      First[g],
+      Sequence @@ Normal[Join[opts, <|PlotRange -> All, PlotRangePadding -> None|>]]
+    ]
+  ]
 ];
 uncropGraphics[other_] := other;
 

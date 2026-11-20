@@ -174,12 +174,25 @@ res["Graphics"]   (* list of Graphics, one per page *)
 ```
 
 Same options and return shape as `MathemeCompile`, plus a `"Graphics"` key.
-By default `"Format"` is `"Graphics"`, which extracts glyph outlines (`ttf-parser`)
-and shapes directly from Typst's internal `Frame` tree in Rust and sends native
-`Graphics[FilledCurve[...]]` expressions over WSTP (~1–2 ms per page, bypassing
-Wolfram's `PDFTools` importer and its Unicode-math PDF bugs). Pass
-`"Format" -> "SVG"` or `"Format" -> "PDF"` to round-trip through
+By default `"Format"` is `"Graphics"`, which extracts glyph outlines (`ttf-parser`),
+embedded SVGs (`usvg`), and shapes directly from Typst's internal `Frame` tree in
+Rust and sends native `Graphics[FilledCurve[...]]` expressions over WSTP
+(~1–2 ms per page on typical formulas, avoiding `PDFTools` text/math defects).
+Pass `"Format" -> "SVG"` or `"Format" -> "PDF"` to round-trip through
 `ImportString` / `ImportByteArray` instead.
+
+All three vector formats (`"Graphics"`, `"SVG"`, and `"PDF"`) follow the same
+sizing contract: explicit numeric `PlotRange` (union of the Typst page box and
+visible content/stroke bounds), `PlotRangePadding -> None`, `ImagePadding -> None`,
+`AspectRatio -> Automatic`, and exact point-unit `ImageSize`. Embedded raster
+images still decode inside Wolfram via `ImportByteArray`.
+
+**Known Limitations (`"Format" -> "Graphics"`):**
+- Gradient fills/strokes are approximated by midpoint solid colors (with a `Warning` diagnostic).
+- Tiling patterns are approximated by 50% gray (with a `Warning` diagnostic).
+- Non-zero stroke dash phases are ignored (with a `Warning` diagnostic).
+- Non-rectangular clip paths are approximated by their axis-aligned bounding box (with a `Warning` diagnostic).
+- Hyperlinks (`FrameItem::Link`) are omitted.
 
 ### Diagnostics
 
