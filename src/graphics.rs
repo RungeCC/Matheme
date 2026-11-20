@@ -1,10 +1,30 @@
 //! Conversion of [`matheme_world::graphics::VectorPage`] into native Wolfram
 //! Language `System\`Graphics` [`Expr`]s.
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
+
 use matheme_wl::{Expr, Symbol};
 use matheme_world::graphics::{
-    LineCapStyle, LineJoinStyle, Rgba, Segment, StrokeStyle, Subpath, VectorPage, VectorPrimitive,
+    GlyphInstances, GlyphKey, LineCapStyle, LineJoinStyle, Rgba, Segment, StrokeStyle, Subpath,
+    VectorPage, VectorPrimitive,
 };
+
+#[derive(Clone)]
+struct CachedGlyphExpr {
+    all_closed: bool,
+    filled: Expr,
+    joined: Expr,
+}
+
+static GLYPH_EXPR_CACHE: LazyLock<RwLock<HashMap<GlyphKey, CachedGlyphExpr>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+pub fn clear_glyph_expr_cache() {
+    if let Ok(mut guard) = GLYPH_EXPR_CACHE.write() {
+        guard.clear();
+    }
+}
 
 pub fn page_to_expr(page: &VectorPage) -> Expr {
     let [[x0, x1], [y0, y1]] = page.plot_range;
@@ -50,6 +70,11 @@ pub fn page_to_expr(page: &VectorPage) -> Expr {
 
 fn primitive_to_expr(primitive: &VectorPrimitive, plot_width: f64) -> Option<Expr> {
     match primitive {
+        VectorPrimitive::Glyphs {
+            glyphs,
+            fill,
+            stroke,
+        } => glyphs_to_expr(glyphs, *fill, stroke.as_ref(), plot_width),
         VectorPrimitive::Paths {
             paths,
             fill,
@@ -83,6 +108,136 @@ fn primitive_to_expr(primitive: &VectorPrimitive, plot_width: f64) -> Option<Exp
                 ],
             ))
         }
+    }
+}
+
+fn cached_glyph_expr(instance: &GlyphInstances) -> CachedGlyphExpr {
+    if let Ok(guard) = GLYPH_EXPR_CACHE.read() {
+        if let Some(cached) = guard.get(&instance.key) {
+            return cached.clone();
+        }
+    }
+    let all_closed = instance.subpaths.iter().all(|s| s.closed);
+    let (all_segs, all_pts, closed_flags) = encode_subpaths(&instance.subpaths);
+    let segs_expr = Expr::list(all_segs);
+    let pts_expr = Expr::list(all_pts);
+    let filled = Expr::normal(
+        Symbol::system("FilledCurve"),
+        [segs_expr.clone(), pts_expr.clone()],
+    );
+    let joined = Expr::normal(
+        Symbol::system("JoinedCurve"),
+        [
+            segs_expr,
+            pts_expr,
+            Expr::normal(
+                Symbol::RULE,
+                [
+                    Expr::symbol(Symbol::system("CurveClosed")),
+                    Expr::list(closed_flags),
+                ],
+            ),
+        ],
+    );
+    let cached = CachedGlyphExpr {
+        all_closed,
+        filled,
+        joined,
+    };
+    if let Ok(mut guard) = GLYPH_EXPR_CACHE.write() {
+        guard.insert(instance.key.clone(), cached.clone());
+    }
+    cached
+}
+
+fn instanced_glyph_expr(curve_expr: Expr, positions: &[[f64; 2]]) -> Expr {
+    let translations = match positions {
+        [single] => point_expr(*single),
+        [p0, p1] => Expr::list([
+            Expr::list([point_expr(*p0)]),
+            Expr::list([point_expr(*p1)]),
+        ]),
+        many => Expr::list(many.iter().copied().map(point_expr)),
+    };
+    Expr::normal(
+        Symbol::system("GeometricTransformation"),
+        [curve_expr, translations],
+    )
+}
+
+fn glyphs_to_expr(
+    glyphs: &[GlyphInstances],
+    fill: Option<Rgba>,
+    stroke: Option<&StrokeStyle>,
+    plot_width: f64,
+) -> Option<Expr> {
+    let valid: Vec<(&GlyphInstances, CachedGlyphExpr)> = glyphs
+        .iter()
+        .filter(|g| !g.positions.is_empty() && g.subpaths.iter().any(|s| !s.segments.is_empty()))
+        .map(|g| (g, cached_glyph_expr(g)))
+        .collect();
+    if valid.is_empty() {
+        return None;
+    }
+
+    let all_closed = valid.iter().all(|(_, c)| c.all_closed);
+
+    match (fill, stroke) {
+        (Some(fill_color), None) => {
+            let mut group = Vec::with_capacity(valid.len() + 2);
+            group.push(Expr::normal(
+                Symbol::system("EdgeForm"),
+                [Expr::symbol(Symbol::NONE)],
+            ));
+            group.push(Expr::normal(
+                Symbol::system("FaceForm"),
+                [rgba_expr(fill_color)],
+            ));
+            for (g, c) in valid {
+                group.push(instanced_glyph_expr(c.filled, &g.positions));
+            }
+            Some(Expr::list(group))
+        }
+        (Some(fill_color), Some(stroke_style)) if all_closed => {
+            let mut group = Vec::with_capacity(valid.len() + 2);
+            group.push(Expr::normal(
+                Symbol::system("FaceForm"),
+                [rgba_expr(fill_color)],
+            ));
+            group.push(Expr::normal(
+                Symbol::system("EdgeForm"),
+                [Expr::list(stroke_directives(stroke_style, plot_width))],
+            ));
+            for (g, c) in valid {
+                group.push(instanced_glyph_expr(c.filled, &g.positions));
+            }
+            Some(Expr::list(group))
+        }
+        (Some(fill_color), Some(stroke_style)) => {
+            let mut fill_group = Vec::with_capacity(valid.len() + 2);
+            fill_group.push(Expr::normal(
+                Symbol::system("EdgeForm"),
+                [Expr::symbol(Symbol::NONE)],
+            ));
+            fill_group.push(Expr::normal(
+                Symbol::system("FaceForm"),
+                [rgba_expr(fill_color)],
+            ));
+            let mut stroke_group = stroke_directives(stroke_style, plot_width);
+            for (g, c) in valid {
+                fill_group.push(instanced_glyph_expr(c.filled, &g.positions));
+                stroke_group.push(instanced_glyph_expr(c.joined, &g.positions));
+            }
+            Some(Expr::list([Expr::list(fill_group), Expr::list(stroke_group)]))
+        }
+        (None, Some(stroke_style)) => {
+            let mut group = stroke_directives(stroke_style, plot_width);
+            for (g, c) in valid {
+                group.push(instanced_glyph_expr(c.joined, &g.positions));
+            }
+            Some(Expr::list(group))
+        }
+        (None, None) => None,
     }
 }
 

@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use ttf_parser::{GlyphId, OutlineBuilder};
 use typst::foundations::Smart;
@@ -146,11 +147,79 @@ impl Subpath {
     }
 }
 
+/// Identifies a specific glyph under a specific 2x2 linear transformation
+/// (font size + rotation/skew), invariant to page translation `(tx, ty)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GlyphKey {
+    pub font: FontInstance,
+    pub glyph_id: u16,
+    /// IEEE-754 bit representations of `[sx, ky, kx, sy]` (with `-0.0` normalized to `+0.0`).
+    pub linear_bits: [u64; 4],
+}
+
+impl GlyphKey {
+    fn new(font: FontInstance, glyph_id: u16, affine: &Affine2D) -> Self {
+        let norm = |v: f64| if v == 0.0 { 0.0_f64.to_bits() } else { v.to_bits() };
+        Self {
+            font,
+            glyph_id,
+            linear_bits: [
+                norm(affine.sx),
+                norm(affine.ky),
+                norm(affine.kx),
+                norm(affine.sy),
+            ],
+        }
+    }
+}
+
+/// All occurrences of a single [`GlyphKey`] within a coalesced glyph run,
+/// sharing one origin-centered outline (`subpaths`) and a list of `[tx, ty]`
+/// page translation vectors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlyphInstances {
+    pub key: GlyphKey,
+    pub subpaths: Arc<Vec<Subpath>>,
+    pub positions: Vec<[f64; 2]>,
+}
+
+/// Cached linearly-transformed glyph outline at origin `(0, 0)` along with its
+/// local bounding box `[x_min, x_max, y_min, y_max]`.
+#[derive(Debug, Clone, PartialEq)]
+struct ScaledGlyph {
+    subpaths: Arc<Vec<Subpath>>,
+    local_bbox: [f64; 4],
+}
+
+type UnitGlyphMap = HashMap<(FontInstance, u16), Option<Arc<Vec<Subpath>>>>;
+type ScaledGlyphMap = HashMap<GlyphKey, Option<ScaledGlyph>>;
+
+static UNIT_GLYPH_CACHE: LazyLock<RwLock<UnitGlyphMap>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+static SCALED_GLYPH_CACHE: LazyLock<RwLock<ScaledGlyphMap>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Drop all cached unit and linearly-scaled glyph outlines.
+pub fn clear_glyph_cache() {
+    if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
+        guard.clear();
+    }
+    if let Ok(mut guard) = SCALED_GLYPH_CACHE.write() {
+        guard.clear();
+    }
+}
+
 /// A host-neutral vector/raster drawing primitive on a [`VectorPage`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum VectorPrimitive {
-    /// One or more compound paths (e.g. all outlined glyphs of a `TextItem`,
-    /// or a `Shape`) sharing the same fill and stroke.
+    /// Instanced text glyphs sharing the same fill and stroke.
+    Glyphs {
+        glyphs: Vec<GlyphInstances>,
+        fill: Option<Rgba>,
+        stroke: Option<StrokeStyle>,
+    },
+    /// One or more compound paths (e.g. a `Shape`) sharing the same fill and stroke.
     Paths {
         paths: Vec<Vec<Subpath>>,
         fill: Option<Rgba>,
@@ -224,6 +293,17 @@ impl Affine2D {
         }
     }
 
+    fn linear_only(&self) -> Self {
+        Self {
+            sx: self.sx,
+            ky: self.ky,
+            kx: self.kx,
+            sy: self.sy,
+            tx: 0.0,
+            ty: 0.0,
+        }
+    }
+
     fn apply(&self, p: [f64; 2]) -> [f64; 2] {
         [
             self.sx * p[0] + self.kx * p[1] + self.tx,
@@ -248,6 +328,15 @@ struct BBox {
 }
 
 impl BBox {
+    fn empty() -> Self {
+        Self {
+            x_min: f64::INFINITY,
+            x_max: f64::NEG_INFINITY,
+            y_min: f64::INFINITY,
+            y_max: f64::NEG_INFINITY,
+        }
+    }
+
     fn from_page(width: f64, height: f64) -> Self {
         Self {
             x_min: 0.0,
@@ -265,16 +354,26 @@ impl BBox {
             self.y_max = self.y_max.max(p[1]);
         }
     }
+
+    fn include_translated(&mut self, local_bbox: [f64; 4], tx: f64, ty: f64) {
+        self.include([local_bbox[0] + tx, local_bbox[2] + ty]);
+        self.include([local_bbox[1] + tx, local_bbox[3] + ty]);
+    }
 }
 
 #[derive(Default)]
 struct Extractor {
-    /// Cached glyph outlines in normalized `1 / units_per_em` coordinates.
-    glyph_cache: HashMap<(FontInstance, u16), Option<Vec<Subpath>>>,
+    /// Per-extraction L1 cache over [`SCALED_GLYPH_CACHE`] to avoid lock traffic
+    /// on repeated glyphs within the same document.
+    local_scaled_cache: HashMap<GlyphKey, Option<ScaledGlyph>>,
+    /// Maps a [`GlyphKey`] to its slot inside the currently active trailing
+    /// [`VectorPrimitive::Glyphs`] on the current page.
+    active_glyph_indices: HashMap<GlyphKey, usize>,
 }
 
 impl Extractor {
     fn extract_page(&mut self, page: &Page) -> VectorPage {
+        self.active_glyph_indices.clear();
         let size = page.frame.size().max(Size::splat(Abs::pt(1.0)));
         let width = size.x.to_pt();
         let height = size.y.to_pt();
@@ -345,6 +444,47 @@ impl Extractor {
         self.extract_frame(&group.frame, group_ts, bbox, primitives);
     }
 
+    fn push_glyph_instance(
+        &mut self,
+        primitives: &mut Vec<VectorPrimitive>,
+        fill: Option<Rgba>,
+        stroke: &Option<StrokeStyle>,
+        key: GlyphKey,
+        subpaths: Arc<Vec<Subpath>>,
+        pos: [f64; 2],
+    ) {
+        let matches_last = matches!(
+            primitives.last(),
+            Some(VectorPrimitive::Glyphs {
+                fill: last_fill,
+                stroke: last_stroke,
+                ..
+            }) if *last_fill == fill && last_stroke == stroke
+        );
+        if !matches_last {
+            self.active_glyph_indices.clear();
+            primitives.push(VectorPrimitive::Glyphs {
+                glyphs: Vec::new(),
+                fill,
+                stroke: stroke.clone(),
+            });
+        }
+        let Some(VectorPrimitive::Glyphs { glyphs, .. }) = primitives.last_mut() else {
+            unreachable!();
+        };
+        if let Some(&idx) = self.active_glyph_indices.get(&key) {
+            glyphs[idx].positions.push(pos);
+        } else {
+            let idx = glyphs.len();
+            glyphs.push(GlyphInstances {
+                key: key.clone(),
+                subpaths,
+                positions: vec![pos],
+            });
+            self.active_glyph_indices.insert(key, idx);
+        }
+    }
+
     fn extract_text(
         &mut self,
         text: &TextItem,
@@ -365,7 +505,9 @@ impl Extractor {
             .as_ref()
             .map(|s| convert_stroke(s, text_affine.stroke_scale()));
 
-        let mut glyph_paths: Vec<Vec<Subpath>> = Vec::with_capacity(text.glyphs.len());
+        let scale_ts = Transform::scale(Ratio::new(font_size_pt), Ratio::new(font_size_pt));
+        let linear_affine = Affine2D::from_typst(text_ts.pre_concat(scale_ts)).linear_only();
+
         let mut x = Abs::zero();
         let mut y = Abs::zero();
 
@@ -375,31 +517,20 @@ impl Extractor {
             let y_offset = y + glyph.y_offset.at(text.size);
 
             if should_outline(&text.font, id) {
-                if let Some(unit_subpaths) = self.outline_glyph_unit(&text.font, id) {
-                    let glyph_ts = text_ts
-                        .pre_concat(Transform::translate(x_offset, y_offset))
-                        .pre_concat(Transform::scale(
-                            Ratio::new(font_size_pt),
-                            Ratio::new(font_size_pt),
-                        ));
-                    let affine = Affine2D::from_typst(glyph_ts);
-                    let transformed: Vec<Subpath> = unit_subpaths
-                        .iter()
-                        .map(|sp| sp.transform(&affine, bbox))
-                        .collect();
-                    if !transformed.is_empty() {
-                        glyph_paths.push(transformed);
-                    }
+                let key = GlyphKey::new(text.font.clone(), id.0, &linear_affine);
+                if let Some(scaled) = self.scaled_glyph(&key, &linear_affine) {
+                    let pos = text_affine.apply([x_offset.to_pt(), y_offset.to_pt()]);
+                    bbox.include_translated(scaled.local_bbox, pos[0], pos[1]);
+                    self.push_glyph_instance(
+                        primitives,
+                        fill,
+                        &stroke,
+                        key,
+                        scaled.subpaths,
+                        pos,
+                    );
                 }
             } else if let Some(gframe) = glyph_frame(&text.font, id.0) {
-                if !glyph_paths.is_empty() {
-                    primitives.push(VectorPrimitive::Paths {
-                        paths: std::mem::take(&mut glyph_paths),
-                        fill,
-                        stroke: stroke.clone(),
-                        winding: WindingRule::NonZero,
-                    });
-                }
                 let scale = Ratio::new(font_size_pt / text.font.units_per_em());
                 let item_pos = gframe.item.pos();
                 let glyph_ts = text_ts
@@ -419,20 +550,53 @@ impl Extractor {
             x += glyph.x_advance.at(text.size);
             y += glyph.y_advance.at(text.size);
         }
-
-        if !glyph_paths.is_empty() {
-            primitives.push(VectorPrimitive::Paths {
-                paths: glyph_paths,
-                fill,
-                stroke,
-                winding: WindingRule::NonZero,
-            });
-        }
     }
 
-    fn outline_glyph_unit(&mut self, font: &FontInstance, id: GlyphId) -> Option<&[Subpath]> {
+    fn scaled_glyph(&mut self, key: &GlyphKey, linear: &Affine2D) -> Option<ScaledGlyph> {
+        if let Some(cached) = self.local_scaled_cache.get(key) {
+            return cached.clone();
+        }
+        if let Ok(guard) = SCALED_GLYPH_CACHE.read() {
+            if let Some(cached) = guard.get(key) {
+                self.local_scaled_cache.insert(key.clone(), cached.clone());
+                return cached.clone();
+            }
+        }
+
+        let unit = Self::outline_glyph_unit(&key.font, GlyphId(key.glyph_id));
+        let computed = unit.and_then(|unit_subpaths| {
+            let mut local_bbox = BBox::empty();
+            let transformed: Vec<Subpath> = unit_subpaths
+                .iter()
+                .map(|sp| sp.transform(linear, &mut local_bbox))
+                .collect();
+            (!transformed.is_empty()).then(|| ScaledGlyph {
+                subpaths: Arc::new(transformed),
+                local_bbox: [
+                    local_bbox.x_min,
+                    local_bbox.x_max,
+                    local_bbox.y_min,
+                    local_bbox.y_max,
+                ],
+            })
+        });
+
+        if let Ok(mut guard) = SCALED_GLYPH_CACHE.write() {
+            guard.insert(key.clone(), computed.clone());
+        }
+        self.local_scaled_cache.insert(key.clone(), computed.clone());
+        computed
+    }
+
+    fn outline_glyph_unit(font: &FontInstance, id: GlyphId) -> Option<Arc<Vec<Subpath>>> {
         let key = (font.clone(), id.0);
-        let entry = self.glyph_cache.entry(key).or_insert_with(|| {
+        if let Ok(guard) = UNIT_GLYPH_CACHE.read() {
+            if let Some(cached) = guard.get(&key) {
+                return cached.clone();
+            }
+        }
+
+        let computed = (|| {
             let upem = font.units_per_em();
             if upem <= 0.0 {
                 return None;
@@ -440,9 +604,13 @@ impl Extractor {
             let mut builder = PathBuilder::new(1.0 / upem);
             font.ttf().outline_glyph(id, &mut builder)?;
             let subpaths = builder.finish();
-            (!subpaths.is_empty()).then_some(subpaths)
-        });
-        entry.as_deref()
+            (!subpaths.is_empty()).then(|| Arc::new(subpaths))
+        })();
+
+        if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
+            guard.insert(key, computed.clone());
+        }
+        computed
     }
 
     fn extract_shape(
@@ -452,6 +620,7 @@ impl Extractor {
         bbox: &mut BBox,
         primitives: &mut Vec<VectorPrimitive>,
     ) {
+        self.active_glyph_indices.clear();
         let fill = shape.fill.as_ref().map(Rgba::from_paint);
         let affine = Affine2D::from_typst(ts);
         let stroke = shape
@@ -504,6 +673,7 @@ impl Extractor {
         bbox: &mut BBox,
         primitives: &mut Vec<VectorPrimitive>,
     ) {
+        self.active_glyph_indices.clear();
         let web = WebImage::new(image);
         let affine = Affine2D::from_typst(ts);
         let corners = [
@@ -765,15 +935,24 @@ mod tests {
             "expected negative y_min for 'y' descender, got {:?}",
             page.plot_range
         );
-        let glyph_count: usize = page
+        let (unique_glyphs, total_instances): (usize, usize) = page
             .primitives
             .iter()
             .map(|p| match p {
-                VectorPrimitive::Paths { paths, .. } => paths.len(),
-                _ => 0,
+                VectorPrimitive::Glyphs { glyphs, .. } => {
+                    (glyphs.len(), glyphs.iter().map(|g| g.positions.len()).sum())
+                }
+                _ => (0, 0),
             })
-            .sum();
-        assert_eq!(glyph_count, 6, "expected 6 outlined glyphs for 'xxyyzz'");
+            .fold((0, 0), |(u, t), (du, dt)| (u + du, t + dt));
+        assert_eq!(
+            unique_glyphs, 3,
+            "expected 3 unique cached glyphs ('x', 'y', 'z') for 'xxyyzz'"
+        );
+        assert_eq!(
+            total_instances, 6,
+            "expected 6 glyph instances for 'xxyyzz'"
+        );
     }
 
     #[test]
@@ -789,10 +968,13 @@ mod tests {
             .primitives
             .iter()
             .flat_map(|p| match p {
-                VectorPrimitive::Paths { paths, .. } => paths.as_slice(),
-                _ => &[],
+                VectorPrimitive::Glyphs { glyphs, .. } => glyphs
+                    .iter()
+                    .flat_map(|g| g.subpaths.as_slice())
+                    .collect::<Vec<_>>(),
+                VectorPrimitive::Paths { paths, .. } => paths.iter().flatten().collect::<Vec<_>>(),
+                _ => Vec::new(),
             })
-            .flatten()
             .flat_map(|sp| &sp.segments)
             .filter(|seg| matches!(seg, Segment::Cubic(..)))
             .count();

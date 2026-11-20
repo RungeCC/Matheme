@@ -72,6 +72,7 @@ pub fn clear_caches(selection: CacheSelection) -> Vec<CacheTarget> {
     let mut cleared = Vec::with_capacity(3);
     if selection.fonts {
         reset_fonts();
+        graphics::clear_glyph_cache();
         cleared.push(CacheTarget::Fonts);
     }
     if selection.packages {
@@ -80,6 +81,7 @@ pub fn clear_caches(selection: CacheSelection) -> Vec<CacheTarget> {
     }
     if selection.memoization {
         comemo::evict(0);
+        graphics::clear_glyph_cache();
         cleared.push(CacheTarget::Memoization);
     }
     cleared

@@ -5,17 +5,21 @@
 
 Begin["Matheme`VisualTests`"];
 
-compareVisualCase[name_String, source_, template_String : "Equation"] := Module[
-  {resNat, resSvg, gNat, gSvg, imgNat, imgSvg, cropNat, cropSvg, dims,
+compareVisualCase[name_String, source_, template_ : "Equation"] := Module[
+  {resNat, resSvg, tNat, tSvg, gNat, gSvg, imgNat, imgSvg, cropNat, cropSvg, dims,
    dNat, dSvg, mae, rmse, inkNat, inkSvg, inter, union, iou, arNat, arSvg, arDiff, passed},
 
-  resNat = If[Head[source] === Matheme`TypstForm,
-    Matheme`MathemeToGraphics[source, "Format" -> "Graphics"],
-    Matheme`MathemeToGraphics[source, "TypstTemplate" -> template, "Format" -> "Graphics"]
+  {tNat, resNat} = AbsoluteTiming[
+    If[Head[source] === Matheme`TypstForm,
+      Matheme`MathemeToGraphics[source, "Format" -> "Graphics", "AllowDownloads" -> True],
+      Matheme`MathemeToGraphics[source, "TypstTemplate" -> template, "Format" -> "Graphics", "AllowDownloads" -> True]
+    ]
   ];
-  resSvg = If[Head[source] === Matheme`TypstForm,
-    Matheme`MathemeToGraphics[source, "Format" -> "SVG"],
-    Matheme`MathemeToGraphics[source, "TypstTemplate" -> template, "Format" -> "SVG"]
+  {tSvg, resSvg} = AbsoluteTiming[
+    If[Head[source] === Matheme`TypstForm,
+      Matheme`MathemeToGraphics[source, "Format" -> "SVG", "AllowDownloads" -> True],
+      Matheme`MathemeToGraphics[source, "TypstTemplate" -> template, "Format" -> "SVG", "AllowDownloads" -> True]
+    ]
   ];
 
   gNat = First[resNat["Graphics"]];
@@ -58,6 +62,10 @@ compareVisualCase[name_String, source_, template_String : "Equation"] := Module[
     "Name" -> name,
     "Passed" -> passed,
     "Dimensions" -> dims,
+    "NativeMs" -> N[tNat * 1000.0],
+    "SvgMs" -> N[tSvg * 1000.0],
+    "NativeByteCount" -> ByteCount[gNat],
+    "SvgByteCount" -> ByteCount[gSvg],
     "InkPixelsNat" -> Total[inkNat, 2],
     "InkPixelsSvg" -> Total[inkSvg, 2],
     "MAE" -> mae,
@@ -75,6 +83,8 @@ $VisualTestCases = {
   {"Visual-Math-SumProd", "sum_(n=1)^infinity 1/n^2 = pi^2/6, quad product_(k=1)^n k = n!", "Equation"},
   {"Visual-Text-Basic", "Hello, Wolfram & Typst!", "Text"},
   {"Visual-Text-Descenders", "xxyyzz gjpqy", "Text"},
+  {"Visual-Text-Lorem", "#block(width: 240pt, lorem(80))", "Text"},
+  {"Visual-Text-Chinese-Kouhu", "#import \"@preview/kouhu:0.2.0\": kouhu\n#block(width: 240pt, kouhu(length: 120))", "Text"},
   {"Visual-Shapes-Rect", "#rect(width: 40pt, height: 25pt, fill: rgb(\"#3b82f6\"), stroke: 2pt + rgb(\"#1d4ed8\"), radius: 4pt)", "Text"},
   {"Visual-Shapes-CircleLine", "#stack(dir: ltr, spacing: 6pt, circle(radius: 10pt, fill: rgb(\"#ef4444\"), stroke: 1.5pt + black), line(length: 25pt, angle: 30deg, stroke: 2pt + rgb(\"#10b981\")))", "Text"}
 };

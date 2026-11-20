@@ -80,7 +80,11 @@ wl_args! {
 }
 
 pub fn run_clear(input: ClearCacheArgs) -> Answer {
-    let cleared = world::clear_caches(input.targets.0);
+    let sel = input.targets.0;
+    if sel.fonts || sel.memoization {
+        crate::graphics::clear_glyph_expr_cache();
+    }
+    let cleared = world::clear_caches(sel);
     Outcome::new([rule!(
         "Cleared" -> Expr::list(cleared.into_iter().map(world::CacheTarget::as_str))
     )])
@@ -143,6 +147,8 @@ pub fn run_warmup(input: WarmupArgs) -> Answer {
 // ---------------------------------------------------------------------------
 
 pub fn run_reload_fonts() -> Answer {
+    crate::graphics::clear_glyph_expr_cache();
+    world::graphics::clear_glyph_cache();
     let count = world::reload_fonts();
     Outcome::new([rule!("Fonts" -> count as i64), font_counts_entry(false)]).into()
 }
@@ -152,6 +158,7 @@ pub fn run_reload_packages() -> Answer {
 }
 
 pub fn run_close() -> Answer {
+    crate::graphics::clear_glyph_expr_cache();
     let released = world::clear_caches(CacheSelection::all());
     Outcome::new([rule!(
         "Released" -> Expr::list(released.into_iter().map(world::CacheTarget::as_str))
