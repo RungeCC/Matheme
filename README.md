@@ -177,9 +177,8 @@ res["Graphics"]   (* list of Graphics, one per page *)
 Same options and return shape as `MathemeCompile`, plus a `"Graphics"` key.
 By default `"Format"` is `"SVG"` (imported via `ImportString[..., {"SVG", "Graphics"}]`
 after normalizing root `pt` dimensions); pass `"Format" -> "PDF"` to use
-`ImportByteArray[pdf, {"PDF", "PageGraphics"}]` instead. Both paths automatically
-expand `PlotRange` if glyph descenders or italic overhangs extend outside the
-page box, without altering Typst's internal layout.
+`ImportByteArray[pdf, {"PDF", "PageGraphics"}]` instead. Both paths set
+`PlotRange -> All` so glyph descenders and overhangs are never clipped.
 
 ### Diagnostics
 

@@ -353,50 +353,12 @@ normalizeSvgUnits[svg_String] := StringReplace[svg,
 
 (* PDF and SVG importers set PlotRange strictly to the page MediaBox/viewBox,
    which can clip glyph descenders or italic overhangs when margin is 0pt.
-   Expand PlotRange (and proportionally adjust ImageSize) only if actual vector
-   primitives extend beyond the page box, without modifying Typst's layout. *)
-extractVectorPoints[g_Graphics] := Join[
-  Flatten[Cases[g, FilledCurve[_, p_List] :> p, Infinity], 2],
-  Flatten[Cases[g, (Polygon | Line | Point)[p_List] :> If[MatrixQ[p, NumericQ], {p}, p], Infinity], 1]
+   PlotRange -> All lets Wolfram compute the full primitive bounding box. *)
+uncropGraphics[g_Graphics] := Graphics[
+  First[g],
+  Sequence @@ Normal[Append[Association[Rest[List @@ g]], PlotRange -> All]]
 ];
-
-fitGraphicsPlotRange[g_Graphics, yFlipped : (True | False) : False] :=
-  Module[{pr, pts, xs, ys, x0, x1, y0, y1, nx0, nx1, ny0, ny1},
-    pr = PlotRange /. Options[g, PlotRange];
-    If[!MatchQ[pr, {{_?NumericQ, _?NumericQ}, {_?NumericQ, _?NumericQ}}],
-      Return[g]
-    ];
-    pts = extractVectorPoints[g];
-    If[pts === {} || !MatrixQ[pts, NumericQ] || Dimensions[pts][[2]] =!= 2,
-      Return[g]
-    ];
-    {{x0, x1}, {y0, y1}} = pr;
-    xs = MinMax[pts[[All, 1]]];
-    ys = If[yFlipped, MinMax[-pts[[All, 2]]], MinMax[pts[[All, 2]]]];
-    nx0 = Min[x0, xs[[1]]];
-    nx1 = Max[x1, xs[[2]]];
-    If[y0 <= y1,
-      ny0 = Min[y0, ys[[1]]];
-      ny1 = Max[y1, ys[[2]]],
-      (* SVG imports use inverted PlotRange {{0, W}, {0, -H}} with y0 > y1 *)
-      ny0 = Max[y0, ys[[2]]];
-      ny1 = Min[y1, ys[[1]]]
-    ];
-    If[nx0 == x0 && nx1 == x1 && ny0 == y0 && ny1 == y1,
-      g,
-      Graphics[
-        First[g],
-        Sequence @@ Normal[Join[
-          Association[Rest[List @@ g]],
-          <|
-            PlotRange -> {{nx0, nx1}, {ny0, ny1}},
-            ImageSize -> Ceiling[{Abs[nx1 - nx0], Abs[ny1 - ny0]}]
-          |>
-        ]]
-      ]
-    ]
-  ];
-fitGraphicsPlotRange[other_, ___] := other;
+uncropGraphics[other_] := other;
 
 toGraphics[result_] := Module[{pdf, svg, graphics},
   If[FailureQ[result] || !AssociationQ[result],
@@ -408,13 +370,13 @@ toGraphics[result_] := Module[{pdf, svg, graphics},
         graphics = Map[ImportString[normalizeSvgUnits[#], {"SVG", "Graphics"}] &, svg];
         If[!AllTrue[graphics, Head[#] === Graphics &],
           raiseCallError["Failed to import SVG output as Graphics."],
-          Join[result, <|"Graphics" -> Map[fitGraphicsPlotRange[#, True] &, graphics]|>]
+          Join[result, <|"Graphics" -> Map[uncropGraphics, graphics]|>]
         ],
       Head[pdf] === ByteArray,
         graphics = ImportByteArray[pdf, {"PDF", "PageGraphics"}];
         If[!ListQ[graphics],
           raiseCallError["Failed to import PDF bytes as Graphics."],
-          Join[result, <|"Graphics" -> Map[fitGraphicsPlotRange[#, False] &, graphics]|>]
+          Join[result, <|"Graphics" -> Map[uncropGraphics, graphics]|>]
         ],
       True,
         Join[result, <|"Graphics" -> {}|>]
