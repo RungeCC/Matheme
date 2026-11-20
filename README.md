@@ -3,7 +3,7 @@
 A bridge that lets the Wolfram Language typeset with [Typst](https://typst.app/).
 A Rust `cdylib` is loaded **in-process** by Wolfram 15 via WSTP `LinkObject`;
 Typst compiles source to PDF, SVG, or HTML, and `MathemeToGraphics` imports the
-compiled output (default `"SVG"`, or `"PDF"`) as native vector `Graphics`. No
+compiled output (default `"PDF"`, or `"SVG"`) as native vector `Graphics`. No
 external process and no Frame-to-Graphics reimplementation.
 The only callback into the kernel is an evaluation of
 `$InstallationDirectory` to locate Wolfram's bundled fonts; it is cached
@@ -17,15 +17,15 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 
 ## Layout
 
-| Path | Role |
-|---|---|
-| `crates/matheme-world/` | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics. Knows nothing about Wolfram. |
-| `crates/matheme-wl/` | Pure bidirectional WL-expression ↔ Typst-value conversion (`convert::to_typst` / `Expr::to_typst` and `convert::from_typst` / `Expr::from_typst`). `Expr`, `Normal<'a>`, `Entry<'a>`/`Rule` and `Symbol` wrappers expose `From`/`TryFrom` and zero-copy `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
-| `crates/matheme-wstp/` | Shared WSTP transport wrapper (`WstpLink<'a>`, `EvalOutput`, `WstpError`) providing context-resolving reads and a unified `EvaluatePacket` → `ReturnPacket` evaluation pipeline shared by `src/` and `matheme-cli`. |
-| `src/` | WSTP bridge: one exported WSTP function receives `<|"Action" -> name, "Arguments" -> <|…|>|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, with dedicated modules for `compile.rs` (PDF/SVG/HTML + simultaneous `Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`. |
-| `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects. |
-| `scripts/` | WSTP SDK setup and one-shot build. |
-| `output/` | Generated build artifacts (gitignored): standalone paclet directory `output/Matheme/` and packaged `output/Matheme-*.paclet`. |
+| Path                      | Role                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/matheme-world/`   | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics. Knows nothing about Wolfram.                                                                                                                                                                             |
+| `crates/matheme-wl/`      | Pure bidirectional WL-expression ↔ Typst-value conversion (`convert::to_typst` / `Expr::to_typst` and `convert::from_typst` / `Expr::from_typst`). `Expr`, `Normal<'a>`, `Entry<'a>`/`Rule` and `Symbol` wrappers expose `From`/`TryFrom` and zero-copy `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
+| `crates/matheme-wstp/`    | Shared WSTP transport wrapper (`WstpLink<'a>`, `EvalOutput`, `WstpError`) providing context-resolving reads and a unified `EvaluatePacket` → `ReturnPacket` evaluation pipeline shared by `src/` and `matheme-cli`.                                                                                                                                                  |
+| `src/`                    | WSTP bridge: one exported WSTP function receives `<                                                                                                                                                                                                                                                                                                                  | "Action" -> name, "Arguments" -> < | …   | >   | >`; `lib.rs`owns the action table,`call.rs`is the uniform read → dispatch → write pipeline, with dedicated modules for`compile.rs`(PDF/SVG/HTML + simultaneous`Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`. |
+| `Kernel/`, `PacletInfo.m` | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects.                                                                                                                                                                                                                                                             |
+| `scripts/`                | WSTP SDK setup and one-shot build.                                                                                                                                                                                                                                                                                                                                   |
+| `output/`                 | Generated build artifacts (gitignored): standalone paclet directory `output/Matheme/` and packaged `output/Matheme-*.paclet`.                                                                                                                                                                                                                                        |
 
 Versions are pinned: `typst`/`typst-kit` `=0.15.1`, `wolfram-library-link`
 `=0.6.1` (see `Cargo.lock`). `MathemeVersion[]` reports the Typst version from
@@ -76,8 +76,8 @@ Get["Matheme`"];
 The library function is loaded lazily on first use. The DLL exposes exactly
 one WSTP function (`matheme_call`); all public Wolfram functions send it an
 envelope `<|"Action" -> name, "Arguments" -> <|…|>|>`. To rebuild the DLL
-while the kernel is running, call `MathemeClose[]` first (see *Resource
-release* below).
+while the kernel is running, call `MathemeClose[]` first (see _Resource
+release_ below).
 
 The paclet requires the
 [`Wolfram/ErrorTools`](https://resources.wolframcloud.com/PacletRepository/resources/Wolfram/ErrorTools/)
@@ -100,11 +100,11 @@ res["Formatted"]    (* typst-cli style report *)
 res["Operation"]    (* "MathemeCompile" *)
 ```
 
-| Tag | Raised when |
-|---|---|
+| Tag                   | Raised when                                                                 |
+| --------------------- | --------------------------------------------------------------------------- |
 | `MathemeCompileError` | Typst compilation fails; the Failure carries `Diagnostics` and `Formatted`. |
-| `MathemeCallError` | Arguments, settings or a network operation fail. |
-| `MathemeLibraryError` | The DLL cannot be loaded or returns something unexpected. |
+| `MathemeCallError`    | Arguments, settings or a network operation fail.                            |
+| `MathemeLibraryError` | The DLL cannot be loaded or returns something unexpected.                   |
 
 All three are registered with `CreateErrorType`, so
 `Handle[expr, FailurePattern[MathemeCompileError]]` works. Non-fatal warnings
@@ -136,19 +136,19 @@ MathemeToGraphics[source_String, opts : OptionsPattern[]]
 
 Options (all names are strings):
 
-| Option | Default | Meaning |
-|---|---|---|
-| `"Inputs"` | `<\| \|>` | Dictionary injected as Typst `sys.inputs`. |
-| `"BasePath"` | `Directory[]` | Root for `#include` / `#image` relative paths. |
-| `"AllowDownloads"` | `False` | If `True`, missing Universe packages may be downloaded. |
-| `"TypstTemplate"` | `None` | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see *Templates*). |
-| `"Format"` | `"PDF"` | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), or `"HTML"` (automatically enables the `"html"` feature). |
-| `"Pages"` | `All` | Page filter (`All`, integer, list of integers/`{start, end}`/`Span`, or range string such as `"1,3-5"`) for PDF and SVG exports. |
-| `"PDFStandard"` | `Automatic` | `Automatic`, a standard string (`"1.4"`–`"2.0"`, `"a-1b"`–`"a-4e"`, `"ua-1"`), or a list of standards. |
-| `"PDFTags"` | `True` | Whether to emit tagged PDF accessibility structure. |
-| `"CreationTimestamp"` | `Automatic` | `Automatic` (system clock), `None`, a `DateObject`, or a Unix timestamp integer. |
-| `"Features"` | `{}` | Experimental Typst features (`"html"`, `"bundle"`, `"a11y-extras"`). |
-| `"Evaluate"` | `None` | Optional Typst code expression, list, or association evaluated against the compiled document's scope and introspector, returned under `"Evaluated"`. |
+| Option                | Default       | Meaning                                                                                                                                              |
+| --------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"Inputs"`            | `<\| \|>`     | Dictionary injected as Typst `sys.inputs`.                                                                                                           |
+| `"BasePath"`          | `Directory[]` | Root for `#include` / `#image` relative paths.                                                                                                       |
+| `"AllowDownloads"`    | `False`       | If `True`, missing Universe packages may be downloaded.                                                                                              |
+| `"TypstTemplate"`     | `None`        | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see _Templates_).                                     |
+| `"Format"`            | `"PDF"`       | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), or `"HTML"` (automatically enables the `"html"` feature).                            |
+| `"Pages"`             | `All`         | Page filter (`All`, integer, list of integers/`{start, end}`/`Span`, or range string such as `"1,3-5"`) for PDF and SVG exports.                     |
+| `"PDFStandard"`       | `Automatic`   | `Automatic`, a standard string (`"1.4"`–`"2.0"`, `"a-1b"`–`"a-4e"`, `"ua-1"`), or a list of standards.                                               |
+| `"PDFTags"`           | `True`        | Whether to emit tagged PDF accessibility structure.                                                                                                  |
+| `"CreationTimestamp"` | `Automatic`   | `Automatic` (system clock), `None`, a `DateObject`, or a Unix timestamp integer.                                                                     |
+| `"Features"`          | `{}`          | Experimental Typst features (`"html"`, `"bundle"`, `"a11y-extras"`).                                                                                 |
+| `"Evaluate"`          | `None`        | Optional Typst code expression, list, or association evaluated against the compiled document's scope and introspector, returned under `"Evaluated"`. |
 
 CLI-only flags such as `--watch`, `--open`, `--jobs`, `--timings`, `--deps`, `--diagnostic-format`, and `--ppi` (Wolfram handles rasterization via `Rasterize` / `MathemeToGraphics`) are intentionally not exposed.
 
@@ -175,9 +175,9 @@ res["Graphics"]   (* list of Graphics, one per page *)
 ```
 
 Same options and return shape as `MathemeCompile`, plus a `"Graphics"` key.
-By default `"Format"` is `"SVG"` (imported via `ImportString[..., {"SVG", "Graphics"}]`
-after normalizing root `pt` dimensions for exact bounding boxes); pass
-`"Format" -> "PDF"` to use `ImportByteArray[pdf, {"PDF", "PageGraphics"}]` instead.
+By default `"Format"` is `"PDF"` (imported via `ImportByteArray[pdf, {"PDF", "PageGraphics"}]`
+with automatic `PlotRange` expansion if glyph overhangs extend outside the page box);
+pass `"Format" -> "SVG"` to use `ImportString[..., {"SVG", "Graphics"}]` instead.
 
 ### Diagnostics
 
@@ -246,13 +246,13 @@ package is cached — templates never turn downloads on implicitly.
      sensible default rendering even with `SystemFonts -> False` and no fonts
      installed — 17 faces here.
   4. OS fonts, unless `SystemFonts -> False`.
-  Totals on this machine: 149 host + 17 embedded + 1069 system = **1235 faces**
-  (custom paths add on top). Family names follow the font metadata, e.g.
-  `"MathematicaSans"` / `"MathematicaMono"` (no space) and `"Libertinus Serif"`.
-- **Font data loads lazily.** Only the font *book* (metadata) is built at scan
+     Totals on this machine: 149 host + 17 embedded + 1069 system = **1235 faces**
+     (custom paths add on top). Family names follow the font metadata, e.g.
+     `"MathematicaSans"` / `"MathematicaMono"` (no space) and `"Libertinus Serif"`.
+- **Font data loads lazily.** Only the font _book_ (metadata) is built at scan
   time; a font file is read when a document first selects that face, and then
   stays resident for reuse. This matters: typst's `Font` holds the entire font
-  file, and a multi-face `.ttc` is held once *per face* — eagerly materializing
+  file, and a multi-face `.ttc` is held once _per face_ — eagerly materializing
   all 1069 system faces costs **7.4 GiB** on this machine (a single 16-face
   `SourceHanSans.ttc` alone accounts for 4.9 GiB). With lazy loading the
   steady state is the book plus whatever your documents actually use (e.g. a
@@ -278,19 +278,19 @@ MathemeSetSettings[<|"FontPaths" -> Null|>]            (* reset one field *)
 MathemeResetSettings[]                                 (* reset every field *)
 ```
 
-| Key | Type | Effect |
-|---|---|---|
-| `FontPaths` | list of strings / `Null` | Extra font directories, searched before everything else. |
-| `SystemFonts` | `True`/`False` | Scan OS fonts. |
-| `EmbeddedFonts` | `True`/`False` | Use Typst's bundled Libertinus / New CM / DejaVu families. |
-| `PackagePath` | string / `Null` | Typst package data directory (`Null` = platform default). |
-| `PackageCache` | string / `Null` | Package cache directory (`Null` = platform default). |
-| `Proxy` | string / `Null` | Explicit proxy for downloads; `Null` connects directly and ignores the process environment. |
-| `Downloads` | `True`/`False` | Global download policy; `AllowDownloads` still opts in per call. |
+| Key             | Type                     | Effect                                                                                      |
+| --------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| `FontPaths`     | list of strings / `Null` | Extra font directories, searched before everything else.                                    |
+| `SystemFonts`   | `True`/`False`           | Scan OS fonts.                                                                              |
+| `EmbeddedFonts` | `True`/`False`           | Use Typst's bundled Libertinus / New CM / DejaVu families.                                  |
+| `PackagePath`   | string / `Null`          | Typst package data directory (`Null` = platform default).                                   |
+| `PackageCache`  | string / `Null`          | Package cache directory (`Null` = platform default).                                        |
+| `Proxy`         | string / `Null`          | Explicit proxy for downloads; `Null` connects directly and ignores the process environment. |
+| `Downloads`     | `True`/`False`           | Global download policy; `AllowDownloads` still opts in per call.                            |
 
 `MathemeSettings[]` returns only `Settings`. The two writing functions return
 `Changed` (which groups were invalidated) and the effective `Settings`; font
-counts and package status are *not* part of this API — use
+counts and package status are _not_ part of this API — use
 `MathemeQueryFonts[]` / `MathemeQueryPackages[]`. There is no `Reset` patch key:
 single-field reset is `Null`, and full reset is `MathemeResetSettings[]`.
 A malformed patch returns a `MathemeCallError` Failure. Host-provided
@@ -312,7 +312,7 @@ MathemeWarmup["Fonts" -> True, "Packages" -> False, "PackageIndex" -> False]
 ```
 
 Returns per-stage timings (`FontsMs`, `PackagesMs`, `PackageIndexMs`) and counts.
-Warmup builds the font *book* (metadata) and the package loader; font *files*
+Warmup builds the font _book_ (metadata) and the package loader; font _files_
 are not read — they load lazily when a document first uses a face, so warmup
 is fast and cheap in memory. `PackageIndex` fetches the Universe index and
 therefore needs network access; a failure is issued as a warning message and
@@ -338,17 +338,17 @@ MathemeQueryPackages[<|"Name" -> "cetz", "Origin" -> "Universe"|>]
 MathemeQueryPackages[<|"AllowDownloads" -> True|>]  (* fetch Universe index *)
 ```
 
-| Key | Applies to | Meaning |
-|---|---|---|
-| `Family` | `MathemeQueryFonts` | Case-insensitive substring of the family name. |
-| `Source` | `MathemeQueryFonts` | `Custom`, `Host`, `Embedded` or `System`. |
-| `Resident` | `MathemeQueryFonts` | `True`/`False`: whether the face's bytes are in memory. |
-| `Character` | `MathemeQueryFonts` | One-character string; keeps faces whose typst `Coverage` contains it (the same predicate typst uses for font fallback, so it reflects declared cmap ranges and can be coarse). |
-| `Name`, `Namespace`, `Version` | `MathemeQueryPackages` | Name substring, namespace and exact version. |
-| `Origin` | `MathemeQueryPackages` | `Local`, `Data`, `Cache` or `Universe`. |
-| `Offset`, `MaxResults` | both | Paging; default 50 rows, `MaxResults -> All` removes the cap. |
-| `AllowDownloads` | `MathemeQueryPackages` | Explicit opt-in to fetch and cache the Universe index. |
-| `Refresh` | `MathemeQueryPackages` | Rescan the local package directories. |
+| Key                            | Applies to             | Meaning                                                                                                                                                                        |
+| ------------------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Family`                       | `MathemeQueryFonts`    | Case-insensitive substring of the family name.                                                                                                                                 |
+| `Source`                       | `MathemeQueryFonts`    | `Custom`, `Host`, `Embedded` or `System`.                                                                                                                                      |
+| `Resident`                     | `MathemeQueryFonts`    | `True`/`False`: whether the face's bytes are in memory.                                                                                                                        |
+| `Character`                    | `MathemeQueryFonts`    | One-character string; keeps faces whose typst `Coverage` contains it (the same predicate typst uses for font fallback, so it reflects declared cmap ranges and can be coarse). |
+| `Name`, `Namespace`, `Version` | `MathemeQueryPackages` | Name substring, namespace and exact version.                                                                                                                                   |
+| `Origin`                       | `MathemeQueryPackages` | `Local`, `Data`, `Cache` or `Universe`.                                                                                                                                        |
+| `Offset`, `MaxResults`         | both                   | Paging; default 50 rows, `MaxResults -> All` removes the cap.                                                                                                                  |
+| `AllowDownloads`               | `MathemeQueryPackages` | Explicit opt-in to fetch and cache the Universe index.                                                                                                                         |
+| `Refresh`                      | `MathemeQueryPackages` | Rescan the local package directories.                                                                                                                                          |
 
 `MathemeQueryFonts` returns `Total` (faces in the book), `Matched`, `Returned`,
 `Offset`, `MaxResults`, `Resident` (number of faces whose bytes are in memory)
@@ -370,30 +370,30 @@ or wrong value types are our own Wolfram layer's bugs, so they become a
 
 ### Cache / state management
 
-| Function | Effect |
-|---|---|
-| `MathemeVersion[]` | Version and DLL metadata: `"Matheme"`, `"Typst"`, `"TypstCommit"`, `"Target"`, `"LibraryLink"`, and `"WSTP"`. |
-| `MathemeSettings[]` | Read the configuration (see *Settings*). |
-| `MathemeSetSettings[patch]` | Apply a settings patch. |
-| `MathemeResetSettings[]` | Restore every user-facing setting. |
-| `MathemeQueryFonts[]` | Query cached font-book metadata (see *Querying cached metadata*). |
-| `MathemeQueryPackages[]` | Query cached package metadata. |
-| `MathemeReloadFonts[]` | Rescan all configured font sources (e.g. after installing a font). |
-| `MathemeReloadPackages[]` | Rebuild the package loader and drop the cached Universe index. |
-| `ClearMathemeCache[targets]` | Drop selected caches (`"Fonts"`, `"Packages"`, `"Memoization"`, or `All`) without unloading the library. |
-| `MathemeClose[]` | Close the WSTP `LinkObject`, drop every library cache (fonts, packages, memoization), unload the single library function and release the DLL image. |
+| Function                     | Effect                                                                                                                                              |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MathemeVersion[]`           | Version and DLL metadata: `"Matheme"`, `"Typst"`, `"TypstCommit"`, `"Target"`, `"LibraryLink"`, and `"WSTP"`.                                       |
+| `MathemeSettings[]`          | Read the configuration (see _Settings_).                                                                                                            |
+| `MathemeSetSettings[patch]`  | Apply a settings patch.                                                                                                                             |
+| `MathemeResetSettings[]`     | Restore every user-facing setting.                                                                                                                  |
+| `MathemeQueryFonts[]`        | Query cached font-book metadata (see _Querying cached metadata_).                                                                                   |
+| `MathemeQueryPackages[]`     | Query cached package metadata.                                                                                                                      |
+| `MathemeReloadFonts[]`       | Rescan all configured font sources (e.g. after installing a font).                                                                                  |
+| `MathemeReloadPackages[]`    | Rebuild the package loader and drop the cached Universe index.                                                                                      |
+| `ClearMathemeCache[targets]` | Drop selected caches (`"Fonts"`, `"Packages"`, `"Memoization"`, or `All`) without unloading the library.                                            |
+| `MathemeClose[]`             | Close the WSTP `LinkObject`, drop every library cache (fonts, packages, memoization), unload the single library function and release the DLL image. |
 
 ### Memory
 
 Measured on the Wolfram 15 kernel (process working set, `.tmp/test-memory.wl`):
 
-| Stage | Before lazy fonts | After |
-|---|---|---|
-| Kernel start | 0.21 GiB | 0.21 GiB |
-| After font scan (`MathemeWarmup[]`) | **8.2 GiB** | 0.22 GiB |
-| After 6 compiles | 8.2 GiB | 0.24 GiB |
-| After `MathemeClose[]` | 8.2 GiB (nothing released) | **0.22 GiB** |
-| After reload + rescan | 16.2 GiB (doubled) | 0.23 GiB |
+| Stage                               | Before lazy fonts          | After        |
+| ----------------------------------- | -------------------------- | ------------ |
+| Kernel start                        | 0.21 GiB                   | 0.21 GiB     |
+| After font scan (`MathemeWarmup[]`) | **8.2 GiB**                | 0.22 GiB     |
+| After 6 compiles                    | 8.2 GiB                    | 0.24 GiB     |
+| After `MathemeClose[]`              | 8.2 GiB (nothing released) | **0.22 GiB** |
+| After reload + rescan               | 16.2 GiB (doubled)         | 0.23 GiB     |
 
 `MathemeClose[]` releases the font book and any lazily loaded faces, the
 package loader (including the Universe index) and typst's memoized
@@ -414,7 +414,7 @@ before rebuilding the DLL in a running kernel.
 On Wolfram 15, `LibraryFunctionUnload` already drops the last module
 reference, so a subsequent `LibraryUnload` reports "cannot be unloaded" even
 though the mapping is gone — a false negative. `MathemeClose[]` therefore
-takes one extra `LibraryLoad` reference *before* unloading, leaving the final
+takes one extra `LibraryLoad` reference _before_ unloading, leaving the final
 `LibraryUnload` with a real mapping to release; it reports
 `LibraryUnloaded -> True` and the DLL file becomes writable.
 
@@ -439,14 +439,14 @@ iterations. Representative results (measured with 1069 system faces; the
 current build has 1235 faces after adding host and embedded fonts, with no
 material change to these ratios):
 
-| Strategy | Per compile |
-|---|---|
-| `Library::builder().build()` alone | ~0.1 ms |
-| `MathemeWorld::new` (library + loader + parse heavy source) | ~0.2 ms |
-| Compile, fresh World per call (current design) | ~6 ms |
-| Compile, reuse one World + **unique** virtual file name per call | ~6 ms |
-| Compile, reuse one World + fixed name (identical inputs) | ~0 ms (cache hit) |
-| Compile, reuse fixed name with `comemo::evict(0)` each call | ~8 ms |
+| Strategy                                                         | Per compile       |
+| ---------------------------------------------------------------- | ----------------- |
+| `Library::builder().build()` alone                               | ~0.1 ms           |
+| `MathemeWorld::new` (library + loader + parse heavy source)      | ~0.2 ms           |
+| Compile, fresh World per call (current design)                   | ~6 ms             |
+| Compile, reuse one World + **unique** virtual file name per call | ~6 ms             |
+| Compile, reuse one World + fixed name (identical inputs)         | ~0 ms (cache hit) |
+| Compile, reuse fixed name with `comemo::evict(0)` each call      | ~8 ms             |
 
 **Conclusion: rebuilding the World is not significantly slower than maintaining
 one World and minting a fresh virtual file each call.** The two are within
@@ -462,7 +462,7 @@ noise (~1.0×). Three reasons:
    distinct documents.
 
 The only strategy that is dramatically faster is reusing one World with a
-*fixed* file name — but that speed is entirely comemo memoization (evicting the
+_fixed_ file name — but that speed is entirely comemo memoization (evicting the
 cache restores ~8 ms). Typst's own `World` docs warn that source files must be
 cleared after each compilation: a long-lived World that keeps serving a fixed
 `FileId` can return **stale content**. Minting a unique virtual file avoids the
@@ -482,4 +482,4 @@ session / `ManagedLibraryExpression` design is not warranted here.
 - Fonts come from the machine, so identical source can render slightly
   differently on machines with different fonts.
 - Structured columns are 1-based while the `Formatted` report shows the CLI's
-  0-based column; see *Diagnostics*.
+  0-based column; see _Diagnostics_.

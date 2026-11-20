@@ -37,8 +37,9 @@ TypstForm::unspt = "TypstForm of `1` is not supported.";
 
 $TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates (pass a key to \"TypstTemplate\").";
 
-makeMiTeXTemplate[fnName_String] := TemplateObject[{
+makeMiTeXTemplate[fnName_String, extra_String : ""] := TemplateObject[{
     "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
+    extra,
     "#import \"@preview/mitex:0.2.7\": " <> fnName <> "\n",
     "#" <> fnName <> "(\"", TemplateSlot[1], "\")"},
   CombinerFunction -> StringJoin,
@@ -49,10 +50,10 @@ makeMiTeXTemplate[fnName_String] := TemplateObject[{
 $TypstTemplates = <|
   "Equation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$ `` $"],
   "InlineEquation" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$``$"],
-  "Text" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n``"],
+  "Text" -> StringTemplate["#set page(width: auto, height: auto, margin: 0pt, fill: none)\n#set text(top-edge: \"bounds\", bottom-edge: \"bounds\")\n``"],
   "MiTeXEquation" -> makeMiTeXTemplate["mitex"],
   "MiTeXInlineEquation" -> makeMiTeXTemplate["mi"],
-  "MiTeXText" -> makeMiTeXTemplate["mitext"]
+  "MiTeXText" -> makeMiTeXTemplate["mitext", "#set text(top-edge: \"bounds\", bottom-edge: \"bounds\")\n"]
 |>;
 Protect[$TypstTemplates];
 
@@ -299,7 +300,7 @@ Options[MathemeCompile] = {
 };
 Options[MathemeToGraphics] = Normal[Join[
   Association[Options[MathemeCompile]],
-  <|"Format" -> "SVG"|>
+  <|"Format" -> "PDF"|>
 ]];
 Options[compileChecked] = Options[MathemeCompile];
 
@@ -351,6 +352,38 @@ normalizeSvgUnits[svg_String] := StringReplace[svg,
     }]
 ];
 
+(* PDF PageGraphics sets PlotRange strictly to the PDF MediaBox, which can clip
+   glyph descenders or italic overhangs when margin is 0pt. Expand PlotRange
+   (and proportionally adjust ImageSize) only if actual vector primitives extend
+   beyond the page box. *)
+fitPdfPlotRange[g_Graphics] := Module[{pr, pts, xs, ys, x0, x1, y0, y1, nx0, nx1, ny0, ny1},
+  pr = PlotRange /. Options[g, PlotRange];
+  If[!MatchQ[pr, {{_?NumericQ, _?NumericQ}, {_?NumericQ, _?NumericQ}}],
+    Return[g]
+  ];
+  pts = Join[
+    Flatten[Cases[g, FilledCurve[_, p_List] :> p, Infinity], 2],
+    Flatten[Cases[g, (Polygon | Line | Point)[p_List] :> If[MatrixQ[p, NumericQ], {p}, p], Infinity], 1]
+  ];
+  If[pts === {} || !MatrixQ[pts, NumericQ] || Dimensions[pts][[2]] =!= 2,
+    Return[g]
+  ];
+  {{x0, x1}, {y0, y1}} = pr;
+  {xs, ys} = {MinMax[pts[[All, 1]]], MinMax[pts[[All, 2]]]};
+  nx0 = Min[x0, xs[[1]]];
+  nx1 = Max[x1, xs[[2]]];
+  ny0 = Min[y0, ys[[1]]];
+  ny1 = Max[y1, ys[[2]]];
+  If[nx0 == x0 && nx1 == x1 && ny0 == y0 && ny1 == y1,
+    g,
+    Show[g,
+      PlotRange -> {{nx0, nx1}, {ny0, ny1}},
+      ImageSize -> Ceiling[{nx1 - nx0, ny1 - ny0}]
+    ]
+  ]
+];
+fitPdfPlotRange[other_] := other;
+
 toGraphics[result_] := Module[{pdf, svg, graphics},
   If[FailureQ[result] || !AssociationQ[result],
     result,
@@ -367,7 +400,7 @@ toGraphics[result_] := Module[{pdf, svg, graphics},
         graphics = ImportByteArray[pdf, {"PDF", "PageGraphics"}];
         If[!ListQ[graphics],
           raiseCallError["Failed to import PDF bytes as Graphics."],
-          Join[result, <|"Graphics" -> graphics|>]
+          Join[result, <|"Graphics" -> Map[fitPdfPlotRange, graphics]|>]
         ],
       True,
         Join[result, <|"Graphics" -> {}|>]
