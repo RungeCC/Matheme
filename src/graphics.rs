@@ -6,31 +6,37 @@ use std::sync::{LazyLock, RwLock};
 
 use matheme_wl::{Expr, Symbol};
 use matheme_world::graphics::{
-    GlyphInstances, GlyphKey, LineCapStyle, LineJoinStyle, Rgba, Segment, StrokeStyle, Subpath,
-    VectorPage, VectorPrimitive,
+    cache_generation, EmbeddedImageFormat, GlyphInstances, GlyphKey, LineCapStyle, LineJoinStyle,
+    Rgba, Segment, StrokeStyle, Subpath, VectorPage, VectorPrimitive,
 };
+
+/// Upper bound on cached `FilledCurve` / `JoinedCurve` `Expr` entries in the
+/// LibraryLink bridge.
+const MAX_EXPR_CACHE_ENTRIES: usize = 4096;
 
 #[derive(Clone)]
 struct CachedGlyphExpr {
     all_closed: bool,
     filled: Expr,
-    joined: Expr,
+    joined: Option<Expr>,
 }
 
-static GLYPH_EXPR_CACHE: LazyLock<RwLock<HashMap<GlyphKey, CachedGlyphExpr>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
-
-pub fn clear_glyph_expr_cache() {
-    if let Ok(mut guard) = GLYPH_EXPR_CACHE.write() {
-        guard.clear();
-    }
+#[derive(Default)]
+struct GlyphExprCache {
+    generation: u64,
+    entries: HashMap<GlyphKey, CachedGlyphExpr>,
 }
 
+static GLYPH_EXPR_CACHE: LazyLock<RwLock<GlyphExprCache>> =
+    LazyLock::new(|| RwLock::new(GlyphExprCache::default()));
+
+/// Convert one [`VectorPage`] into a `System\`Graphics` [`Expr`] with explicit
+/// numeric `PlotRange`, zero padding, and exact pt `ImageSize`.
 pub fn page_to_expr(page: &VectorPage) -> Expr {
-    let [[x0, x1], [y0, y1]] = page.plot_range;
+    let [[x0, x1], [y0, y1]] = page.bounds;
     let plot_width = (x1 - x0).abs().max(1e-6);
-    let img_w = (x1 - x0).ceil().max(1.0);
-    let img_h = (y1 - y0).ceil().max(1.0);
+    let img_w = (x1 - x0).max(1.0);
+    let img_h = (y1 - y0).max(1.0);
 
     let mut elements = Vec::with_capacity(page.primitives.len());
     for primitive in &page.primitives {
@@ -43,29 +49,24 @@ pub fn page_to_expr(page: &VectorPage) -> Expr {
         Symbol::system("Graphics"),
         [
             Expr::list(elements),
-            Expr::normal(
-                Symbol::RULE,
-                [
-                    Expr::symbol(Symbol::system("ImageSize")),
-                    Expr::list([img_w, img_h]),
-                ],
+            rule_sym_expr("ImageSize", Expr::list([img_w, img_h])),
+            rule_sym_expr(
+                "PlotRange",
+                Expr::list([Expr::list([x0, x1]), Expr::list([y0, y1])]),
             ),
-            Expr::normal(
-                Symbol::RULE,
-                [
-                    Expr::symbol(Symbol::system("PlotRange")),
-                    Expr::list([Expr::list([x0, x1]), Expr::list([y0, y1])]),
-                ],
-            ),
-            Expr::normal(
-                Symbol::RULE,
-                [
-                    Expr::symbol(Symbol::system("AspectRatio")),
-                    Expr::symbol(Symbol::AUTOMATIC),
-                ],
-            ),
+            rule_sym_sym("PlotRangePadding", "None"),
+            rule_sym_sym("ImagePadding", "None"),
+            rule_sym_sym("AspectRatio", "Automatic"),
         ],
     )
+}
+
+fn rule_sym_expr(lhs: &str, rhs: Expr) -> Expr {
+    Expr::normal(Symbol::RULE, [Expr::symbol(Symbol::system(lhs)), rhs])
+}
+
+fn rule_sym_sym(lhs: &str, rhs: &str) -> Expr {
+    rule_sym_expr(lhs, Expr::symbol(Symbol::system(rhs)))
 }
 
 fn primitive_to_expr(primitive: &VectorPrimitive, plot_width: f64) -> Option<Expr> {
@@ -90,67 +91,190 @@ fn primitive_to_expr(primitive: &VectorPrimitive, plot_width: f64) -> Option<Exp
             Some(Expr::list(group))
         }
         VectorPrimitive::Image {
-            data, min, max, ..
-        } => {
-            let imported = Expr::normal(
-                Symbol::system("ImportByteArray"),
-                [Expr::bytes(data.clone())],
-            );
-            let width = (max[0] - min[0]).max(1e-3);
-            let height = (max[1] - min[1]).max(1e-3);
-            Some(Expr::normal(
-                Symbol::system("Inset"),
-                [
-                    imported,
-                    point_expr(*min),
-                    Expr::list([0.0, 0.0]),
-                    Expr::list([width, height]),
-                ],
-            ))
-        }
+            format,
+            data,
+            size,
+            transform,
+        } => Some(image_to_expr(*format, data.as_ref(), *size, *transform)),
+        VectorPrimitive::Clip { bounds, children } => clip_to_expr(*bounds, children),
     }
 }
 
-fn cached_glyph_expr(instance: &GlyphInstances) -> CachedGlyphExpr {
-    if let Ok(guard) = GLYPH_EXPR_CACHE.read() {
-        if let Some(cached) = guard.get(&instance.key) {
-            return cached.clone();
+fn image_to_expr(
+    format: EmbeddedImageFormat,
+    data: &[u8],
+    size: [f64; 2],
+    transform: [f64; 6],
+) -> Expr {
+    let imported = Expr::normal(
+        Symbol::system("ImportByteArray"),
+        [Expr::bytes(data), Expr::string(format.wl_format())],
+    );
+    let stretched = Expr::normal(
+        Symbol::system("Show"),
+        [imported, rule_sym_sym("AspectRatio", "Full")],
+    );
+    let [sx, ky, kx, sy, tx, ty] = transform;
+    let origin = Expr::list([
+        Expr::symbol(Symbol::system("Left")),
+        Expr::symbol(Symbol::system("Bottom")),
+    ]);
+
+    if kx.abs() < 1e-9 && ky.abs() < 1e-9 && sx > 0.0 && sy > 0.0 {
+        Expr::normal(
+            Symbol::system("Inset"),
+            [
+                stretched,
+                point_expr([tx, ty]),
+                origin,
+                Expr::list([size[0] * sx, size[1] * sy]),
+            ],
+        )
+    } else {
+        let inset = Expr::normal(
+            Symbol::system("Inset"),
+            [
+                stretched,
+                point_expr([0.0, 0.0]),
+                origin,
+                Expr::list([size[0], size[1]]),
+            ],
+        );
+        // Column-major `[sx, ky, kx, sy]` corresponds to WL 2×2 row-major matrix
+        // `{{sx, kx}, {ky, sy}}` with translation vector `{tx, ty}`.
+        let matrix = Expr::list([Expr::list([sx, kx]), Expr::list([ky, sy])]);
+        Expr::normal(
+            Symbol::system("GeometricTransformation"),
+            [inset, Expr::list([matrix, point_expr([tx, ty])])],
+        )
+    }
+}
+
+fn clip_to_expr(bounds: [[f64; 2]; 2], children: &[VectorPrimitive]) -> Option<Expr> {
+    let [[x0, x1], [y0, y1]] = bounds;
+    let cw = (x1 - x0).max(1e-6);
+    let ch = (y1 - y0).max(1e-6);
+
+    let mut elements = Vec::with_capacity(children.len());
+    for child in children {
+        // Strokes inside clipped subgraphics normalize relative to `cw` so
+        // `Thickness[stroke_pt / cw]` preserves exact typographic point widths.
+        if let Some(expr) = primitive_to_expr(child, cw) {
+            elements.push(expr);
         }
     }
-    let all_closed = instance.subpaths.iter().all(|s| s.closed);
-    let (all_segs, all_pts, closed_flags) = encode_subpaths(&instance.subpaths);
+    if elements.is_empty() {
+        return None;
+    }
+
+    let inner = Expr::normal(
+        Symbol::system("Graphics"),
+        [
+            Expr::list(elements),
+            rule_sym_expr(
+                "PlotRange",
+                Expr::list([Expr::list([x0, x1]), Expr::list([y0, y1])]),
+            ),
+            rule_sym_sym("PlotRangePadding", "None"),
+            rule_sym_sym("ImagePadding", "None"),
+            rule_sym_expr("PlotRangeClipping", Expr::boolean(true)),
+            rule_sym_sym("AspectRatio", "Full"),
+        ],
+    );
+    let origin = Expr::list([
+        Expr::symbol(Symbol::system("Left")),
+        Expr::symbol(Symbol::system("Bottom")),
+    ]);
+    Some(Expr::normal(
+        Symbol::system("Inset"),
+        [inner, point_expr([x0, y0]), origin, Expr::list([cw, ch])],
+    ))
+}
+
+fn build_curve_exprs(subpaths: &[Subpath], need_joined: bool) -> (bool, Expr, Option<Expr>) {
+    let all_closed = subpaths.iter().all(|s| s.closed);
+    let (all_segs, all_pts, closed_flags) = encode_subpaths(subpaths);
     let segs_expr = Expr::list(all_segs);
     let pts_expr = Expr::list(all_pts);
     let filled = Expr::normal(
         Symbol::system("FilledCurve"),
         [segs_expr.clone(), pts_expr.clone()],
     );
-    let joined = Expr::normal(
+    let joined = need_joined.then(|| joined_curve_from_encoded(segs_expr, pts_expr, closed_flags));
+    (all_closed, filled, joined)
+}
+
+fn joined_curve_from_encoded(segs_expr: Expr, pts_expr: Expr, closed_flags: Vec<i64>) -> Expr {
+    Expr::normal(
         Symbol::system("JoinedCurve"),
         [
             segs_expr,
             pts_expr,
-            Expr::normal(
-                Symbol::RULE,
-                [
-                    Expr::symbol(Symbol::system("CurveClosed")),
-                    Expr::list(closed_flags),
-                ],
-            ),
+            rule_sym_expr("CurveClosed", Expr::list(closed_flags)),
         ],
-    );
-    let cached = CachedGlyphExpr {
-        all_closed,
-        filled,
-        joined,
-    };
-    if let Ok(mut guard) = GLYPH_EXPR_CACHE.write() {
-        guard.insert(instance.key.clone(), cached.clone());
+    )
+}
+
+fn cached_glyph_expr(
+    instance: &GlyphInstances,
+    need_joined: bool,
+) -> (bool, Expr, Option<Expr>) {
+    let gen_now = cache_generation();
+
+    if let Ok(guard) = GLYPH_EXPR_CACHE.read() {
+        if guard.generation == gen_now {
+            if let Some(cached) = guard.entries.get(&instance.key) {
+                if !need_joined || cached.joined.is_some() {
+                    return (
+                        cached.all_closed,
+                        cached.filled.clone(),
+                        cached.joined.clone(),
+                    );
+                }
+            }
+        }
     }
-    cached
+
+    let (all_closed, filled, joined) = build_curve_exprs(&instance.subpaths, need_joined);
+
+    if let Ok(mut guard) = GLYPH_EXPR_CACHE.write() {
+        if guard.generation != gen_now {
+            guard.entries.clear();
+            guard.generation = gen_now;
+        } else if guard.entries.len() >= MAX_EXPR_CACHE_ENTRIES
+            && !guard.entries.contains_key(&instance.key)
+        {
+            guard.entries.clear();
+        }
+
+        if let Some(existing) = guard.entries.get_mut(&instance.key) {
+            if need_joined && existing.joined.is_none() {
+                existing.joined = joined.clone();
+            }
+            return (
+                existing.all_closed,
+                existing.filled.clone(),
+                existing.joined.clone(),
+            );
+        }
+
+        guard.entries.insert(
+            instance.key,
+            CachedGlyphExpr {
+                all_closed,
+                filled: filled.clone(),
+                joined: joined.clone(),
+            },
+        );
+    }
+
+    (all_closed, filled, joined)
 }
 
 fn instanced_glyph_expr(curve_expr: Expr, positions: &[[f64; 2]]) -> Expr {
+    // Wolfram's `GeometricTransformation[prim, {{x0, y0}, {x1, y1}}]` parses a
+    // 2×2 numeric list as an affine matrix instead of two translations, so wrap
+    // length-2 translation lists as `{{{x0, y0}}, {{x1, y1}}}`.
     let translations = match positions {
         [single] => point_expr(*single),
         [p0, p1] => Expr::list([
@@ -165,26 +289,20 @@ fn instanced_glyph_expr(curve_expr: Expr, positions: &[[f64; 2]]) -> Expr {
     )
 }
 
-fn glyphs_to_expr(
-    glyphs: &[GlyphInstances],
+/// Shared `(fill, stroke, all_closed)` primitive styling assembler used by both
+/// [`glyphs_to_expr`] and [`paths_to_expr`].
+fn styled_group<I>(
+    items: &[I],
     fill: Option<Rgba>,
     stroke: Option<&StrokeStyle>,
+    all_closed: bool,
     plot_width: f64,
+    mut make_filled: impl FnMut(&I) -> Expr,
+    mut make_joined: impl FnMut(&I) -> Expr,
 ) -> Option<Expr> {
-    let valid: Vec<(&GlyphInstances, CachedGlyphExpr)> = glyphs
-        .iter()
-        .filter(|g| !g.positions.is_empty() && g.subpaths.iter().any(|s| !s.segments.is_empty()))
-        .map(|g| (g, cached_glyph_expr(g)))
-        .collect();
-    if valid.is_empty() {
-        return None;
-    }
-
-    let all_closed = valid.iter().all(|(_, c)| c.all_closed);
-
     match (fill, stroke) {
         (Some(fill_color), None) => {
-            let mut group = Vec::with_capacity(valid.len() + 2);
+            let mut group = Vec::with_capacity(items.len() + 2);
             group.push(Expr::normal(
                 Symbol::system("EdgeForm"),
                 [Expr::symbol(Symbol::NONE)],
@@ -193,13 +311,13 @@ fn glyphs_to_expr(
                 Symbol::system("FaceForm"),
                 [rgba_expr(fill_color)],
             ));
-            for (g, c) in valid {
-                group.push(instanced_glyph_expr(c.filled, &g.positions));
+            for item in items {
+                group.push(make_filled(item));
             }
             Some(Expr::list(group))
         }
         (Some(fill_color), Some(stroke_style)) if all_closed => {
-            let mut group = Vec::with_capacity(valid.len() + 2);
+            let mut group = Vec::with_capacity(items.len() + 2);
             group.push(Expr::normal(
                 Symbol::system("FaceForm"),
                 [rgba_expr(fill_color)],
@@ -208,13 +326,13 @@ fn glyphs_to_expr(
                 Symbol::system("EdgeForm"),
                 [Expr::list(stroke_directives(stroke_style, plot_width))],
             ));
-            for (g, c) in valid {
-                group.push(instanced_glyph_expr(c.filled, &g.positions));
+            for item in items {
+                group.push(make_filled(item));
             }
             Some(Expr::list(group))
         }
         (Some(fill_color), Some(stroke_style)) => {
-            let mut fill_group = Vec::with_capacity(valid.len() + 2);
+            let mut fill_group = Vec::with_capacity(items.len() + 2);
             fill_group.push(Expr::normal(
                 Symbol::system("EdgeForm"),
                 [Expr::symbol(Symbol::NONE)],
@@ -224,21 +342,70 @@ fn glyphs_to_expr(
                 [rgba_expr(fill_color)],
             ));
             let mut stroke_group = stroke_directives(stroke_style, plot_width);
-            for (g, c) in valid {
-                fill_group.push(instanced_glyph_expr(c.filled, &g.positions));
-                stroke_group.push(instanced_glyph_expr(c.joined, &g.positions));
+            for item in items {
+                fill_group.push(make_filled(item));
+                stroke_group.push(make_joined(item));
             }
             Some(Expr::list([Expr::list(fill_group), Expr::list(stroke_group)]))
         }
         (None, Some(stroke_style)) => {
             let mut group = stroke_directives(stroke_style, plot_width);
-            for (g, c) in valid {
-                group.push(instanced_glyph_expr(c.joined, &g.positions));
+            for item in items {
+                group.push(make_joined(item));
             }
             Some(Expr::list(group))
         }
         (None, None) => None,
     }
+}
+
+fn glyphs_to_expr(
+    glyphs: &[GlyphInstances],
+    fill: Option<Rgba>,
+    stroke: Option<&StrokeStyle>,
+    plot_width: f64,
+) -> Option<Expr> {
+    let valid_inputs: Vec<&GlyphInstances> = glyphs
+        .iter()
+        .filter(|g| !g.positions.is_empty() && g.subpaths.iter().any(|s| !s.segments.is_empty()))
+        .collect();
+    if valid_inputs.is_empty() {
+        return None;
+    }
+
+    let prelim: Vec<(&GlyphInstances, bool, Expr, Option<Expr>)> = valid_inputs
+        .into_iter()
+        .map(|g| {
+            let (all_closed, filled, joined) = cached_glyph_expr(g, fill.is_none());
+            (g, all_closed, filled, joined)
+        })
+        .collect();
+    let all_closed = prelim.iter().all(|(_, c, _, _)| *c);
+    let need_joined = stroke.is_some() && (fill.is_none() || !all_closed);
+
+    let prepared: Vec<(&GlyphInstances, Expr, Option<Expr>)> = prelim
+        .into_iter()
+        .map(|(g, _, filled, joined)| {
+            let joined = if need_joined && joined.is_none() {
+                cached_glyph_expr(g, true).2
+            } else {
+                joined
+            };
+            (g, filled, joined)
+        })
+        .collect();
+
+    styled_group(
+        &prepared,
+        fill,
+        stroke,
+        all_closed,
+        plot_width,
+        |(g, filled, _)| instanced_glyph_expr(filled.clone(), &g.positions),
+        |(g, _, joined)| {
+            instanced_glyph_expr(joined.clone().expect("joined curve built"), &g.positions)
+        },
+    )
 }
 
 fn paths_to_expr(
@@ -256,71 +423,19 @@ fn paths_to_expr(
         return None;
     }
 
-    let all_closed = valid_paths
-        .iter()
-        .all(|sp| sp.iter().all(|s| s.closed));
-
-    match (fill, stroke) {
-        (Some(fill_color), None) => {
-            let mut group = Vec::with_capacity(valid_paths.len() + 2);
-            group.push(Expr::normal(
-                Symbol::system("EdgeForm"),
-                [Expr::symbol(Symbol::NONE)],
-            ));
-            group.push(Expr::normal(
-                Symbol::system("FaceForm"),
-                [rgba_expr(fill_color)],
-            ));
-            for subpaths in valid_paths {
-                group.push(filled_curve_expr(subpaths));
-            }
-            Some(Expr::list(group))
-        }
-        (Some(fill_color), Some(stroke_style)) if all_closed => {
-            let mut group = Vec::with_capacity(valid_paths.len() + 2);
-            group.push(Expr::normal(
-                Symbol::system("FaceForm"),
-                [rgba_expr(fill_color)],
-            ));
-            group.push(Expr::normal(
-                Symbol::system("EdgeForm"),
-                [Expr::list(stroke_directives(stroke_style, plot_width))],
-            ));
-            for subpaths in valid_paths {
-                group.push(filled_curve_expr(subpaths));
-            }
-            Some(Expr::list(group))
-        }
-        (Some(fill_color), Some(stroke_style)) => {
-            let mut fill_group = Vec::with_capacity(valid_paths.len() + 2);
-            fill_group.push(Expr::normal(
-                Symbol::system("EdgeForm"),
-                [Expr::symbol(Symbol::NONE)],
-            ));
-            fill_group.push(Expr::normal(
-                Symbol::system("FaceForm"),
-                [rgba_expr(fill_color)],
-            ));
-            for subpaths in &valid_paths {
-                fill_group.push(filled_curve_expr(subpaths));
-            }
-
-            let mut stroke_group = stroke_directives(stroke_style, plot_width);
-            for subpaths in &valid_paths {
-                stroke_group.push(joined_curve_expr(subpaths));
-            }
-
-            Some(Expr::list([Expr::list(fill_group), Expr::list(stroke_group)]))
-        }
-        (None, Some(stroke_style)) => {
-            let mut group = stroke_directives(stroke_style, plot_width);
-            for subpaths in valid_paths {
-                group.push(joined_curve_expr(subpaths));
-            }
-            Some(Expr::list(group))
-        }
-        (None, None) => None,
-    }
+    let all_closed = valid_paths.iter().all(|sp| sp.iter().all(|s| s.closed));
+    styled_group(
+        &valid_paths,
+        fill,
+        stroke,
+        all_closed,
+        plot_width,
+        |sp| build_curve_exprs(sp, false).1,
+        |sp| {
+            let (all_segs, all_pts, closed_flags) = encode_subpaths(sp);
+            joined_curve_from_encoded(Expr::list(all_segs), Expr::list(all_pts), closed_flags)
+        },
+    )
 }
 
 fn encode_subpaths(subpaths: &[Subpath]) -> (Vec<Expr>, Vec<Expr>, Vec<i64>) {
@@ -360,32 +475,6 @@ fn encode_subpaths(subpaths: &[Subpath]) -> (Vec<Expr>, Vec<Expr>, Vec<i64>) {
     }
 
     (all_segs, all_pts, closed_flags)
-}
-
-fn filled_curve_expr(subpaths: &[Subpath]) -> Expr {
-    let (all_segs, all_pts, _) = encode_subpaths(subpaths);
-    Expr::normal(
-        Symbol::system("FilledCurve"),
-        [Expr::list(all_segs), Expr::list(all_pts)],
-    )
-}
-
-fn joined_curve_expr(subpaths: &[Subpath]) -> Expr {
-    let (all_segs, all_pts, closed_flags) = encode_subpaths(subpaths);
-    Expr::normal(
-        Symbol::system("JoinedCurve"),
-        [
-            Expr::list(all_segs),
-            Expr::list(all_pts),
-            Expr::normal(
-                Symbol::RULE,
-                [
-                    Expr::symbol(Symbol::system("CurveClosed")),
-                    Expr::list(closed_flags),
-                ],
-            ),
-        ],
-    )
 }
 
 fn point_expr(p: [f64; 2]) -> Expr {
@@ -438,10 +527,11 @@ fn stroke_directives(s: &StrokeStyle, plot_width: f64) -> Vec<Expr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matheme_world::graphics::WindingRule;
+    use matheme_world::graphics::{clear_glyph_cache, UnitGlyphKey, WindingRule};
+    use typst::foundations::Bytes;
 
     #[test]
-    fn encodes_filled_and_joined_curves_into_graphics_expr() {
+    fn encodes_filled_and_joined_curves_with_exact_options() {
         let subpath = Subpath {
             start: [0.0, 0.0],
             segments: vec![
@@ -452,10 +542,8 @@ mod tests {
             closed: true,
         };
         let page = VectorPage {
-            width: 10.0,
-            height: 10.0,
-            background: None,
-            plot_range: [[0.0, 10.0], [0.0, 10.0]],
+            size: [10.5, 10.25],
+            bounds: [[0.0, 10.5], [0.0, 10.25]],
             primitives: vec![VectorPrimitive::Paths {
                 paths: vec![vec![subpath]],
                 fill: Some(Rgba {
@@ -475,5 +563,95 @@ mod tests {
         let rendered = expr.to_string();
         assert!(rendered.contains("System`FilledCurve"), "{rendered}");
         assert!(rendered.contains("System`PlotRange"), "{rendered}");
+        assert!(rendered.contains("System`PlotRangePadding"), "{rendered}");
+        assert!(rendered.contains("System`ImagePadding"), "{rendered}");
+        // Fractional ImageSize preserved (no .ceil()).
+        assert!(rendered.contains("10.5, 10.25"), "{rendered}");
+    }
+
+    #[test]
+    fn encodes_clip_and_rotated_image_primitives() {
+        let clipped_child = VectorPrimitive::Paths {
+            paths: vec![vec![Subpath {
+                start: [0.0, 0.0],
+                segments: vec![
+                    Segment::Line([40.0, 0.0]),
+                    Segment::Line([40.0, 40.0]),
+                    Segment::Line([0.0, 40.0]),
+                    Segment::Line([0.0, 0.0]),
+                ],
+                closed: true,
+            }]],
+            fill: Some(Rgba {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }),
+            stroke: None,
+            winding: WindingRule::EvenOdd,
+        };
+        let clip_prim = VectorPrimitive::Clip {
+            bounds: [[10.0, 30.0], [10.0, 25.0]],
+            children: vec![clipped_child],
+        };
+        let img_prim = VectorPrimitive::Image {
+            format: EmbeddedImageFormat::Png,
+            data: Bytes::new([0x89, b'P', b'N', b'G']),
+            size: [20.0, 10.0],
+            transform: [0.0, 1.0, -1.0, 0.0, 35.0, 5.0],
+        };
+        let page = VectorPage {
+            size: [40.0, 40.0],
+            bounds: [[0.0, 40.0], [0.0, 40.0]],
+            primitives: vec![clip_prim, img_prim],
+        };
+        let rendered = page_to_expr(&page).to_string();
+        assert!(rendered.contains("System`Inset"), "{rendered}");
+        assert!(rendered.contains("System`Left, System`Bottom"), "{rendered}");
+        assert!(rendered.contains("System`PlotRangeClipping"), "{rendered}");
+        assert!(rendered.contains("System`True"), "{rendered}");
+        assert!(rendered.contains("System`ImportByteArray"), "{rendered}");
+        assert!(rendered.contains("\"PNG\""), "{rendered}");
+        assert!(rendered.contains("System`GeometricTransformation"), "{rendered}");
+    }
+
+    #[test]
+    fn glyph_expr_cache_invalidates_on_world_cache_generation() {
+        let key = GlyphKey {
+            unit: UnitGlyphKey {
+                font_gen: 1,
+                data_ptr: 0x1234,
+                data_len: 100,
+                face_index: 0,
+                variations_hash: 0,
+                glyph_id: 42,
+            },
+            linear_q: [10_000_000, 0, 0, 10_000_000],
+        };
+        let inst = GlyphInstances {
+            key,
+            subpaths: std::sync::Arc::new(vec![Subpath {
+                start: [0.0, 0.0],
+                segments: vec![
+                    Segment::Line([5.0, 0.0]),
+                    Segment::Line([5.0, 5.0]),
+                    Segment::Line([0.0, 0.0]),
+                ],
+                closed: true,
+            }]),
+            positions: vec![[0.0, 0.0]],
+        };
+
+        let _ = cached_glyph_expr(&inst, false);
+        assert!(GLYPH_EXPR_CACHE.read().unwrap().entries.contains_key(&key));
+        clear_glyph_cache();
+        // After world cache clear, next lookup clears old generation entries and repopulates only current key.
+        let (_, _, joined) = cached_glyph_expr(&inst, true);
+        assert!(joined.is_some());
+        assert_eq!(
+            GLYPH_EXPR_CACHE.read().unwrap().generation,
+            cache_generation()
+        );
     }
 }

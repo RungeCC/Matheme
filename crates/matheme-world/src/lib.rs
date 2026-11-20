@@ -12,11 +12,12 @@ mod loader;
 pub mod packages;
 pub mod query;
 pub mod settings;
+mod winding;
 pub mod world;
 
 pub use fonts::{
-    cached_counts, font_cache, font_counts, reload_fonts, reset as reset_fonts, warmup_fonts,
-    FontCache, FontCounts,
+    cached_counts, font_cache, font_counts, font_generation, reload_fonts, reset as reset_fonts,
+    warmup_fonts, FontCache, FontCounts,
 };
 pub use packages::{
     enter_call_downloads, package_status, prefetch_universe_index, reload_packages,

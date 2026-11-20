@@ -1528,6 +1528,7 @@ name = "matheme-world"
 version = "0.1.0"
 dependencies = [
  "comemo",
+ "kurbo",
  "serde",
  "serde_json",
  "time",
@@ -1540,6 +1541,7 @@ dependencies = [
  "typst-pdf",
  "typst-svg",
  "ureq",
+ "usvg",
 ]
 
 [[package]]

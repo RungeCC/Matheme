@@ -28,7 +28,7 @@
 //! 4. OS fonts.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use typst::text::{Font, FontBook, FontInfo};
@@ -224,6 +224,23 @@ fn scan() -> FontCache {
 /// `None` means "dropped, rescan on next use" (see [`reset`]).
 static FONTS: LazyCache<FontCache> = LazyCache::new();
 
+/// Monotonically incremented whenever cached font snapshots or settings change.
+static FONT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Current font generation, incremented on every [`reload_fonts`], [`refresh`],
+/// or [`reset`].
+pub fn font_generation() -> u64 {
+    FONT_GENERATION.load(Ordering::Acquire)
+}
+
+fn invalidate_dependent_caches() {
+    FONT_GENERATION.fetch_add(1, Ordering::AcqRel);
+    // comemo's global cache may hold `Font` clones (e.g. memoized
+    // `Font::instantiate` results) pinning the old font data.
+    comemo::evict(0);
+    crate::graphics::clear_glyph_cache();
+}
+
 /// Get the current font snapshot without holding the lock across a
 /// compilation. This also triggers the lazy font scan (metadata only — no
 /// font data is loaded) on first use.
@@ -251,16 +268,14 @@ pub fn cached_counts() -> Option<FontCounts> {
 /// keep the previous generation's fonts alive.
 fn install() -> Arc<FontCache> {
     let next = FONTS.install(scan());
-    // comemo's global cache may hold `Font` clones (e.g. memoized
-    // `Font::instantiate` results) pinning the old font data.
-    comemo::evict(0);
+    invalidate_dependent_caches();
     next
 }
 
 /// Rescan with the current settings. Returns whether the cache was live.
 pub(crate) fn refresh() -> bool {
     if FONTS.refresh_if_live(scan).is_some() {
-        comemo::evict(0);
+        invalidate_dependent_caches();
         true
     } else {
         false
@@ -271,7 +286,7 @@ pub(crate) fn refresh() -> bool {
 /// evicts memoized results so dropped fonts are actually released.
 pub fn reset() {
     FONTS.reset();
-    comemo::evict(0);
+    invalidate_dependent_caches();
 }
 
 /// Eagerly build the font book and return the number of faces found. Only

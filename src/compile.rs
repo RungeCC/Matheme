@@ -329,7 +329,7 @@ pub fn run(input: CompileArgs) -> Answer {
                     rule!("Pages" -> total_pages as i64),
                 ],
                 CompileOutput::Html { html } => vec![rule!("HTML" -> html)],
-                CompileOutput::Graphics { pages, total_pages } => vec![
+                CompileOutput::Vector { pages, total_pages } => vec![
                     rule!(
                         "Graphics" -> Expr::list(pages.iter().map(crate::graphics::page_to_expr))
                     ),

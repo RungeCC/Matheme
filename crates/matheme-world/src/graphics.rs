@@ -1,27 +1,43 @@
 //! Host-agnostic vector graphics extraction from a compiled Typst [`PagedDocument`].
 //!
-//! Instead of serializing to SVG/PDF and round-tripping through an external
-//! importer (`PDFTools.dll` / `resvg.dll` / `pdfium.dll`), this module walks
-//! each [`Page`]'s [`Frame`] tree directly, outlines glyphs via `ttf-parser`,
-//! transforms all coordinates into a Y-Up Cartesian plane (`(0, 0)` at the
-//! bottom-left of the page, units in points), and produces a compact
-//! [`VectorPage`] IR ready for direct conversion into host `Graphics` primitives.
+//! Walks each [`Page`]'s [`Frame`] tree directly, outlines glyphs via
+//! `ttf-parser` using lightweight generation-tracked caches (never pinning
+//! font byte buffers), extracts embedded SVGs via `usvg`, resolves non-zero
+//! winding rules for even-odd hosts, computes tight stroke/clip bounds via
+//! `kurbo`, and produces a [`VectorExport`] containing [`VectorPage`]s and any
+//! fidelity-degradation [`Diagnostic`] warnings.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
+use kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, QuadBez, Rect, Shape as _, Stroke, StrokeOpts};
 use ttf_parser::{GlyphId, OutlineBuilder};
-use typst::foundations::Smart;
+use typst::foundations::{Bytes, Smart};
 use typst::layout::{Abs, Axes, Frame, FrameItem, GroupItem, PageRanges, Ratio, Size, Transform};
 use typst::text::color::{glyph_frame, should_outline, GlyphFrameItem};
 use typst::text::{FontInstance, TextItem};
 use typst::visualize::{
-    Color, Curve, CurveItem, FillRule, FixedStroke, Geometry, Image, LineCap, LineJoin, Paint,
-    RatioOrAngle, Shape,
+    Color, Curve, CurveItem, FillRule, FixedStroke, Geometry, Image, ImageKind, LineCap, LineJoin,
+    Paint, RatioOrAngle, Shape,
 };
 use typst_layout::{Page, PagedDocument};
 use typst_svg::WebImage;
+use usvg::tiny_skia_path;
+
+use crate::diagnostics::{self, Diagnostic};
+use crate::winding;
+
+/// Upper bound on process-wide normalized glyph outline entries to bound
+/// memory growth in long-running sessions.
+const MAX_UNIT_GLYPH_ENTRIES: usize = 8192;
+
+/// Scale factor used to quantize linear transform components (`1e-6` precision)
+/// so floating-point noise never pollutes the glyph key space.
+const LINEAR_QUANT_SCALE: f64 = 1_000_000.0;
 
 /// RGBA color with components in `0.0..=1.0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,18 +59,22 @@ impl Rgba {
         }
     }
 
-    pub fn from_paint(paint: &Paint) -> Self {
+    fn from_paint(paint: &Paint, warnings: &mut DegradationWarnings) -> Self {
         match paint {
             Paint::Solid(color) => Self::from_color(color),
             Paint::Gradient(gradient) => {
+                warnings.gradient = true;
                 Self::from_color(&gradient.sample(RatioOrAngle::Ratio(Ratio::new(0.5))))
             }
-            Paint::Tiling(_) => Self {
-                r: 0.5,
-                g: 0.5,
-                b: 0.5,
-                a: 1.0,
-            },
+            Paint::Tiling(_) => {
+                warnings.tiling = true;
+                Self {
+                    r: 0.5,
+                    g: 0.5,
+                    b: 0.5,
+                    a: 1.0,
+                }
+            }
         }
     }
 }
@@ -88,6 +108,39 @@ impl From<FillRule> for WindingRule {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddedImageFormat {
+    Png,
+    Jpg,
+    Gif,
+    Webp,
+    Svg,
+}
+
+impl EmbeddedImageFormat {
+    fn from_extension(ext: &str) -> Self {
+        match ext {
+            "png" => Self::Png,
+            "jpg" | "jpeg" => Self::Jpg,
+            "gif" => Self::Gif,
+            "webp" => Self::Webp,
+            "svg" => Self::Svg,
+            _ => Self::Png,
+        }
+    }
+
+    /// Canonical format name accepted by Wolfram Language's `ImportByteArray`.
+    pub fn wl_format(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpg => "JPEG",
+            Self::Gif => "GIF",
+            Self::Webp => "WebP",
+            Self::Svg => "SVG",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StrokeStyle {
     pub color: Rgba,
@@ -115,60 +168,60 @@ pub struct Subpath {
     pub closed: bool,
 }
 
-impl Subpath {
-    fn transform(&self, ts: &Affine2D, bbox: &mut BBox) -> Self {
-        let start = ts.apply(self.start);
-        bbox.include(start);
-        let segments = self
-            .segments
-            .iter()
-            .map(|seg| match *seg {
-                Segment::Line(p) => {
-                    let tp = ts.apply(p);
-                    bbox.include(tp);
-                    Segment::Line(tp)
-                }
-                Segment::Cubic(c1, c2, p) => {
-                    let tc1 = ts.apply(c1);
-                    let tc2 = ts.apply(c2);
-                    let tp = ts.apply(p);
-                    bbox.include(tc1);
-                    bbox.include(tc2);
-                    bbox.include(tp);
-                    Segment::Cubic(tc1, tc2, tp)
-                }
-            })
-            .collect();
+/// Lightweight, non-owning key identifying a normalized unit-em glyph outline
+/// within a live font generation. Holds zero `Font` / byte-buffer references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnitGlyphKey {
+    pub font_gen: u64,
+    pub data_ptr: usize,
+    pub data_len: usize,
+    pub face_index: u32,
+    pub variations_hash: u64,
+    pub glyph_id: u16,
+}
+
+impl UnitGlyphKey {
+    fn from_instance(font: &FontInstance, glyph_id: u16) -> Self {
+        let mut hasher = DefaultHasher::new();
+        font.variations().hash(&mut hasher);
+        let base = font.font();
         Self {
-            start,
-            segments,
-            closed: self.closed,
+            font_gen: crate::fonts::font_generation(),
+            data_ptr: base.data().as_ptr() as usize,
+            data_len: base.data().len(),
+            face_index: base.index(),
+            variations_hash: hasher.finish(),
+            glyph_id,
         }
     }
 }
 
-/// Identifies a specific glyph under a specific 2x2 linear transformation
-/// (font size + rotation/skew), invariant to page translation `(tx, ty)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Identifies a specific glyph under a specific quantized 2x2 linear
+/// transformation, invariant to page translation `(tx, ty)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
-    pub font: FontInstance,
-    pub glyph_id: u16,
-    /// IEEE-754 bit representations of `[sx, ky, kx, sy]` (with `-0.0` normalized to `+0.0`).
-    pub linear_bits: [u64; 4],
+    pub unit: UnitGlyphKey,
+    /// Quantized `[sx, ky, kx, sy]` scaled by [`LINEAR_QUANT_SCALE`].
+    pub linear_q: [i64; 4],
 }
 
 impl GlyphKey {
-    fn new(font: FontInstance, glyph_id: u16, affine: &Affine2D) -> Self {
-        let norm = |v: f64| if v == 0.0 { 0.0_f64.to_bits() } else { v.to_bits() };
+    fn new(unit: UnitGlyphKey, linear: Affine) -> Self {
+        let [sx, ky, kx, sy, _, _] = linear.as_coeffs();
+        let q = |v: f64| -> i64 {
+            if !v.is_finite() {
+                return 0;
+            }
+            let scaled = (v * LINEAR_QUANT_SCALE).round();
+            if scaled == 0.0 {
+                0
+            } else {
+                scaled.clamp(i64::MIN as f64, i64::MAX as f64) as i64
+            }
+        };
         Self {
-            font,
-            glyph_id,
-            linear_bits: [
-                norm(affine.sx),
-                norm(affine.ky),
-                norm(affine.kx),
-                norm(affine.sy),
-            ],
+            unit,
+            linear_q: [q(sx), q(ky), q(kx), q(sy)],
         }
     }
 }
@@ -183,31 +236,32 @@ pub struct GlyphInstances {
     pub positions: Vec<[f64; 2]>,
 }
 
-/// Cached linearly-transformed glyph outline at origin `(0, 0)` along with its
-/// local bounding box `[x_min, x_max, y_min, y_max]`.
-#[derive(Debug, Clone, PartialEq)]
+/// Scaled glyph outline cached for the lifetime of one [`export_vector`] call.
+#[derive(Debug, Clone)]
 struct ScaledGlyph {
+    bez_path: Arc<BezPath>,
     subpaths: Arc<Vec<Subpath>>,
-    local_bbox: [f64; 4],
+    fill_bbox: Rect,
 }
 
-type UnitGlyphMap = HashMap<(FontInstance, u16), Option<Arc<Vec<Subpath>>>>;
-type ScaledGlyphMap = HashMap<GlyphKey, Option<ScaledGlyph>>;
+type UnitGlyphMap = HashMap<UnitGlyphKey, Option<Arc<Vec<Subpath>>>>;
+
+static CACHE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 static UNIT_GLYPH_CACHE: LazyLock<RwLock<UnitGlyphMap>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-static SCALED_GLYPH_CACHE: LazyLock<RwLock<ScaledGlyphMap>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+/// Current glyph-cache generation, incremented every time [`clear_glyph_cache`] runs.
+pub fn cache_generation() -> u64 {
+    CACHE_GENERATION.load(Ordering::Acquire)
+}
 
-/// Drop all cached unit and linearly-scaled glyph outlines.
+/// Drop all cached unit glyph outlines and advance [`cache_generation`].
 pub fn clear_glyph_cache() {
     if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
         guard.clear();
     }
-    if let Ok(mut guard) = SCALED_GLYPH_CACHE.write() {
-        guard.clear();
-    }
+    CACHE_GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
 /// A host-neutral vector/raster drawing primitive on a [`VectorPage`].
@@ -219,7 +273,7 @@ pub enum VectorPrimitive {
         fill: Option<Rgba>,
         stroke: Option<StrokeStyle>,
     },
-    /// One or more compound paths (e.g. a `Shape`) sharing the same fill and stroke.
+    /// One or more compound paths (e.g. a `Shape` or flattened SVG path).
     Paths {
         paths: Vec<Vec<Subpath>>,
         fill: Option<Rgba>,
@@ -232,30 +286,85 @@ pub enum VectorPrimitive {
         end: [f64; 2],
         stroke: StrokeStyle,
     },
-    /// An embedded image placed inside the axis-aligned box `[min, max]`.
+    /// An embedded image with local `[0..size[0]] × [0..size[1]]` Y-Up frame
+    /// and column-major affine `[sx, ky, kx, sy, tx, ty]` mapping into page points.
     Image {
-        format: &'static str,
-        data: Vec<u8>,
-        min: [f64; 2],
-        max: [f64; 2],
+        format: EmbeddedImageFormat,
+        data: Bytes,
+        size: [f64; 2],
+        transform: [f64; 6],
+    },
+    /// Axis-aligned rectangular clip region enclosing nested primitives.
+    Clip {
+        bounds: [[f64; 2]; 2],
+        children: Vec<VectorPrimitive>,
     },
 }
 
 /// One exported page in Y-Up point coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorPage {
-    pub width: f64,
-    pub height: f64,
-    pub background: Option<Rgba>,
-    /// Union of the page box `[[0, width], [0, height]]` and all primitive points.
-    pub plot_range: [[f64; 2]; 2],
+    /// Nominal Typst page `[width, height]` in points.
+    pub size: [f64; 2],
+    /// Union of the page box `[[0, width], [0, height]]` and all visible content
+    /// (including stroke envelopes and clipped children), `[[x_min, x_max], [y_min, y_max]]`.
+    pub bounds: [[f64; 2]; 2],
     pub primitives: Vec<VectorPrimitive>,
 }
 
-/// Export selected pages of a [`PagedDocument`] into [`VectorPage`]s.
-pub fn export_graphics(document: &PagedDocument, pages: Option<&PageRanges>) -> Vec<VectorPage> {
+/// Complete vector export output plus any fidelity-degradation warnings.
+#[derive(Debug, Clone)]
+pub struct VectorExport {
+    pub pages: Vec<VectorPage>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Default)]
+struct DegradationWarnings {
+    gradient: bool,
+    tiling: bool,
+    dash_phase: bool,
+    non_rect_clip: bool,
+    svg_feature: bool,
+}
+
+impl DegradationWarnings {
+    fn into_diagnostics(self) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
+        if self.gradient {
+            out.push(diagnostics::warning(
+                "Gradient fills/strokes are approximated by midpoint solid colors in Graphics output.",
+            ));
+        }
+        if self.tiling {
+            out.push(diagnostics::warning(
+                "Tiling patterns are approximated by solid gray in Graphics output.",
+            ));
+        }
+        if self.dash_phase {
+            out.push(diagnostics::warning(
+                "Non-zero stroke dash phases are ignored in Graphics output.",
+            ));
+        }
+        if self.non_rect_clip {
+            out.push(diagnostics::warning(
+                "Non-rectangular clip paths are approximated by their axis-aligned bounding box in Graphics output.",
+            ));
+        }
+        if self.svg_feature {
+            out.push(diagnostics::warning(
+                "Unsupported SVG features (filters/masks) inside embedded SVGs are ignored in Graphics output.",
+            ));
+        }
+        out
+    }
+}
+
+/// Export selected pages of a [`PagedDocument`] into [`VectorPage`]s plus
+/// fidelity-degradation warnings.
+pub fn export_vector(document: &PagedDocument, pages: Option<&PageRanges>) -> VectorExport {
     let mut extractor = Extractor::default();
-    document
+    let exported_pages = document
         .pages()
         .iter()
         .enumerate()
@@ -265,110 +374,77 @@ pub fn export_graphics(document: &PagedDocument, pages: Option<&PageRanges>) -> 
             })
         })
         .map(|(_, page)| extractor.extract_page(page))
-        .collect()
-}
+        .collect();
 
-/// 2D affine matrix in point coordinates:
-/// `x' = sx * x + kx * y + tx`
-/// `y' = ky * x + sy * y + ty`
-#[derive(Debug, Clone, Copy)]
-struct Affine2D {
-    sx: f64,
-    ky: f64,
-    kx: f64,
-    sy: f64,
-    tx: f64,
-    ty: f64,
-}
-
-impl Affine2D {
-    fn from_typst(ts: Transform) -> Self {
-        Self {
-            sx: ts.sx.get(),
-            ky: ts.ky.get(),
-            kx: ts.kx.get(),
-            sy: ts.sy.get(),
-            tx: ts.tx.to_pt(),
-            ty: ts.ty.to_pt(),
-        }
-    }
-
-    fn linear_only(&self) -> Self {
-        Self {
-            sx: self.sx,
-            ky: self.ky,
-            kx: self.kx,
-            sy: self.sy,
-            tx: 0.0,
-            ty: 0.0,
-        }
-    }
-
-    fn apply(&self, p: [f64; 2]) -> [f64; 2] {
-        [
-            self.sx * p[0] + self.kx * p[1] + self.tx,
-            self.ky * p[0] + self.sy * p[1] + self.ty,
-        ]
-    }
-
-    /// Average scale factor for stroke widths under this transform.
-    fn stroke_scale(&self) -> f64 {
-        let sx = (self.sx * self.sx + self.ky * self.ky).sqrt();
-        let sy = (self.kx * self.kx + self.sy * self.sy).sqrt();
-        0.5 * (sx + sy)
+    VectorExport {
+        pages: exported_pages,
+        diagnostics: extractor.warnings.into_diagnostics(),
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-struct BBox {
-    x_min: f64,
-    x_max: f64,
-    y_min: f64,
-    y_max: f64,
+struct BoundsTracker {
+    rect: Option<Rect>,
 }
 
-impl BBox {
+impl BoundsTracker {
     fn empty() -> Self {
-        Self {
-            x_min: f64::INFINITY,
-            x_max: f64::NEG_INFINITY,
-            y_min: f64::INFINITY,
-            y_max: f64::NEG_INFINITY,
-        }
+        Self { rect: None }
     }
 
     fn from_page(width: f64, height: f64) -> Self {
         Self {
-            x_min: 0.0,
-            x_max: width,
-            y_min: 0.0,
-            y_max: height,
+            rect: Some(Rect::new(0.0, 0.0, width, height)),
         }
     }
 
-    fn include(&mut self, p: [f64; 2]) {
-        if p[0].is_finite() && p[1].is_finite() {
-            self.x_min = self.x_min.min(p[0]);
-            self.x_max = self.x_max.max(p[0]);
-            self.y_min = self.y_min.min(p[1]);
-            self.y_max = self.y_max.max(p[1]);
+    fn include_point(&mut self, p: Point) {
+        if p.x.is_finite() && p.y.is_finite() {
+            self.rect = Some(match self.rect {
+                Some(r) => r.union_pt(p),
+                None => Rect::from_points(p, p),
+            });
         }
     }
 
-    fn include_translated(&mut self, local_bbox: [f64; 4], tx: f64, ty: f64) {
-        self.include([local_bbox[0] + tx, local_bbox[2] + ty]);
-        self.include([local_bbox[1] + tx, local_bbox[3] + ty]);
+    fn include_rect(&mut self, r: Rect) {
+        let r = r.abs();
+        if r.x0.is_finite() && r.y0.is_finite() && r.x1.is_finite() && r.y1.is_finite() {
+            self.rect = Some(match self.rect {
+                Some(cur) => cur.union(r),
+                None => r,
+            });
+        }
+    }
+
+    fn include_path(&mut self, path: &BezPath, stroke: Option<&StrokeStyle>) {
+        if path.elements().is_empty() {
+            return;
+        }
+        let bbox = match stroke.filter(|s| s.thickness > 0.0) {
+            Some(style) => stroke_bounding_box(path, style),
+            None => path.bounding_box(),
+        };
+        self.include_rect(bbox);
+    }
+
+    fn into_bounds(self) -> [[f64; 2]; 2] {
+        match self.rect {
+            Some(r) => [[r.x0, r.x1], [r.y0, r.y1]],
+            None => [[0.0, 1.0], [0.0, 1.0]],
+        }
     }
 }
 
 #[derive(Default)]
 struct Extractor {
-    /// Per-extraction L1 cache over [`SCALED_GLYPH_CACHE`] to avoid lock traffic
-    /// on repeated glyphs within the same document.
+    /// Per-extraction L1 cache of scaled glyph contours at origin `(0, 0)`.
     local_scaled_cache: HashMap<GlyphKey, Option<ScaledGlyph>>,
-    /// Maps a [`GlyphKey`] to its slot inside the currently active trailing
-    /// [`VectorPrimitive::Glyphs`] on the current page.
+    /// Per-extraction cache of stroked glyph origin bounding boxes `[dx0, dy0, dx1, dy1]`.
+    stroked_glyph_bboxes: HashMap<(GlyphKey, u64), Rect>,
+    /// Maps a [`GlyphKey`] to its slot inside the active trailing [`VectorPrimitive::Glyphs`].
     active_glyph_indices: HashMap<GlyphKey, usize>,
+    warnings: DegradationWarnings,
 }
 
 impl Extractor {
@@ -380,34 +456,35 @@ impl Extractor {
 
         let background = match &page.fill {
             Smart::Auto => None,
-            Smart::Custom(fill) => fill.as_ref().map(Rgba::from_paint),
+            Smart::Custom(fill) => fill.as_ref().map(|p| Rgba::from_paint(p, &mut self.warnings)),
         };
 
-        // Flip from Typst's top-left Y-Down frame to WL's bottom-left Y-Up frame:
+        // Flip from Typst's top-left Y-Down frame to Y-Up Cartesian points:
         // (x, y) -> (x, height - y).
         let root_ts = Transform::translate(Abs::zero(), size.y)
             .pre_concat(Transform::scale(Ratio::one(), -Ratio::one()));
 
-        let mut bbox = BBox::from_page(width, height);
+        let mut bbox = BoundsTracker::from_page(width, height);
         let mut primitives = Vec::new();
 
         if let Some(bg) = background {
-            let rect = rect_subpath(size, &Affine2D::from_typst(root_ts), &mut bbox);
-            primitives.push(VectorPrimitive::Paths {
-                paths: vec![vec![rect]],
-                fill: Some(bg),
-                stroke: None,
-                winding: WindingRule::NonZero,
-            });
+            let rect_path = rect_bez_path(size, affine_from_typst(root_ts));
+            let subpaths = bez_path_to_subpaths(&rect_path);
+            if !subpaths.is_empty() {
+                primitives.push(VectorPrimitive::Paths {
+                    paths: vec![subpaths],
+                    fill: Some(bg),
+                    stroke: None,
+                    winding: WindingRule::NonZero,
+                });
+            }
         }
 
         self.extract_frame(&page.frame, root_ts, &mut bbox, &mut primitives);
 
         VectorPage {
-            width,
-            height,
-            background,
-            plot_range: [[bbox.x_min, bbox.x_max], [bbox.y_min, bbox.y_max]],
+            size: [width, height],
+            bounds: bbox.into_bounds(),
             primitives,
         }
     }
@@ -416,7 +493,7 @@ impl Extractor {
         &mut self,
         frame: &Frame,
         ts: Transform,
-        bbox: &mut BBox,
+        bbox: &mut BoundsTracker,
         primitives: &mut Vec<VectorPrimitive>,
     ) {
         for (pos, item) in frame.items() {
@@ -437,11 +514,41 @@ impl Extractor {
         &mut self,
         group: &GroupItem,
         ts: Transform,
-        bbox: &mut BBox,
+        bbox: &mut BoundsTracker,
         primitives: &mut Vec<VectorPrimitive>,
     ) {
         let group_ts = ts.pre_concat(group.transform);
-        self.extract_frame(&group.frame, group_ts, bbox, primitives);
+        let Some(ref clip_curve) = group.clip else {
+            self.extract_frame(&group.frame, group_ts, bbox, primitives);
+            return;
+        };
+
+        self.active_glyph_indices.clear();
+
+        let clip_bez = curve_to_bez_path(clip_curve, affine_from_typst(group_ts));
+        let clip_rect = clip_bez.bounding_box().abs();
+        if !is_axis_aligned_rect(&clip_bez) {
+            self.warnings.non_rect_clip = true;
+        }
+
+        let mut child_primitives = Vec::new();
+        let mut child_bbox = BoundsTracker::empty();
+        self.extract_frame(&group.frame, group_ts, &mut child_bbox, &mut child_primitives);
+        self.active_glyph_indices.clear();
+
+        if let Some(cb) = child_bbox.rect {
+            let visible = cb.intersect(clip_rect);
+            if visible.width() > 0.0 && visible.height() > 0.0 {
+                bbox.include_rect(visible);
+            }
+        }
+
+        if !child_primitives.is_empty() && clip_rect.width() > 0.0 && clip_rect.height() > 0.0 {
+            primitives.push(VectorPrimitive::Clip {
+                bounds: [[clip_rect.x0, clip_rect.x1], [clip_rect.y0, clip_rect.y1]],
+                children: child_primitives,
+            });
+        }
     }
 
     fn push_glyph_instance(
@@ -477,7 +584,7 @@ impl Extractor {
         } else {
             let idx = glyphs.len();
             glyphs.push(GlyphInstances {
-                key: key.clone(),
+                key,
                 subpaths,
                 positions: vec![pos],
             });
@@ -489,24 +596,24 @@ impl Extractor {
         &mut self,
         text: &TextItem,
         ts: Transform,
-        bbox: &mut BBox,
+        bbox: &mut BoundsTracker,
         primitives: &mut Vec<VectorPrimitive>,
     ) {
-        // Font glyph outlines are defined in a Y-Up coordinate system, whereas
-        // Typst's local text frame is Y-Down. Flip Y locally so that composed
-        // with `root_ts` (which also flips Y), the glyph outlines end up Y-Up.
+        // Font outlines are defined in Y-Up, whereas Typst's local text frame
+        // is Y-Down. Flip Y locally so composed with `root_ts`, glyphs end up Y-Up.
         let text_ts = ts.pre_concat(Transform::scale(Ratio::one(), -Ratio::one()));
         let font_size_pt = text.size.to_pt();
-        let text_affine = Affine2D::from_typst(text_ts);
+        let text_affine = affine_from_typst(text_ts);
 
-        let fill = Some(Rgba::from_paint(&text.fill));
+        let fill = Some(Rgba::from_paint(&text.fill, &mut self.warnings));
         let stroke = text
             .stroke
             .as_ref()
-            .map(|s| convert_stroke(s, text_affine.stroke_scale()));
+            .map(|s| convert_stroke(s, affine_stroke_scale(text_affine), &mut self.warnings));
 
         let scale_ts = Transform::scale(Ratio::new(font_size_pt), Ratio::new(font_size_pt));
-        let linear_affine = Affine2D::from_typst(text_ts.pre_concat(scale_ts)).linear_only();
+        let linear_affine =
+            strip_translation(affine_from_typst(text_ts.pre_concat(scale_ts)));
 
         let mut x = Abs::zero();
         let mut y = Abs::zero();
@@ -517,17 +624,19 @@ impl Extractor {
             let y_offset = y + glyph.y_offset.at(text.size);
 
             if should_outline(&text.font, id) {
-                let key = GlyphKey::new(text.font.clone(), id.0, &linear_affine);
-                if let Some(scaled) = self.scaled_glyph(&key, &linear_affine) {
-                    let pos = text_affine.apply([x_offset.to_pt(), y_offset.to_pt()]);
-                    bbox.include_translated(scaled.local_bbox, pos[0], pos[1]);
+                let unit_key = UnitGlyphKey::from_instance(&text.font, id.0);
+                let key = GlyphKey::new(unit_key, linear_affine);
+                if let Some(scaled) = self.scaled_glyph(&text.font, key, linear_affine) {
+                    let pos = text_affine * Point::new(x_offset.to_pt(), y_offset.to_pt());
+                    let glyph_bbox = self.glyph_origin_bbox(key, &scaled, stroke.as_ref());
+                    bbox.include_rect(glyph_bbox + pos.to_vec2());
                     self.push_glyph_instance(
                         primitives,
                         fill,
                         &stroke,
                         key,
                         scaled.subpaths,
-                        pos,
+                        [pos.x, pos.y],
                     );
                 }
             } else if let Some(gframe) = glyph_frame(&text.font, id.0) {
@@ -552,64 +661,48 @@ impl Extractor {
         }
     }
 
-    fn scaled_glyph(&mut self, key: &GlyphKey, linear: &Affine2D) -> Option<ScaledGlyph> {
-        if let Some(cached) = self.local_scaled_cache.get(key) {
-            return cached.clone();
+    fn glyph_origin_bbox(
+        &mut self,
+        key: GlyphKey,
+        scaled: &ScaledGlyph,
+        stroke: Option<&StrokeStyle>,
+    ) -> Rect {
+        let Some(style) = stroke.filter(|s| s.thickness > 0.0) else {
+            return scaled.fill_bbox;
+        };
+        let s_key = (key, stroke_hash(style));
+        if let Some(&cached) = self.stroked_glyph_bboxes.get(&s_key) {
+            return cached;
         }
-        if let Ok(guard) = SCALED_GLYPH_CACHE.read() {
-            if let Some(cached) = guard.get(key) {
-                self.local_scaled_cache.insert(key.clone(), cached.clone());
-                return cached.clone();
-            }
-        }
-
-        let unit = Self::outline_glyph_unit(&key.font, GlyphId(key.glyph_id));
-        let computed = unit.and_then(|unit_subpaths| {
-            let mut local_bbox = BBox::empty();
-            let transformed: Vec<Subpath> = unit_subpaths
-                .iter()
-                .map(|sp| sp.transform(linear, &mut local_bbox))
-                .collect();
-            (!transformed.is_empty()).then(|| ScaledGlyph {
-                subpaths: Arc::new(transformed),
-                local_bbox: [
-                    local_bbox.x_min,
-                    local_bbox.x_max,
-                    local_bbox.y_min,
-                    local_bbox.y_max,
-                ],
-            })
-        });
-
-        if let Ok(mut guard) = SCALED_GLYPH_CACHE.write() {
-            guard.insert(key.clone(), computed.clone());
-        }
-        self.local_scaled_cache.insert(key.clone(), computed.clone());
-        computed
+        let stroked = stroke_bounding_box(&scaled.bez_path, style);
+        self.stroked_glyph_bboxes.insert(s_key, stroked);
+        stroked
     }
 
-    fn outline_glyph_unit(font: &FontInstance, id: GlyphId) -> Option<Arc<Vec<Subpath>>> {
-        let key = (font.clone(), id.0);
-        if let Ok(guard) = UNIT_GLYPH_CACHE.read() {
-            if let Some(cached) = guard.get(&key) {
-                return cached.clone();
-            }
+    fn scaled_glyph(
+        &mut self,
+        font: &FontInstance,
+        key: GlyphKey,
+        linear: Affine,
+    ) -> Option<ScaledGlyph> {
+        if let Some(cached) = self.local_scaled_cache.get(&key) {
+            return cached.clone();
         }
-
-        let computed = (|| {
-            let upem = font.units_per_em();
-            if upem <= 0.0 {
+        let computed = outline_glyph_unit(font, key.unit).and_then(|unit_subpaths| {
+            let mut bez_path = subpaths_to_bez_path(&unit_subpaths);
+            bez_path.apply_affine(linear);
+            let subpaths = bez_path_to_subpaths(&bez_path);
+            if subpaths.is_empty() {
                 return None;
             }
-            let mut builder = PathBuilder::new(1.0 / upem);
-            font.ttf().outline_glyph(id, &mut builder)?;
-            let subpaths = builder.finish();
-            (!subpaths.is_empty()).then(|| Arc::new(subpaths))
-        })();
-
-        if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
-            guard.insert(key, computed.clone());
-        }
+            let fill_bbox = bez_path.bounding_box();
+            Some(ScaledGlyph {
+                bez_path: Arc::new(bez_path),
+                subpaths: Arc::new(subpaths),
+                fill_bbox,
+            })
+        });
+        self.local_scaled_cache.insert(key, computed.clone());
         computed
     }
 
@@ -617,16 +710,19 @@ impl Extractor {
         &mut self,
         shape: &Shape,
         ts: Transform,
-        bbox: &mut BBox,
+        bbox: &mut BoundsTracker,
         primitives: &mut Vec<VectorPrimitive>,
     ) {
         self.active_glyph_indices.clear();
-        let fill = shape.fill.as_ref().map(Rgba::from_paint);
-        let affine = Affine2D::from_typst(ts);
+        let fill = shape
+            .fill
+            .as_ref()
+            .map(|p| Rgba::from_paint(p, &mut self.warnings));
+        let affine = affine_from_typst(ts);
         let stroke = shape
             .stroke
             .as_ref()
-            .map(|s| convert_stroke(s, affine.stroke_scale()));
+            .map(|s| convert_stroke(s, affine_stroke_scale(affine), &mut self.warnings));
 
         if fill.is_none() && stroke.is_none() {
             return;
@@ -635,24 +731,23 @@ impl Extractor {
         match &shape.geometry {
             Geometry::Line(end) => {
                 if let Some(stroke) = stroke {
-                    let start = affine.apply([0.0, 0.0]);
-                    let end = affine.apply([end.x.to_pt(), end.y.to_pt()]);
-                    bbox.include(start);
-                    bbox.include(end);
-                    primitives.push(VectorPrimitive::Line { start, end, stroke });
+                    let start_pt = affine * Point::ZERO;
+                    let end_pt = affine * Point::new(end.x.to_pt(), end.y.to_pt());
+                    let mut line_bez = BezPath::new();
+                    line_bez.move_to(start_pt);
+                    line_bez.line_to(end_pt);
+                    bbox.include_path(&line_bez, Some(&stroke));
+                    primitives.push(VectorPrimitive::Line {
+                        start: [start_pt.x, start_pt.y],
+                        end: [end_pt.x, end_pt.y],
+                        stroke,
+                    });
                 }
             }
             Geometry::Rect(size) => {
-                let subpath = rect_subpath(*size, &affine, bbox);
-                primitives.push(VectorPrimitive::Paths {
-                    paths: vec![vec![subpath]],
-                    fill,
-                    stroke,
-                    winding: shape.fill_rule.into(),
-                });
-            }
-            Geometry::Curve(curve) => {
-                let subpaths = convert_curve(curve, &affine, bbox);
+                let bez = rect_bez_path(*size, affine);
+                bbox.include_path(&bez, stroke.as_ref());
+                let subpaths = bez_path_to_subpaths(&bez);
                 if !subpaths.is_empty() {
                     primitives.push(VectorPrimitive::Paths {
                         paths: vec![subpaths],
@@ -662,6 +757,18 @@ impl Extractor {
                     });
                 }
             }
+            Geometry::Curve(curve) => {
+                let bez = curve_to_bez_path(curve, affine);
+                bbox.include_path(&bez, stroke.as_ref());
+                let subpaths = bez_path_to_subpaths(&bez);
+                push_resolved_paths(
+                    primitives,
+                    subpaths,
+                    fill,
+                    stroke,
+                    shape.fill_rule.into(),
+                );
+            }
         }
     }
 
@@ -670,46 +777,619 @@ impl Extractor {
         image: &Image,
         size: &Axes<Abs>,
         ts: Transform,
-        bbox: &mut BBox,
+        bbox: &mut BoundsTracker,
         primitives: &mut Vec<VectorPrimitive>,
     ) {
         self.active_glyph_indices.clear();
-        let web = WebImage::new(image);
-        let affine = Affine2D::from_typst(ts);
-        let corners = [
-            affine.apply([0.0, 0.0]),
-            affine.apply([size.x.to_pt(), 0.0]),
-            affine.apply([size.x.to_pt(), size.y.to_pt()]),
-            affine.apply([0.0, size.y.to_pt()]),
-        ];
-        let mut x_min = f64::INFINITY;
-        let mut x_max = f64::NEG_INFINITY;
-        let mut y_min = f64::INFINITY;
-        let mut y_max = f64::NEG_INFINITY;
-        for c in corners {
-            bbox.include(c);
-            x_min = x_min.min(c[0]);
-            x_max = x_max.max(c[0]);
-            y_min = y_min.min(c[1]);
-            y_max = y_max.max(c[1]);
+        let w = size.x.to_pt().max(1e-6);
+        let h = size.y.to_pt().max(1e-6);
+
+        if let ImageKind::Svg(svg_img) = image.kind() {
+            let tree = svg_img.tree();
+            let tree_size = tree.size();
+            let sx = w / f64::from(tree_size.width()).max(1e-6);
+            let sy = h / f64::from(tree_size.height()).max(1e-6);
+            let canvas_to_page = affine_from_typst(ts) * Affine::scale_non_uniform(sx, sy);
+            self.extract_usvg_group(tree.root(), canvas_to_page, 1.0, bbox, primitives);
+            return;
         }
+
+        // Raster / PDF fallback: orient local `[0..w] × [0..h]` image frame as Y-Up
+        // so `(0, 0)` corresponds to Bottom-Left of `Inset`.
+        let img_ts = ts
+            .pre_concat(Transform::translate(Abs::zero(), size.y))
+            .pre_concat(Transform::scale(Ratio::one(), -Ratio::one()));
+        let img_affine = affine_from_typst(img_ts);
+        include_transformed_box(w, h, img_affine, bbox);
+
+        let web = WebImage::new(image);
         primitives.push(VectorPrimitive::Image {
-            format: web.format.extension(),
-            data: web.data.to_vec(),
-            min: [x_min, y_min],
-            max: [x_max, y_max],
+            format: EmbeddedImageFormat::from_extension(web.format.extension()),
+            data: web.data,
+            size: [w, h],
+            transform: img_affine.as_coeffs(),
         });
+    }
+
+    fn extract_usvg_group(
+        &mut self,
+        group: &usvg::Group,
+        canvas_to_page: Affine,
+        parent_opacity: f64,
+        bbox: &mut BoundsTracker,
+        primitives: &mut Vec<VectorPrimitive>,
+    ) {
+        if group.mask().is_some() || !group.filters().is_empty() {
+            self.warnings.svg_feature = true;
+        }
+        let opacity = (parent_opacity * f64::from(group.opacity().get())).clamp(0.0, 1.0);
+        if opacity <= 0.0 {
+            return;
+        }
+
+        if let Some(clip) = group.clip_path() {
+            if let Some((clip_rect, is_rect)) = usvg_clip_rect(clip, canvas_to_page) {
+                if !is_rect {
+                    self.warnings.non_rect_clip = true;
+                }
+                let mut child_primitives = Vec::new();
+                let mut child_bbox = BoundsTracker::empty();
+                self.extract_usvg_children(
+                    group.children(),
+                    canvas_to_page,
+                    opacity,
+                    &mut child_bbox,
+                    &mut child_primitives,
+                );
+                if let Some(cb) = child_bbox.rect {
+                    let visible = cb.intersect(clip_rect);
+                    if visible.width() > 0.0 && visible.height() > 0.0 {
+                        bbox.include_rect(visible);
+                    }
+                }
+                if !child_primitives.is_empty()
+                    && clip_rect.width() > 0.0
+                    && clip_rect.height() > 0.0
+                {
+                    primitives.push(VectorPrimitive::Clip {
+                        bounds: [[clip_rect.x0, clip_rect.x1], [clip_rect.y0, clip_rect.y1]],
+                        children: child_primitives,
+                    });
+                }
+                return;
+            }
+        }
+
+        self.extract_usvg_children(group.children(), canvas_to_page, opacity, bbox, primitives);
+    }
+
+    fn extract_usvg_children(
+        &mut self,
+        children: &[usvg::Node],
+        canvas_to_page: Affine,
+        opacity: f64,
+        bbox: &mut BoundsTracker,
+        primitives: &mut Vec<VectorPrimitive>,
+    ) {
+        for node in children {
+            match node {
+                usvg::Node::Group(g) => {
+                    self.extract_usvg_group(g, canvas_to_page, opacity, bbox, primitives);
+                }
+                usvg::Node::Path(path) => {
+                    if !path.is_visible() {
+                        continue;
+                    }
+                    let path_affine = canvas_to_page * affine_from_usvg(path.abs_transform());
+                    let bez = usvg_path_to_bez(path.data(), path_affine);
+                    let fill = path
+                        .fill()
+                        .map(|f| usvg_paint_rgba(f.paint(), f.opacity().get(), opacity, &mut self.warnings));
+                    let fill_rule = path
+                        .fill()
+                        .map_or(WindingRule::NonZero, |f| usvg_fill_rule(f.rule()));
+                    let stroke = path.stroke().map(|s| {
+                        usvg_stroke(s, affine_stroke_scale(path_affine), opacity, &mut self.warnings)
+                    });
+                    if fill.is_none() && stroke.is_none() {
+                        continue;
+                    }
+                    bbox.include_path(&bez, stroke.as_ref());
+                    let subpaths = bez_path_to_subpaths(&bez);
+                    push_resolved_paths(primitives, subpaths, fill, stroke, fill_rule);
+                }
+                usvg::Node::Text(text) => {
+                    self.extract_usvg_group(text.flattened(), canvas_to_page, opacity, bbox, primitives);
+                }
+                usvg::Node::Image(img) => {
+                    if !img.is_visible() {
+                        continue;
+                    }
+                    let img_size = img.size();
+                    let iw = f64::from(img_size.width()).max(1e-6);
+                    let ih = f64::from(img_size.height()).max(1e-6);
+                    let img_to_canvas = affine_from_usvg(img.abs_transform());
+                    match img.kind() {
+                        usvg::ImageKind::SVG(nested) => {
+                            let n_size = nested.size();
+                            let nested_affine = canvas_to_page
+                                * img_to_canvas
+                                * Affine::scale_non_uniform(
+                                    iw / f64::from(n_size.width()).max(1e-6),
+                                    ih / f64::from(n_size.height()).max(1e-6),
+                                );
+                            self.extract_usvg_group(
+                                nested.root(),
+                                nested_affine,
+                                opacity,
+                                bbox,
+                                primitives,
+                            );
+                        }
+                        usvg::ImageKind::JPEG(bytes)
+                        | usvg::ImageKind::PNG(bytes)
+                        | usvg::ImageKind::GIF(bytes)
+                        | usvg::ImageKind::WEBP(bytes) => {
+                            let format = match img.kind() {
+                                usvg::ImageKind::JPEG(_) => EmbeddedImageFormat::Jpg,
+                                usvg::ImageKind::PNG(_) => EmbeddedImageFormat::Png,
+                                usvg::ImageKind::GIF(_) => EmbeddedImageFormat::Gif,
+                                usvg::ImageKind::WEBP(_) => EmbeddedImageFormat::Webp,
+                                usvg::ImageKind::SVG(_) => unreachable!(),
+                            };
+                            let local_flip =
+                                Affine::translate((0.0, ih)) * Affine::scale_non_uniform(1.0, -1.0);
+                            let page_affine = canvas_to_page * img_to_canvas * local_flip;
+                            include_transformed_box(iw, ih, page_affine, bbox);
+                            struct ArcBytes(Arc<Vec<u8>>);
+                            impl AsRef<[u8]> for ArcBytes {
+                                fn as_ref(&self) -> &[u8] {
+                                    &self.0
+                                }
+                            }
+                            primitives.push(VectorPrimitive::Image {
+                                format,
+                                data: Bytes::new(ArcBytes(Arc::clone(bytes))),
+                                size: [iw, ih],
+                                transform: page_affine.as_coeffs(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
-fn convert_stroke(stroke: &FixedStroke, scale: f64) -> StrokeStyle {
+fn outline_glyph_unit(font: &FontInstance, key: UnitGlyphKey) -> Option<Arc<Vec<Subpath>>> {
+    if let Ok(guard) = UNIT_GLYPH_CACHE.read() {
+        if let Some(cached) = guard.get(&key) {
+            return cached.clone();
+        }
+    }
+
+    let computed = (|| {
+        let upem = font.units_per_em();
+        if upem <= 0.0 {
+            return None;
+        }
+        let mut builder = BezOutlineBuilder::default();
+        font.ttf().outline_glyph(GlyphId(key.glyph_id), &mut builder)?;
+        let mut path = builder.0;
+        let inv_upem = 1.0 / upem;
+        path.apply_affine(Affine::scale(inv_upem));
+        let raw_subpaths = bez_path_to_subpaths(&path);
+        if raw_subpaths.is_empty() {
+            return None;
+        }
+        let resolved = winding::resolve_nonzero_subpaths(&raw_subpaths);
+        (!resolved.is_empty()).then(|| Arc::new(resolved))
+    })();
+
+    if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
+        if guard.len() >= MAX_UNIT_GLYPH_ENTRIES {
+            guard.clear();
+        }
+        guard.insert(key, computed.clone());
+    }
+    computed
+}
+
+fn push_resolved_paths(
+    primitives: &mut Vec<VectorPrimitive>,
+    subpaths: Vec<Subpath>,
+    fill: Option<Rgba>,
+    stroke: Option<StrokeStyle>,
+    winding: WindingRule,
+) {
+    if subpaths.is_empty() {
+        return;
+    }
+    if fill.is_some() && winding == WindingRule::NonZero {
+        let resolved = winding::resolve_nonzero_subpaths(&subpaths);
+        let modified = resolved != subpaths;
+        if modified {
+            if !resolved.is_empty() {
+                primitives.push(VectorPrimitive::Paths {
+                    paths: vec![resolved],
+                    fill,
+                    stroke: None,
+                    winding: WindingRule::EvenOdd,
+                });
+            }
+            if stroke.is_some() {
+                primitives.push(VectorPrimitive::Paths {
+                    paths: vec![subpaths],
+                    fill: None,
+                    stroke,
+                    winding,
+                });
+            }
+            return;
+        }
+    }
+    primitives.push(VectorPrimitive::Paths {
+        paths: vec![subpaths],
+        fill,
+        stroke,
+        winding,
+    });
+}
+
+fn affine_from_typst(ts: Transform) -> Affine {
+    Affine::new([
+        ts.sx.get(),
+        ts.ky.get(),
+        ts.kx.get(),
+        ts.sy.get(),
+        ts.tx.to_pt(),
+        ts.ty.to_pt(),
+    ])
+}
+
+fn affine_from_usvg(ts: tiny_skia_path::Transform) -> Affine {
+    Affine::new([
+        f64::from(ts.sx),
+        f64::from(ts.ky),
+        f64::from(ts.kx),
+        f64::from(ts.sy),
+        f64::from(ts.tx),
+        f64::from(ts.ty),
+    ])
+}
+
+fn strip_translation(affine: Affine) -> Affine {
+    let [sx, ky, kx, sy, _, _] = affine.as_coeffs();
+    Affine::new([sx, ky, kx, sy, 0.0, 0.0])
+}
+
+fn affine_stroke_scale(affine: Affine) -> f64 {
+    let [sx, ky, kx, sy, _, _] = affine.as_coeffs();
+    0.5 * (sx.hypot(ky) + kx.hypot(sy))
+}
+
+fn include_transformed_box(w: f64, h: f64, affine: Affine, bbox: &mut BoundsTracker) {
+    for pt in [
+        Point::new(0.0, 0.0),
+        Point::new(w, 0.0),
+        Point::new(w, h),
+        Point::new(0.0, h),
+    ] {
+        bbox.include_point(affine * pt);
+    }
+}
+
+fn stroke_hash(s: &StrokeStyle) -> u64 {
+    let mut h = DefaultHasher::new();
+    s.thickness.to_bits().hash(&mut h);
+    (s.cap as u8).hash(&mut h);
+    (s.join as u8).hash(&mut h);
+    s.miter_limit.to_bits().hash(&mut h);
+    h.finish()
+}
+
+fn stroke_bounding_box(path: &BezPath, style: &StrokeStyle) -> Rect {
+    let kstroke = Stroke {
+        width: style.thickness,
+        join: match style.join {
+            LineJoinStyle::Miter => Join::Miter,
+            LineJoinStyle::Round => Join::Round,
+            LineJoinStyle::Bevel => Join::Bevel,
+        },
+        miter_limit: style.miter_limit.max(1.0),
+        start_cap: match style.cap {
+            LineCapStyle::Butt => Cap::Butt,
+            LineCapStyle::Round => Cap::Round,
+            LineCapStyle::Square => Cap::Square,
+        },
+        end_cap: match style.cap {
+            LineCapStyle::Butt => Cap::Butt,
+            LineCapStyle::Round => Cap::Round,
+            LineCapStyle::Square => Cap::Square,
+        },
+        ..Stroke::default()
+    };
+    let outlined = kurbo::stroke(path.iter(), &kstroke, &StrokeOpts::default(), 0.25);
+    let r = outlined.bounding_box();
+    let fallback = path
+        .bounding_box()
+        .inflate(0.5 * style.thickness, 0.5 * style.thickness);
+    if !r.x0.is_finite() || !r.y0.is_finite() || (r.width() == 0.0 && r.height() == 0.0) {
+        fallback
+    } else {
+        r.union(fallback)
+    }
+}
+
+fn rect_bez_path(size: Size, affine: Affine) -> BezPath {
+    let mut bez = Rect::new(0.0, 0.0, size.x.to_pt(), size.y.to_pt()).to_path(0.1);
+    bez.apply_affine(affine);
+    bez
+}
+
+fn curve_to_bez_path(curve: &Curve, affine: Affine) -> BezPath {
+    let mut bez = BezPath::new();
+    for item in &curve.0 {
+        match *item {
+            CurveItem::Move(p) => bez.move_to(Point::new(p.x.to_pt(), p.y.to_pt())),
+            CurveItem::Line(p) => bez.line_to(Point::new(p.x.to_pt(), p.y.to_pt())),
+            CurveItem::Cubic(p1, p2, p3) => bez.curve_to(
+                Point::new(p1.x.to_pt(), p1.y.to_pt()),
+                Point::new(p2.x.to_pt(), p2.y.to_pt()),
+                Point::new(p3.x.to_pt(), p3.y.to_pt()),
+            ),
+            CurveItem::Close => bez.close_path(),
+        }
+    }
+    bez.apply_affine(affine);
+    bez
+}
+
+fn usvg_path_to_bez(path: &tiny_skia_path::Path, affine: Affine) -> BezPath {
+    let mut bez = BezPath::new();
+    for seg in path.segments() {
+        match seg {
+            tiny_skia_path::PathSegment::MoveTo(p) => {
+                bez.move_to(Point::new(f64::from(p.x), f64::from(p.y)));
+            }
+            tiny_skia_path::PathSegment::LineTo(p) => {
+                bez.line_to(Point::new(f64::from(p.x), f64::from(p.y)));
+            }
+            tiny_skia_path::PathSegment::QuadTo(p1, p2) => {
+                bez.quad_to(
+                    Point::new(f64::from(p1.x), f64::from(p1.y)),
+                    Point::new(f64::from(p2.x), f64::from(p2.y)),
+                );
+            }
+            tiny_skia_path::PathSegment::CubicTo(p1, p2, p3) => {
+                bez.curve_to(
+                    Point::new(f64::from(p1.x), f64::from(p1.y)),
+                    Point::new(f64::from(p2.x), f64::from(p2.y)),
+                    Point::new(f64::from(p3.x), f64::from(p3.y)),
+                );
+            }
+            tiny_skia_path::PathSegment::Close => bez.close_path(),
+        }
+    }
+    bez.apply_affine(affine);
+    bez
+}
+
+fn subpaths_to_bez_path(subpaths: &[Subpath]) -> BezPath {
+    let mut path = BezPath::new();
+    for sp in subpaths {
+        path.move_to(Point::new(sp.start[0], sp.start[1]));
+        for seg in &sp.segments {
+            match *seg {
+                Segment::Line(p) => path.line_to(Point::new(p[0], p[1])),
+                Segment::Cubic(c1, c2, p) => path.curve_to(
+                    Point::new(c1[0], c1[1]),
+                    Point::new(c2[0], c2[1]),
+                    Point::new(p[0], p[1]),
+                ),
+            }
+        }
+        if sp.closed {
+            path.close_path();
+        }
+    }
+    path
+}
+
+fn bez_path_to_subpaths(path: &BezPath) -> Vec<Subpath> {
+    let mut subpaths = Vec::new();
+    let mut current_start: Option<Point> = None;
+    let mut current_pos = Point::ZERO;
+    let mut segments: Vec<Segment> = Vec::new();
+
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => {
+                if let Some(start) = current_start.take() {
+                    if !segments.is_empty() {
+                        subpaths.push(Subpath {
+                            start: [start.x, start.y],
+                            segments: std::mem::take(&mut segments),
+                            closed: false,
+                        });
+                    }
+                }
+                current_start = Some(p);
+                current_pos = p;
+            }
+            PathEl::LineTo(p) => {
+                current_start.get_or_insert(current_pos);
+                if (p.x - current_pos.x).abs() > 1e-9 || (p.y - current_pos.y).abs() > 1e-9 {
+                    segments.push(Segment::Line([p.x, p.y]));
+                    current_pos = p;
+                }
+            }
+            PathEl::QuadTo(q1, p3) => {
+                current_start.get_or_insert(current_pos);
+                let c = QuadBez::new(current_pos, q1, p3).raise();
+                segments.push(Segment::Cubic(
+                    [c.p1.x, c.p1.y],
+                    [c.p2.x, c.p2.y],
+                    [c.p3.x, c.p3.y],
+                ));
+                current_pos = p3;
+            }
+            PathEl::CurveTo(c1, c2, p3) => {
+                current_start.get_or_insert(current_pos);
+                segments.push(Segment::Cubic([c1.x, c1.y], [c2.x, c2.y], [p3.x, p3.y]));
+                current_pos = p3;
+            }
+            PathEl::ClosePath => {
+                if let Some(start) = current_start.take() {
+                    if !segments.is_empty() {
+                        if (current_pos.x - start.x).abs() > 1e-9
+                            || (current_pos.y - start.y).abs() > 1e-9
+                        {
+                            segments.push(Segment::Line([start.x, start.y]));
+                        }
+                        subpaths.push(Subpath {
+                            start: [start.x, start.y],
+                            segments: std::mem::take(&mut segments),
+                            closed: true,
+                        });
+                    }
+                    current_pos = start;
+                }
+            }
+        }
+    }
+
+    if let Some(start) = current_start {
+        if !segments.is_empty() {
+            subpaths.push(Subpath {
+                start: [start.x, start.y],
+                segments,
+                closed: false,
+            });
+        }
+    }
+
+    subpaths
+}
+
+fn is_axis_aligned_rect(path: &BezPath) -> bool {
+    let subpaths = bez_path_to_subpaths(path);
+    let [sp] = subpaths.as_slice() else {
+        return false;
+    };
+    if !sp.closed || sp.segments.len() != 4 {
+        return false;
+    }
+    let mut prev = sp.start;
+    for seg in &sp.segments {
+        let Segment::Line(p) = *seg else {
+            return false;
+        };
+        let is_h = (p[1] - prev[1]).abs() <= 1e-4 && (p[0] - prev[0]).abs() > 1e-4;
+        let is_v = (p[0] - prev[0]).abs() <= 1e-4 && (p[1] - prev[1]).abs() > 1e-4;
+        if !is_h && !is_v {
+            return false;
+        }
+        prev = p;
+    }
+    true
+}
+
+fn usvg_clip_rect(clip: &usvg::ClipPath, canvas_to_page: Affine) -> Option<(Rect, bool)> {
+    let mut all_rect = true;
+    let mut tracker = BoundsTracker::empty();
+    let clip_affine = canvas_to_page * affine_from_usvg(clip.transform());
+    collect_usvg_clip_bounds(clip.root(), clip_affine, &mut all_rect, &mut tracker);
+    tracker.rect.map(|r| (r.abs(), all_rect))
+}
+
+fn collect_usvg_clip_bounds(
+    group: &usvg::Group,
+    clip_affine: Affine,
+    all_rect: &mut bool,
+    tracker: &mut BoundsTracker,
+) {
+    let mut group_paths = 0_usize;
+    for node in group.children() {
+        match node {
+            usvg::Node::Group(g) => {
+                collect_usvg_clip_bounds(g, clip_affine, all_rect, tracker);
+            }
+            usvg::Node::Path(path) => {
+                group_paths += 1;
+                let p_aff = clip_affine * affine_from_usvg(path.abs_transform());
+                let bez = usvg_path_to_bez(path.data(), p_aff);
+                if !is_axis_aligned_rect(&bez) {
+                    *all_rect = false;
+                }
+                tracker.include_path(&bez, None);
+            }
+            usvg::Node::Text(text) => {
+                *all_rect = false;
+                collect_usvg_clip_bounds(text.flattened(), clip_affine, all_rect, tracker);
+            }
+            usvg::Node::Image(_) => {}
+        }
+    }
+    if group_paths > 1 {
+        *all_rect = false;
+    }
+}
+
+#[derive(Default)]
+struct BezOutlineBuilder(BezPath);
+
+impl OutlineBuilder for BezOutlineBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.0.move_to(Point::new(f64::from(x), f64::from(y)));
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.0.line_to(Point::new(f64::from(x), f64::from(y)));
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.0.quad_to(
+            Point::new(f64::from(x1), f64::from(y1)),
+            Point::new(f64::from(x), f64::from(y)),
+        );
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.0.curve_to(
+            Point::new(f64::from(x1), f64::from(y1)),
+            Point::new(f64::from(x2), f64::from(y2)),
+            Point::new(f64::from(x), f64::from(y)),
+        );
+    }
+
+    fn close(&mut self) {
+        self.0.close_path();
+    }
+}
+
+fn convert_stroke(
+    stroke: &FixedStroke,
+    scale: f64,
+    warnings: &mut DegradationWarnings,
+) -> StrokeStyle {
     let s = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
         1.0
     };
+    let dash = stroke.dash.as_ref().map(|d| {
+        let phase = d.phase.to_pt() * s;
+        if phase.abs() > 1e-6 {
+            warnings.dash_phase = true;
+        }
+        (
+            d.array.iter().map(|len| len.to_pt() * s).collect(),
+            phase,
+        )
+    });
     StrokeStyle {
-        color: Rgba::from_paint(&stroke.paint),
+        color: Rgba::from_paint(&stroke.paint, warnings),
         thickness: (stroke.thickness.to_pt() * s).max(0.0),
         cap: match stroke.cap {
             LineCap::Butt => LineCapStyle::Butt,
@@ -722,191 +1402,87 @@ fn convert_stroke(stroke: &FixedStroke, scale: f64) -> StrokeStyle {
             LineJoin::Bevel => LineJoinStyle::Bevel,
         },
         miter_limit: stroke.miter_limit.get(),
-        dash: stroke.dash.as_ref().map(|d| {
-            (
-                d.array.iter().map(|len| len.to_pt() * s).collect(),
-                d.phase.to_pt() * s,
-            )
-        }),
+        dash,
     }
 }
 
-fn rect_subpath(size: Size, affine: &Affine2D, bbox: &mut BBox) -> Subpath {
-    let w = size.x.to_pt();
-    let h = size.y.to_pt();
-    let p0 = affine.apply([0.0, 0.0]);
-    let p1 = affine.apply([w, 0.0]);
-    let p2 = affine.apply([w, h]);
-    let p3 = affine.apply([0.0, h]);
-    for p in [p0, p1, p2, p3] {
-        bbox.include(p);
-    }
-    Subpath {
-        start: p0,
-        segments: vec![
-            Segment::Line(p1),
-            Segment::Line(p2),
-            Segment::Line(p3),
-            Segment::Line(p0),
-        ],
-        closed: true,
+fn usvg_fill_rule(rule: usvg::FillRule) -> WindingRule {
+    match rule {
+        usvg::FillRule::NonZero => WindingRule::NonZero,
+        usvg::FillRule::EvenOdd => WindingRule::EvenOdd,
     }
 }
 
-fn convert_curve(curve: &Curve, affine: &Affine2D, bbox: &mut BBox) -> Vec<Subpath> {
-    let mut builder = PathBuilder::new(1.0);
-    for item in &curve.0 {
-        match *item {
-            CurveItem::Move(p) => builder.move_pt(affine.apply([p.x.to_pt(), p.y.to_pt()])),
-            CurveItem::Line(p) => builder.line_pt(affine.apply([p.x.to_pt(), p.y.to_pt()])),
-            CurveItem::Cubic(p1, p2, p3) => builder.cubic_pt(
-                affine.apply([p1.x.to_pt(), p1.y.to_pt()]),
-                affine.apply([p2.x.to_pt(), p2.y.to_pt()]),
-                affine.apply([p3.x.to_pt(), p3.y.to_pt()]),
-            ),
-            CurveItem::Close => builder.close_subpath(),
+fn usvg_paint_rgba(
+    paint: &usvg::Paint,
+    paint_opacity: f32,
+    group_opacity: f64,
+    warnings: &mut DegradationWarnings,
+) -> Rgba {
+    let a = (f64::from(paint_opacity) * group_opacity).clamp(0.0, 1.0);
+    let color = match paint {
+        usvg::Paint::Color(c) => *c,
+        usvg::Paint::LinearGradient(g) => {
+            warnings.gradient = true;
+            sample_stops(g.stops())
         }
-    }
-    let subpaths = builder.finish();
-    for sp in &subpaths {
-        bbox.include(sp.start);
-        for seg in &sp.segments {
-            match *seg {
-                Segment::Line(p) => bbox.include(p),
-                Segment::Cubic(c1, c2, p) => {
-                    bbox.include(c1);
-                    bbox.include(c2);
-                    bbox.include(p);
-                }
-            }
+        usvg::Paint::RadialGradient(g) => {
+            warnings.gradient = true;
+            sample_stops(g.stops())
         }
+        usvg::Paint::Pattern(_) => {
+            warnings.tiling = true;
+            usvg::Color::new_rgb(128, 128, 128)
+        }
+    };
+    Rgba {
+        r: f64::from(color.red) / 255.0,
+        g: f64::from(color.green) / 255.0,
+        b: f64::from(color.blue) / 255.0,
+        a,
     }
-    subpaths
 }
 
-struct PathBuilder {
+fn sample_stops(stops: &[usvg::Stop]) -> usvg::Color {
+    if stops.is_empty() {
+        return usvg::Color::black();
+    }
+    stops[stops.len() / 2].color()
+}
+
+fn usvg_stroke(
+    stroke: &usvg::Stroke,
     scale: f64,
-    subpaths: Vec<Subpath>,
-    current_start: Option<[f64; 2]>,
-    current_pos: [f64; 2],
-    current_segments: Vec<Segment>,
-}
-
-impl PathBuilder {
-    fn new(scale: f64) -> Self {
-        Self {
-            scale,
-            subpaths: Vec::new(),
-            current_start: None,
-            current_pos: [0.0, 0.0],
-            current_segments: Vec::new(),
+    group_opacity: f64,
+    warnings: &mut DegradationWarnings,
+) -> StrokeStyle {
+    let s = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let dash = stroke.dasharray().map(|arr| {
+        let phase = f64::from(stroke.dashoffset()) * s;
+        if phase.abs() > 1e-6 {
+            warnings.dash_phase = true;
         }
-    }
-
-    fn flush_open(&mut self) {
-        if let Some(start) = self.current_start.take() {
-            if !self.current_segments.is_empty() {
-                self.subpaths.push(Subpath {
-                    start,
-                    segments: std::mem::take(&mut self.current_segments),
-                    closed: false,
-                });
-            }
-        }
-    }
-
-    fn move_pt(&mut self, p: [f64; 2]) {
-        self.flush_open();
-        self.current_start = Some(p);
-        self.current_pos = p;
-    }
-
-    fn line_pt(&mut self, p: [f64; 2]) {
-        if self.current_start.is_none() {
-            self.current_start = Some(self.current_pos);
-        }
-        if (p[0] - self.current_pos[0]).abs() > 1e-9 || (p[1] - self.current_pos[1]).abs() > 1e-9 {
-            self.current_segments.push(Segment::Line(p));
-            self.current_pos = p;
-        }
-    }
-
-    fn quad_pt(&mut self, q1: [f64; 2], p3: [f64; 2]) {
-        if self.current_start.is_none() {
-            self.current_start = Some(self.current_pos);
-        }
-        let p0 = self.current_pos;
-        // Exact degree elevation from quadratic (p0, q1, p3) to cubic (p0, c1, c2, p3).
-        let c1 = [
-            p0[0] + (2.0 / 3.0) * (q1[0] - p0[0]),
-            p0[1] + (2.0 / 3.0) * (q1[1] - p0[1]),
-        ];
-        let c2 = [
-            p3[0] + (2.0 / 3.0) * (q1[0] - p3[0]),
-            p3[1] + (2.0 / 3.0) * (q1[1] - p3[1]),
-        ];
-        self.current_segments.push(Segment::Cubic(c1, c2, p3));
-        self.current_pos = p3;
-    }
-
-    fn cubic_pt(&mut self, c1: [f64; 2], c2: [f64; 2], p3: [f64; 2]) {
-        if self.current_start.is_none() {
-            self.current_start = Some(self.current_pos);
-        }
-        self.current_segments.push(Segment::Cubic(c1, c2, p3));
-        self.current_pos = p3;
-    }
-
-    fn close_subpath(&mut self) {
-        if let Some(start) = self.current_start.take() {
-            if !self.current_segments.is_empty() {
-                if (self.current_pos[0] - start[0]).abs() > 1e-9
-                    || (self.current_pos[1] - start[1]).abs() > 1e-9
-                {
-                    self.current_segments.push(Segment::Line(start));
-                }
-                self.subpaths.push(Subpath {
-                    start,
-                    segments: std::mem::take(&mut self.current_segments),
-                    closed: true,
-                });
-            }
-            self.current_pos = start;
-        }
-    }
-
-    fn finish(mut self) -> Vec<Subpath> {
-        self.flush_open();
-        self.subpaths
-    }
-}
-
-impl OutlineBuilder for PathBuilder {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.move_pt([f64::from(x) * self.scale, f64::from(y) * self.scale]);
-    }
-
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.line_pt([f64::from(x) * self.scale, f64::from(y) * self.scale]);
-    }
-
-    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        self.quad_pt(
-            [f64::from(x1) * self.scale, f64::from(y1) * self.scale],
-            [f64::from(x) * self.scale, f64::from(y) * self.scale],
-        );
-    }
-
-    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        self.cubic_pt(
-            [f64::from(x1) * self.scale, f64::from(y1) * self.scale],
-            [f64::from(x2) * self.scale, f64::from(y2) * self.scale],
-            [f64::from(x) * self.scale, f64::from(y) * self.scale],
-        );
-    }
-
-    fn close(&mut self) {
-        self.close_subpath();
+        (arr.iter().map(|v| f64::from(*v) * s).collect(), phase)
+    });
+    StrokeStyle {
+        color: usvg_paint_rgba(stroke.paint(), stroke.opacity().get(), group_opacity, warnings),
+        thickness: (f64::from(stroke.width().get()) * s).max(0.0),
+        cap: match stroke.linecap() {
+            usvg::LineCap::Butt => LineCapStyle::Butt,
+            usvg::LineCap::Round => LineCapStyle::Round,
+            usvg::LineCap::Square => LineCapStyle::Square,
+        },
+        join: match stroke.linejoin() {
+            usvg::LineJoin::Miter | usvg::LineJoin::MiterClip => LineJoinStyle::Miter,
+            usvg::LineJoin::Round => LineJoinStyle::Round,
+            usvg::LineJoin::Bevel => LineJoinStyle::Bevel,
+        },
+        miter_limit: f64::from(stroke.miterlimit().get()),
+        dash,
     }
 }
 
@@ -917,23 +1493,25 @@ mod tests {
     use std::path::PathBuf;
     use typst::foundations::Dict;
 
-    #[test]
-    fn extracts_glyph_outlines_and_expands_descender_bbox() {
-        let src = "#set page(width: auto, height: auto, margin: 0pt, fill: none)\nxxyyzz";
+    fn compile_typst(src: &str) -> VectorExport {
         let world = MathemeWorld::new(src.into(), Dict::new(), PathBuf::from("."));
         let doc = typst::compile::<PagedDocument>(&world)
             .output
-            .expect("compile xxyyzz");
-        let pages = export_graphics(&doc, None);
-        assert_eq!(pages.len(), 1);
-        let page = &pages[0];
-        assert!(page.width > 20.0);
-        assert!(page.height > 5.0);
-        // 'y' descender extends below y = 0 in a 0pt-margin page, so plot_range.y_min < 0.
+            .expect("typst compile");
+        export_vector(&doc, None)
+    }
+
+    #[test]
+    fn extracts_glyph_outlines_and_expands_descender_bbox() {
+        let export = compile_typst("#set page(width: auto, height: auto, margin: 0pt, fill: none)\nxxyyzz");
+        assert_eq!(export.pages.len(), 1);
+        let page = &export.pages[0];
+        assert!(page.size[0] > 20.0);
+        assert!(page.size[1] > 5.0);
         assert!(
-            page.plot_range[1][0] < -1.0,
+            page.bounds[1][0] < -1.0,
             "expected negative y_min for 'y' descender, got {:?}",
-            page.plot_range
+            page.bounds
         );
         let (unique_glyphs, total_instances): (usize, usize) = page
             .primitives
@@ -945,26 +1523,17 @@ mod tests {
                 _ => (0, 0),
             })
             .fold((0, 0), |(u, t), (du, dt)| (u + du, t + dt));
-        assert_eq!(
-            unique_glyphs, 3,
-            "expected 3 unique cached glyphs ('x', 'y', 'z') for 'xxyyzz'"
-        );
-        assert_eq!(
-            total_instances, 6,
-            "expected 6 glyph instances for 'xxyyzz'"
-        );
+        assert_eq!(unique_glyphs, 3);
+        assert_eq!(total_instances, 6);
     }
 
     #[test]
     fn extracts_unicode_math_curves_not_tofu() {
-        let src = "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$ x^y + integral_0^infinity e^(-x^2) dif x $";
-        let world = MathemeWorld::new(src.into(), Dict::new(), PathBuf::from("."));
-        let doc = typst::compile::<PagedDocument>(&world)
-            .output
-            .expect("compile math");
-        let pages = export_graphics(&doc, None);
-        assert_eq!(pages.len(), 1);
-        let cubic_count: usize = pages[0]
+        let export = compile_typst(
+            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n$ x^y + integral_0^infinity e^(-x^2) dif x $",
+        );
+        assert_eq!(export.pages.len(), 1);
+        let cubic_count: usize = export.pages[0]
             .primitives
             .iter()
             .flat_map(|p| match p {
@@ -980,7 +1549,51 @@ mod tests {
             .count();
         assert!(
             cubic_count > 50,
-            "expected curved glyph outlines for unicode-math, got {cubic_count} cubic segments"
+            "expected curved glyph outlines for unicode-math, got {cubic_count}"
+        );
+    }
+
+    #[test]
+    fn expands_bounds_for_stroked_rect_and_emits_clip_primitive() {
+        let stroked = compile_typst(
+            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n#rect(width: 40pt, height: 25pt, stroke: 4pt + red)",
+        );
+        let b = stroked.pages[0].bounds;
+        assert!(b[0][0] <= -1.9 && b[0][1] >= 41.9, "stroke x bounds: {b:?}");
+        assert!(b[1][0] <= -1.9 && b[1][1] >= 26.9, "stroke y bounds: {b:?}");
+
+        let clipped = compile_typst(
+            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n#box(width: 20pt, height: 15pt, clip: true, rect(width: 60pt, height: 60pt, fill: red))",
+        );
+        let cb = clipped.pages[0].bounds;
+        assert!((cb[0][1] - cb[0][0] - 20.0).abs() < 0.01, "clipped width: {cb:?}");
+        assert!((cb[1][1] - cb[1][0] - 15.0).abs() < 0.01, "clipped height: {cb:?}");
+        assert!(
+            clipped.pages[0]
+                .primitives
+                .iter()
+                .any(|p| matches!(p, VectorPrimitive::Clip { .. })),
+            "expected VectorPrimitive::Clip"
+        );
+    }
+
+    #[test]
+    fn emits_diagnostics_for_gradient_and_font_reset_advances_generation() {
+        let g1 = crate::fonts::font_generation();
+        let c1 = cache_generation();
+        crate::fonts::reset();
+        assert!(crate::fonts::font_generation() > g1);
+        assert!(cache_generation() > c1);
+
+        let grad = compile_typst(
+            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n#rect(width: 20pt, height: 10pt, fill: gradient.linear(red, blue))",
+        );
+        assert!(
+            grad.diagnostics
+                .iter()
+                .any(|d| d.message.contains("Gradient")),
+            "expected gradient approximation diagnostic: {:?}",
+            grad.diagnostics
         );
     }
 }
