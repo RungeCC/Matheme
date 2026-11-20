@@ -128,6 +128,9 @@ pub fn run_reset() -> Answer {
 }
 
 fn applied_outcome(applied: world::Applied) -> Outcome {
+    if applied.changes.fonts {
+        matheme_graphics::clear_caches();
+    }
     Outcome::new([
         rule!(
             "Changed" -> assoc! {

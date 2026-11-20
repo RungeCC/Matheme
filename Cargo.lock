@@ -1495,6 +1495,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 name = "matheme"
 version = "0.1.0"
 dependencies = [
+ "matheme-graphics",
  "matheme-wl",
  "matheme-world",
  "matheme-wstp",
@@ -1516,6 +1517,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "matheme-graphics"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "matheme-wl",
+ "matheme-world",
+ "ttf-parser",
+ "typst",
+ "typst-layout",
+ "typst-svg",
+ "usvg",
+]
+
+[[package]]
 name = "matheme-wl"
 version = "0.1.0"
 dependencies = [
@@ -1528,11 +1543,9 @@ name = "matheme-world"
 version = "0.1.0"
 dependencies = [
  "comemo",
- "kurbo",
  "serde",
  "serde_json",
  "time",
- "ttf-parser",
  "typst",
  "typst-eval",
  "typst-html",
@@ -1541,7 +1554,6 @@ dependencies = [
  "typst-pdf",
  "typst-svg",
  "ureq",
- "usvg",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 //! font byte buffers), extracts embedded SVGs via `usvg`, resolves non-zero
 //! winding rules for even-odd hosts, computes tight stroke/clip bounds via
 //! `kurbo`, and produces a [`VectorExport`] containing [`VectorPage`]s and any
-//! fidelity-degradation [`Diagnostic`] warnings.
+//! fidelity-degradation [`DegradationWarning`]s.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -28,7 +28,6 @@ use typst_layout::{Page, PagedDocument};
 use typst_svg::WebImage;
 use usvg::tiny_skia_path;
 
-use crate::diagnostics::{self, Diagnostic};
 use crate::winding;
 
 /// Upper bound on process-wide normalized glyph outline entries to bound
@@ -181,12 +180,12 @@ pub struct UnitGlyphKey {
 }
 
 impl UnitGlyphKey {
-    fn from_instance(font: &FontInstance, glyph_id: u16) -> Self {
+    fn from_instance(font: &FontInstance, glyph_id: u16, font_gen: u64) -> Self {
         let mut hasher = DefaultHasher::new();
         font.variations().hash(&mut hasher);
         let base = font.font();
         Self {
-            font_gen: crate::fonts::font_generation(),
+            font_gen,
             data_ptr: base.data().as_ptr() as usize,
             data_len: base.data().len(),
             face_index: base.index(),
@@ -244,14 +243,19 @@ struct ScaledGlyph {
     fill_bbox: Rect,
 }
 
-type UnitGlyphMap = HashMap<UnitGlyphKey, Option<Arc<Vec<Subpath>>>>;
+#[derive(Default)]
+struct UnitGlyphCache {
+    font_gen: u64,
+    entries: HashMap<UnitGlyphKey, Option<Arc<Vec<Subpath>>>>,
+}
 
 static CACHE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-static UNIT_GLYPH_CACHE: LazyLock<RwLock<UnitGlyphMap>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+static UNIT_GLYPH_CACHE: LazyLock<RwLock<UnitGlyphCache>> =
+    LazyLock::new(|| RwLock::new(UnitGlyphCache::default()));
 
-/// Current glyph-cache generation, incremented every time [`clear_glyph_cache`] runs.
+/// Current glyph-cache generation, incremented every time [`clear_glyph_cache`]
+/// runs or the host font generation changes.
 pub fn cache_generation() -> u64 {
     CACHE_GENERATION.load(Ordering::Acquire)
 }
@@ -259,9 +263,24 @@ pub fn cache_generation() -> u64 {
 /// Drop all cached unit glyph outlines and advance [`cache_generation`].
 pub fn clear_glyph_cache() {
     if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
-        guard.clear();
+        guard.entries.clear();
     }
     CACHE_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
+
+fn sync_font_generation(font_gen: u64) {
+    if let Ok(guard) = UNIT_GLYPH_CACHE.read() {
+        if guard.font_gen == font_gen {
+            return;
+        }
+    }
+    if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
+        if guard.font_gen != font_gen {
+            guard.entries.clear();
+            guard.font_gen = font_gen;
+            CACHE_GENERATION.fetch_add(1, Ordering::AcqRel);
+        }
+    }
 }
 
 /// A host-neutral vector/raster drawing primitive on a [`VectorPage`].
@@ -312,11 +331,45 @@ pub struct VectorPage {
     pub primitives: Vec<VectorPrimitive>,
 }
 
+/// Host-neutral warning describing a Typst visual feature approximated during
+/// vector extraction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegradationWarning {
+    GradientApproximated,
+    TilingApproximated,
+    DashPhaseIgnored,
+    NonRectClipApproximated,
+    UnsupportedSvgFeature,
+}
+
+impl DegradationWarning {
+    /// Human-readable warning text describing the approximation.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::GradientApproximated => {
+                "Gradient fills/strokes are approximated by midpoint solid colors in Graphics output."
+            }
+            Self::TilingApproximated => {
+                "Tiling patterns are approximated by solid gray in Graphics output."
+            }
+            Self::DashPhaseIgnored => {
+                "Non-zero stroke dash phases are ignored in Graphics output."
+            }
+            Self::NonRectClipApproximated => {
+                "Non-rectangular clip paths are approximated by their axis-aligned bounding box in Graphics output."
+            }
+            Self::UnsupportedSvgFeature => {
+                "Unsupported SVG features (filters/masks) inside embedded SVGs are ignored in Graphics output."
+            }
+        }
+    }
+}
+
 /// Complete vector export output plus any fidelity-degradation warnings.
 #[derive(Debug, Clone)]
 pub struct VectorExport {
     pub pages: Vec<VectorPage>,
-    pub diagnostics: Vec<Diagnostic>,
+    pub warnings: Vec<DegradationWarning>,
 }
 
 #[derive(Default)]
@@ -329,41 +382,36 @@ struct DegradationWarnings {
 }
 
 impl DegradationWarnings {
-    fn into_diagnostics(self) -> Vec<Diagnostic> {
+    fn into_warnings(self) -> Vec<DegradationWarning> {
         let mut out = Vec::new();
         if self.gradient {
-            out.push(diagnostics::warning(
-                "Gradient fills/strokes are approximated by midpoint solid colors in Graphics output.",
-            ));
+            out.push(DegradationWarning::GradientApproximated);
         }
         if self.tiling {
-            out.push(diagnostics::warning(
-                "Tiling patterns are approximated by solid gray in Graphics output.",
-            ));
+            out.push(DegradationWarning::TilingApproximated);
         }
         if self.dash_phase {
-            out.push(diagnostics::warning(
-                "Non-zero stroke dash phases are ignored in Graphics output.",
-            ));
+            out.push(DegradationWarning::DashPhaseIgnored);
         }
         if self.non_rect_clip {
-            out.push(diagnostics::warning(
-                "Non-rectangular clip paths are approximated by their axis-aligned bounding box in Graphics output.",
-            ));
+            out.push(DegradationWarning::NonRectClipApproximated);
         }
         if self.svg_feature {
-            out.push(diagnostics::warning(
-                "Unsupported SVG features (filters/masks) inside embedded SVGs are ignored in Graphics output.",
-            ));
+            out.push(DegradationWarning::UnsupportedSvgFeature);
         }
         out
     }
 }
 
 /// Export selected pages of a [`PagedDocument`] into [`VectorPage`]s plus
-/// fidelity-degradation warnings.
-pub fn export_vector(document: &PagedDocument, pages: Option<&PageRanges>) -> VectorExport {
-    let mut extractor = Extractor::default();
+/// fidelity-degradation warnings, keyed against the caller's `font_generation`.
+pub fn export_vector(
+    document: &PagedDocument,
+    pages: Option<&PageRanges>,
+    font_generation: u64,
+) -> VectorExport {
+    sync_font_generation(font_generation);
+    let mut extractor = Extractor::new(font_generation);
     let exported_pages = document
         .pages()
         .iter()
@@ -378,7 +426,7 @@ pub fn export_vector(document: &PagedDocument, pages: Option<&PageRanges>) -> Ve
 
     VectorExport {
         pages: exported_pages,
-        diagnostics: extractor.warnings.into_diagnostics(),
+        warnings: extractor.warnings.into_warnings(),
     }
 }
 
@@ -436,8 +484,8 @@ impl BoundsTracker {
     }
 }
 
-#[derive(Default)]
 struct Extractor {
+    font_gen: u64,
     /// Per-extraction L1 cache of scaled glyph contours at origin `(0, 0)`.
     local_scaled_cache: HashMap<GlyphKey, Option<ScaledGlyph>>,
     /// Per-extraction cache of stroked glyph origin bounding boxes `[dx0, dy0, dx1, dy1]`.
@@ -448,6 +496,16 @@ struct Extractor {
 }
 
 impl Extractor {
+    fn new(font_gen: u64) -> Self {
+        Self {
+            font_gen,
+            local_scaled_cache: HashMap::new(),
+            stroked_glyph_bboxes: HashMap::new(),
+            active_glyph_indices: HashMap::new(),
+            warnings: DegradationWarnings::default(),
+        }
+    }
+
     fn extract_page(&mut self, page: &Page) -> VectorPage {
         self.active_glyph_indices.clear();
         let size = page.frame.size().max(Size::splat(Abs::pt(1.0)));
@@ -624,7 +682,7 @@ impl Extractor {
             let y_offset = y + glyph.y_offset.at(text.size);
 
             if should_outline(&text.font, id) {
-                let unit_key = UnitGlyphKey::from_instance(&text.font, id.0);
+                let unit_key = UnitGlyphKey::from_instance(&text.font, id.0, self.font_gen);
                 let key = GlyphKey::new(unit_key, linear_affine);
                 if let Some(scaled) = self.scaled_glyph(&text.font, key, linear_affine) {
                     let pos = text_affine * Point::new(x_offset.to_pt(), y_offset.to_pt());
@@ -963,8 +1021,10 @@ impl Extractor {
 
 fn outline_glyph_unit(font: &FontInstance, key: UnitGlyphKey) -> Option<Arc<Vec<Subpath>>> {
     if let Ok(guard) = UNIT_GLYPH_CACHE.read() {
-        if let Some(cached) = guard.get(&key) {
-            return cached.clone();
+        if guard.font_gen == key.font_gen {
+            if let Some(cached) = guard.entries.get(&key) {
+                return cached.clone();
+            }
         }
     }
 
@@ -987,10 +1047,16 @@ fn outline_glyph_unit(font: &FontInstance, key: UnitGlyphKey) -> Option<Arc<Vec<
     })();
 
     if let Ok(mut guard) = UNIT_GLYPH_CACHE.write() {
-        if guard.len() >= MAX_UNIT_GLYPH_ENTRIES {
-            guard.clear();
+        if guard.font_gen != key.font_gen {
+            guard.entries.clear();
+            guard.font_gen = key.font_gen;
+            CACHE_GENERATION.fetch_add(1, Ordering::AcqRel);
+        } else if guard.entries.len() >= MAX_UNIT_GLYPH_ENTRIES
+            && !guard.entries.contains_key(&key)
+        {
+            guard.entries.clear();
         }
-        guard.insert(key, computed.clone());
+        guard.entries.insert(key, computed.clone());
     }
     computed
 }
@@ -1489,7 +1555,7 @@ fn usvg_stroke(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::MathemeWorld;
+    use matheme_world::MathemeWorld;
     use std::path::PathBuf;
     use typst::foundations::Dict;
 
@@ -1498,7 +1564,7 @@ mod tests {
         let doc = typst::compile::<PagedDocument>(&world)
             .output
             .expect("typst compile");
-        export_vector(&doc, None)
+        export_vector(&doc, None, matheme_world::font_generation())
     }
 
     #[test]
@@ -1578,22 +1644,23 @@ mod tests {
     }
 
     #[test]
-    fn emits_diagnostics_for_gradient_and_font_reset_advances_generation() {
-        let g1 = crate::fonts::font_generation();
+    fn emits_warnings_for_gradient_and_advances_cache_generation_on_font_gen_change() {
+        // First export populates `UNIT_GLYPH_CACHE` with `g1`.
+        let _ = compile_typst("#set page(width: auto, height: auto, margin: 0pt, fill: none)\nHello");
+        let g1 = matheme_world::font_generation();
         let c1 = cache_generation();
-        crate::fonts::reset();
-        assert!(crate::fonts::font_generation() > g1);
-        assert!(cache_generation() > c1);
+
+        matheme_world::fonts::reset();
+        assert!(matheme_world::font_generation() > g1);
 
         let grad = compile_typst(
             "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n#rect(width: 20pt, height: 10pt, fill: gradient.linear(red, blue))",
         );
+        assert!(cache_generation() > c1);
         assert!(
-            grad.diagnostics
-                .iter()
-                .any(|d| d.message.contains("Gradient")),
-            "expected gradient approximation diagnostic: {:?}",
-            grad.diagnostics
+            grad.warnings.contains(&DegradationWarning::GradientApproximated),
+            "expected gradient approximation warning: {:?}",
+            grad.warnings
         );
     }
 }

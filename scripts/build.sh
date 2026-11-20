@@ -7,7 +7,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
 bash scripts/setup-wstp.sh
-cargo build --release
+cargo build --release -p matheme
 
 paclet_dir="$root/output/Matheme"
 lib_dir="$paclet_dir/LibraryResources/Windows-x86-64"

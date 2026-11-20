@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use matheme_wl::{from_typst, rule, to_typst, Entry, Expr, Rule, Symbol};
 use matheme_world::compile::{
-    self, CompileOutput, CompileRequest, EvaluateSpec, EvaluatedValues, Feature, OutputFormat,
-    PageRange, PageRanges, PdfStandards, Timestamp,
+    self, CompileFailure, CompileOutput, CompileRequest, EvaluateSpec, EvaluatedValues, Feature,
+    OutputFormat, PageRange, PageRanges, PagedCompileRequest, PdfStandards, Timestamp,
 };
 use matheme_world::{datetime_from_unix, WorldDate};
 use typst::foundations::Dict;
@@ -24,7 +24,36 @@ use crate::wl_args;
 // `FromExpr` value parsers for `compile` options
 // ---------------------------------------------------------------------------
 
-impl FromExpr for OutputFormat {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompileFormat {
+    #[default]
+    Pdf,
+    Svg,
+    Html,
+    Graphics,
+}
+
+impl CompileFormat {
+    pub fn parse(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case("graphics") || name.eq_ignore_ascii_case("vector") {
+            Some(Self::Graphics)
+        } else {
+            OutputFormat::parse(name).map(Self::from)
+        }
+    }
+}
+
+impl From<OutputFormat> for CompileFormat {
+    fn from(fmt: OutputFormat) -> Self {
+        match fmt {
+            OutputFormat::Pdf => Self::Pdf,
+            OutputFormat::Svg => Self::Svg,
+            OutputFormat::Html => Self::Html,
+        }
+    }
+}
+
+impl FromExpr for CompileFormat {
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         args::named(expr, Self::parse, "output format")
     }
@@ -241,7 +270,7 @@ wl_args! {
         "Inputs" => pub inputs: AssocExpr,
         "BasePath" => pub base_path: PathBuf,
         "AllowDownloads" => pub allow_downloads: bool,
-        "Format" => pub format: OutputFormat = OutputFormat::Pdf,
+        "Format" => pub format: CompileFormat = CompileFormat::Pdf,
         "Pages" => pub pages: PagesInput = PagesInput::default(),
         "PDFStandard" => pub pdf_standards: PdfStandardsInput = PdfStandardsInput::default(),
         "PDFTags" => pub pdf_tagged: bool = true,
@@ -290,6 +319,37 @@ fn evaluated_to_expr(values: &EvaluatedValues, warnings: &mut Vec<String>) -> Ex
     }
 }
 
+fn finish_success(
+    mut outcome_entries: Vec<Rule>,
+    evaluated: Option<EvaluatedValues>,
+    mut warnings: Vec<diagnostics::Diagnostic>,
+    formatted: String,
+) -> Answer {
+    if let Some(ref evaluated) = evaluated {
+        let mut conv_warnings = Vec::new();
+        let expr = evaluated_to_expr(evaluated, &mut conv_warnings);
+        warnings.extend(conv_warnings.into_iter().map(diagnostics::warning));
+        outcome_entries.push(rule!("Evaluated" -> expr));
+    }
+    outcome_entries.push(rule!("Formatted" -> formatted));
+
+    let mut outcome = Outcome::new(outcome_entries);
+    outcome.warnings = warnings;
+    outcome.into()
+}
+
+fn finish_failure(failure: CompileFailure) -> Answer {
+    Failure::new(
+        "Compile",
+        format!(
+            "Typst compilation failed with {} error(s): {}",
+            failure.error_count, failure.summary
+        ),
+    )
+    .with(failure.diagnostics, Some(failure.formatted))
+    .into()
+}
+
 pub fn run(input: CompileArgs) -> Answer {
     let mut inputs = Dict::new();
     let mut input_warnings = Vec::new();
@@ -301,12 +361,54 @@ pub fn run(input: CompileArgs) -> Answer {
         .map(diagnostics::warning)
         .collect();
 
+    if input.format == CompileFormat::Graphics {
+        let paged_request = PagedCompileRequest {
+            source: input.source,
+            inputs,
+            base_path: input.base_path,
+            allow_downloads: input.allow_downloads,
+            pages: input.pages.0,
+            world_date: input.timestamp.world_date,
+            features: input.features.0,
+            evaluate: input.evaluate.0,
+            extra_diagnostics,
+        };
+        return match compile::compile_paged_with(paged_request, |doc, pages| {
+            let export =
+                matheme_graphics::export_graphics(doc, pages, matheme_world::font_generation());
+            let warnings = export
+                .warnings
+                .into_iter()
+                .map(|w| diagnostics::warning(w.message()))
+                .collect();
+            Ok((export.graphics, warnings))
+        }) {
+            Ok(success) => finish_success(
+                vec![
+                    rule!("Graphics" -> success.output),
+                    rule!("Pages" -> success.total_pages as i64),
+                ],
+                success.evaluated,
+                success.diagnostics,
+                success.formatted,
+            ),
+            Err(failure) => finish_failure(failure),
+        };
+    }
+
+    let format = match input.format {
+        CompileFormat::Pdf => OutputFormat::Pdf,
+        CompileFormat::Svg => OutputFormat::Svg,
+        CompileFormat::Html => OutputFormat::Html,
+        CompileFormat::Graphics => unreachable!(),
+    };
+
     let request = CompileRequest {
         source: input.source,
         inputs,
         base_path: input.base_path,
         allow_downloads: input.allow_downloads,
-        format: input.format,
+        format,
         pages: input.pages.0,
         pdf_standards: input.pdf_standards.0,
         pdf_tagged: input.pdf_tagged,
@@ -318,8 +420,8 @@ pub fn run(input: CompileArgs) -> Answer {
     };
 
     match compile::compile(request) {
-        Ok(mut success) => {
-            let mut outcome_entries = match success.output {
+        Ok(success) => {
+            let outcome_entries = match success.output {
                 CompileOutput::Pdf { bytes, pages } => vec![
                     rule!("PDF" -> Expr::bytes(bytes)),
                     rule!("Pages" -> pages as i64),
@@ -329,37 +431,15 @@ pub fn run(input: CompileArgs) -> Answer {
                     rule!("Pages" -> total_pages as i64),
                 ],
                 CompileOutput::Html { html } => vec![rule!("HTML" -> html)],
-                CompileOutput::Vector { pages, total_pages } => vec![
-                    rule!(
-                        "Graphics" -> Expr::list(pages.iter().map(crate::graphics::page_to_expr))
-                    ),
-                    rule!("Pages" -> total_pages as i64),
-                ],
             };
-
-            if let Some(ref evaluated) = success.evaluated {
-                let mut conv_warnings = Vec::new();
-                let expr = evaluated_to_expr(evaluated, &mut conv_warnings);
-                success
-                    .diagnostics
-                    .extend(conv_warnings.into_iter().map(diagnostics::warning));
-                outcome_entries.push(rule!("Evaluated" -> expr));
-            }
-            outcome_entries.push(rule!("Formatted" -> success.formatted));
-
-            let mut outcome = Outcome::new(outcome_entries);
-            outcome.warnings = success.diagnostics;
-            outcome.into()
+            finish_success(
+                outcome_entries,
+                success.evaluated,
+                success.diagnostics,
+                success.formatted,
+            )
         }
-        Err(failure) => Failure::new(
-            "Compile",
-            format!(
-                "Typst compilation failed with {} error(s): {}",
-                failure.error_count, failure.summary
-            ),
-        )
-        .with(failure.diagnostics, Some(failure.formatted))
-        .into(),
+        Err(failure) => finish_failure(failure),
     }
 }
 
@@ -393,7 +473,7 @@ mod tests {
         let parsed = CompileArgs::parse_args(&expr.as_association().unwrap())
             .expect("valid compile args");
 
-        assert_eq!(parsed.format, OutputFormat::Svg);
+        assert_eq!(parsed.format, CompileFormat::Svg);
         assert!(!parsed.pdf_tagged);
         assert_eq!(parsed.timestamp.world_date, WorldDate::Fixed(1_795_003_200));
         assert!(parsed.features.0.contains(&Feature::A11yExtras));
@@ -401,6 +481,13 @@ mod tests {
             parsed.evaluate.0,
             Some(EvaluateSpec::List(vec!["1 + 2".into(), "x".into()]))
         );
+
+        for fmt_name in ["Graphics", "Vector", "graphics", "vector"] {
+            let g_expr = base_args([Rule::new("Format", fmt_name)]);
+            let g_parsed = CompileArgs::parse_args(&g_expr.as_association().unwrap())
+                .expect("graphics format should parse");
+            assert_eq!(g_parsed.format, CompileFormat::Graphics);
+        }
     }
 
     #[test]

@@ -285,7 +285,7 @@ fn resolve_format(cmd: &CompileCmd) -> OutputFormat {
     }
     if let Some(ref output) = cmd.output {
         if let Some(ext) = output.extension().and_then(|e| e.to_str()) {
-            if let Some(fmt) = OutputFormat::parse(ext).filter(|f| *f != OutputFormat::Vector) {
+            if let Some(fmt) = OutputFormat::parse(ext) {
                 return fmt;
             }
         }
@@ -298,7 +298,6 @@ fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
         OutputFormat::Pdf => "pdf",
         OutputFormat::Svg => "svg",
         OutputFormat::Html => "html",
-        OutputFormat::Vector => unreachable!("CLI FormatArg only supports Pdf, Svg, and Html"),
     };
     if input == Path::new("-") {
         PathBuf::from("-")
@@ -504,9 +503,6 @@ fn write_output(path: &Path, output: &CompileOutput) -> Result<(), String> {
                 }
                 Ok(())
             }
-        }
-        CompileOutput::Vector { .. } => {
-            unreachable!("CLI FormatArg only supports Pdf, Svg, and Html")
         }
     }
 }

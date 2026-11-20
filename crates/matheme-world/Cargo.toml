@@ -27,8 +27,3 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Already in the dependency graph via `typst`; reused for calendar conversion.
 time = "0.3"
-# Already in the dependency graph via `typst`; used to extract glyph outlines for native Graphics.
-ttf-parser = "0.25"
-# Already in the dependency graph via `typst` / `hayro`; used for 2D vector geometry and SVG extraction.
-kurbo = "0.13"
-usvg = "0.47"

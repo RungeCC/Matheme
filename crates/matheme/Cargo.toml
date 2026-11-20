@@ -1,0 +1,17 @@
+[package]
+name = "matheme"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "matheme"
+crate-type = ["cdylib"]
+
+[dependencies]
+matheme-graphics = { path = "../matheme-graphics" }
+matheme-world = { path = "../matheme-world" }
+matheme-wl = { path = "../matheme-wl" }
+matheme-wstp = { path = "../matheme-wstp" }
+wolfram-library-link = "=0.6.1"
+typst = "=0.15.1"

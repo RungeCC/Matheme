@@ -238,7 +238,6 @@ fn invalidate_dependent_caches() {
     // comemo's global cache may hold `Font` clones (e.g. memoized
     // `Font::instantiate` results) pinning the old font data.
     comemo::evict(0);
-    crate::graphics::clear_glyph_cache();
 }
 
 /// Get the current font snapshot without holding the lock across a

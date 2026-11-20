@@ -18,16 +18,15 @@ use typst::routines::SpanMode;
 use typst::syntax::{Span, SyntaxMode};
 use typst::World;
 use typst_html::{html, HtmlDocument, HtmlOptions};
-use typst_layout::PagedDocument;
 use typst_pdf::{pdf, PdfOptions};
 use typst_svg::{svg, SvgOptions};
 
 pub use typst::layout::{PageRange, PageRanges};
 pub use typst::{Feature, Features};
+pub use typst_layout::PagedDocument;
 pub use typst_pdf::{PdfStandard, PdfStandards, Timestamp};
 
 use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity};
-use crate::graphics::{self, VectorPage};
 use crate::world::{MathemeWorld, WorldDate};
 
 /// Evict memoized Typst entries older than this many compilations so memory
@@ -40,7 +39,6 @@ pub enum OutputFormat {
     Pdf,
     Svg,
     Html,
-    Vector,
 }
 
 impl FromStr for OutputFormat {
@@ -53,8 +51,6 @@ impl FromStr for OutputFormat {
             Ok(Self::Svg)
         } else if name.eq_ignore_ascii_case("html") {
             Ok(Self::Html)
-        } else if name.eq_ignore_ascii_case("vector") || name.eq_ignore_ascii_case("graphics") {
-            Ok(Self::Vector)
         } else {
             Err(format!("unknown output format: {name:?}"))
         }
@@ -68,7 +64,7 @@ impl OutputFormat {
 
     pub fn target(self) -> Target {
         match self {
-            Self::Pdf | Self::Svg | Self::Vector => Target::Paged,
+            Self::Pdf | Self::Svg => Target::Paged,
             Self::Html => Target::Html,
         }
     }
@@ -101,10 +97,6 @@ pub enum CompileOutput {
     Html {
         html: String,
     },
-    Vector {
-        pages: Vec<VectorPage>,
-        total_pages: usize,
-    },
 }
 
 pub struct CompileRequest {
@@ -130,6 +122,28 @@ pub struct CompileSuccess {
     pub formatted: String,
 }
 
+pub struct PagedCompileRequest {
+    pub source: String,
+    pub inputs: Dict,
+    pub base_path: PathBuf,
+    pub allow_downloads: bool,
+    pub pages: Option<PageRanges>,
+    pub world_date: WorldDate,
+    pub features: Vec<Feature>,
+    pub evaluate: Option<EvaluateSpec>,
+    pub extra_diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug)]
+pub struct PagedCompileSuccess<T> {
+    pub output: T,
+    pub total_pages: usize,
+    pub evaluated: Option<EvaluatedValues>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub formatted: String,
+}
+
+#[derive(Debug)]
 pub struct CompileFailure {
     pub summary: String,
     pub error_count: usize,
@@ -253,9 +267,16 @@ fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, download_blocked: bool)
     }
 }
 
-/// Compile a Typst source document, export it to the requested format, and
-/// optionally evaluate Typst code expressions against the compiled document.
-pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure> {
+/// Compile a Typst source document to a [`PagedDocument`], run a caller-supplied
+/// exporter on it, and optionally evaluate Typst code expressions against the
+/// compiled document's scope and introspector.
+pub fn compile_paged_with<T, F>(
+    request: PagedCompileRequest,
+    export: F,
+) -> Result<PagedCompileSuccess<T>, CompileFailure>
+where
+    F: FnOnce(&PagedDocument, Option<&PageRanges>) -> Result<(T, Vec<Diagnostic>), Vec<SourceDiagnostic>>,
+{
     let mut diagnostics = request.extra_diagnostics;
 
     let base_path = if request.base_path.is_absolute() {
@@ -266,7 +287,7 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
             .join(request.base_path)
     };
 
-    let features = resolve_features(request.features, request.format);
+    let features: Features = request.features.into_iter().collect();
 
     let download_scope = crate::enter_call_downloads(request.allow_downloads);
     let world = MathemeWorld::with_options(
@@ -278,65 +299,25 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
     );
 
     let mut typst_diags: Vec<SourceDiagnostic> = Vec::new();
-    let mut output: Option<CompileOutput> = None;
+    let mut output: Option<T> = None;
+    let mut total_pages = 0;
     let mut evaluated: Option<EvaluatedValues> = None;
 
-    let failed = match request.format {
-        OutputFormat::Pdf | OutputFormat::Svg | OutputFormat::Vector => {
-            let warned = typst::compile::<PagedDocument>(&world);
-            record_typst_diags(&world, &warned.warnings, &mut typst_diags, &mut diagnostics);
-            match warned.output {
-                Ok(document) => {
-                    let total_pages = document.pages().len();
-                    let export_res = match request.format {
-                        OutputFormat::Pdf => {
-                            let opts = PdfOptions {
-                                standards: request.pdf_standards,
-                                tagged: request.pdf_tagged,
-                                timestamp: request.pdf_timestamp,
-                                page_ranges: request.pages.clone(),
-                                ..PdfOptions::default()
-                            };
-                            match pdf(&document, &opts) {
-                                Ok(bytes) => {
-                                    output = Some(CompileOutput::Pdf {
-                                        bytes,
-                                        pages: total_pages,
-                                    });
-                                    Ok(())
-                                }
-                                Err(errs) => Err(errs),
-                            }
-                        }
-                        OutputFormat::Svg => {
-                            let svgs = export_svg(&document, request.pages.as_ref());
-                            output = Some(CompileOutput::Svg {
-                                pages: svgs,
-                                total_pages,
-                            });
-                            Ok(())
-                        }
-                        OutputFormat::Vector => {
-                            let export =
-                                graphics::export_vector(&document, request.pages.as_ref());
-                            diagnostics.extend(export.diagnostics);
-                            output = Some(CompileOutput::Vector {
-                                pages: export.pages,
-                                total_pages,
-                            });
-                            Ok(())
-                        }
-                        OutputFormat::Html => unreachable!(),
-                    };
+    let warned = typst::compile::<PagedDocument>(&world);
+    record_typst_diags(&world, &warned.warnings, &mut typst_diags, &mut diagnostics);
 
-                    if let Err(errs) = export_res {
-                        record_typst_diags(&world, &errs, &mut typst_diags, &mut diagnostics);
-                        true
-                    } else if let Some(ref spec) = request.evaluate {
+    let failed = match warned.output {
+        Ok(document) => {
+            total_pages = document.pages().len();
+            match export(&document, request.pages.as_ref()) {
+                Ok((exported, export_diags)) => {
+                    diagnostics.extend(export_diags);
+                    output = Some(exported);
+                    if let Some(ref spec) = request.evaluate {
                         match evaluate_spec(
                             &world,
                             document.introspector().as_ref(),
-                            request.format.target(),
+                            Target::Paged,
                             spec,
                             &mut typst_diags,
                             &mut diagnostics,
@@ -357,64 +338,194 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
                 }
             }
         }
-        OutputFormat::Html => {
-            let warned = typst::compile::<HtmlDocument>(&world);
-            record_typst_diags(&world, &warned.warnings, &mut typst_diags, &mut diagnostics);
-            match warned.output {
-                Ok(document) => match html(&document, &HtmlOptions::default()) {
-                    Ok(html_text) => {
-                        output = Some(CompileOutput::Html { html: html_text });
-                        if let Some(ref spec) = request.evaluate {
-                            match evaluate_spec(
-                                &world,
-                                document.introspector().as_ref(),
-                                OutputFormat::Html.target(),
-                                spec,
-                                &mut typst_diags,
-                                &mut diagnostics,
-                            ) {
-                                Ok(values) => {
-                                    evaluated = Some(values);
-                                    false
-                                }
-                                Err(()) => true,
-                            }
-                        } else {
-                            false
-                        }
-                    }
-                    Err(errs) => {
-                        record_typst_diags(&world, &errs, &mut typst_diags, &mut diagnostics);
-                        true
-                    }
-                },
-                Err(errs) => {
-                    record_typst_diags(&world, &errs, &mut typst_diags, &mut diagnostics);
-                    true
-                }
-            }
+        Err(errs) => {
+            record_typst_diags(&world, &errs, &mut typst_diags, &mut diagnostics);
+            true
         }
     };
 
     if failed {
-        maybe_offline_hint(&mut diagnostics, download_scope.download_blocked());
-        let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
-        crate::evict_caches(COMEMO_MAX_AGE);
-
-        let errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
-            .collect();
-        let summary = errors
-            .first()
-            .map(|diagnostic| diagnostic.message.clone())
-            .unwrap_or_else(|| "compilation failed".into());
-        return Err(CompileFailure {
-            summary,
-            error_count: errors.len(),
+        return Err(finish_compile_failure(
+            &world,
+            &typst_diags,
             diagnostics,
-            formatted,
-        });
+            download_scope.download_blocked(),
+        ));
+    }
+
+    let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
+    crate::evict_caches(COMEMO_MAX_AGE);
+
+    Ok(PagedCompileSuccess {
+        output: output.expect("successful compile always produces output"),
+        total_pages,
+        evaluated,
+        diagnostics,
+        formatted,
+    })
+}
+
+fn finish_compile_failure(
+    world: &MathemeWorld,
+    typst_diags: &[SourceDiagnostic],
+    mut diagnostics: Vec<Diagnostic>,
+    download_blocked: bool,
+) -> CompileFailure {
+    maybe_offline_hint(&mut diagnostics, download_blocked);
+    let formatted = diagnostics::format(world, typst_diags, &diagnostics);
+    crate::evict_caches(COMEMO_MAX_AGE);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+        .collect();
+    let summary = errors
+        .first()
+        .map(|diagnostic| diagnostic.message.clone())
+        .unwrap_or_else(|| "compilation failed".into());
+    CompileFailure {
+        summary,
+        error_count: errors.len(),
+        diagnostics,
+        formatted,
+    }
+}
+
+/// Compile a Typst source document, export it to the requested format, and
+/// optionally evaluate Typst code expressions against the compiled document.
+pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure> {
+    let format = request.format;
+    match format {
+        OutputFormat::Pdf | OutputFormat::Svg => {
+            let pdf_standards = request.pdf_standards;
+            let pdf_tagged = request.pdf_tagged;
+            let pdf_timestamp = request.pdf_timestamp;
+            let paged_req = PagedCompileRequest {
+                source: request.source,
+                inputs: request.inputs,
+                base_path: request.base_path,
+                allow_downloads: request.allow_downloads,
+                pages: request.pages,
+                world_date: request.world_date,
+                features: request.features,
+                evaluate: request.evaluate,
+                extra_diagnostics: request.extra_diagnostics,
+            };
+
+            let success = compile_paged_with(paged_req, |document, pages| match format {
+                OutputFormat::Pdf => {
+                    let opts = PdfOptions {
+                        standards: pdf_standards,
+                        tagged: pdf_tagged,
+                        timestamp: pdf_timestamp,
+                        page_ranges: pages.cloned(),
+                        ..PdfOptions::default()
+                    };
+                    let bytes = pdf(document, &opts)
+                        .map_err(|errs| errs.into_iter().collect::<Vec<_>>())?;
+                    let total_pages = document.pages().len();
+                    Ok((
+                        CompileOutput::Pdf {
+                            bytes,
+                            pages: total_pages,
+                        },
+                        Vec::new(),
+                    ))
+                }
+                OutputFormat::Svg => {
+                    let svgs = export_svg(document, pages);
+                    let total_pages = document.pages().len();
+                    Ok((
+                        CompileOutput::Svg {
+                            pages: svgs,
+                            total_pages,
+                        },
+                        Vec::new(),
+                    ))
+                }
+                OutputFormat::Html => unreachable!(),
+            })?;
+
+            Ok(CompileSuccess {
+                output: success.output,
+                evaluated: success.evaluated,
+                diagnostics: success.diagnostics,
+                formatted: success.formatted,
+            })
+        }
+        OutputFormat::Html => compile_html(request),
+    }
+}
+
+fn compile_html(request: CompileRequest) -> Result<CompileSuccess, CompileFailure> {
+    let mut diagnostics = request.extra_diagnostics;
+
+    let base_path = if request.base_path.is_absolute() {
+        request.base_path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(request.base_path)
+    };
+
+    let features = resolve_features(request.features, OutputFormat::Html);
+
+    let download_scope = crate::enter_call_downloads(request.allow_downloads);
+    let world = MathemeWorld::with_options(
+        request.source,
+        request.inputs,
+        base_path,
+        features,
+        request.world_date,
+    );
+
+    let mut typst_diags: Vec<SourceDiagnostic> = Vec::new();
+    let mut output: Option<CompileOutput> = None;
+    let mut evaluated: Option<EvaluatedValues> = None;
+
+    let warned = typst::compile::<HtmlDocument>(&world);
+    record_typst_diags(&world, &warned.warnings, &mut typst_diags, &mut diagnostics);
+    let failed = match warned.output {
+        Ok(document) => match html(&document, &HtmlOptions::default()) {
+            Ok(html_text) => {
+                output = Some(CompileOutput::Html { html: html_text });
+                if let Some(ref spec) = request.evaluate {
+                    match evaluate_spec(
+                        &world,
+                        document.introspector().as_ref(),
+                        OutputFormat::Html.target(),
+                        spec,
+                        &mut typst_diags,
+                        &mut diagnostics,
+                    ) {
+                        Ok(values) => {
+                            evaluated = Some(values);
+                            false
+                        }
+                        Err(()) => true,
+                    }
+                } else {
+                    false
+                }
+            }
+            Err(errs) => {
+                record_typst_diags(&world, &errs, &mut typst_diags, &mut diagnostics);
+                true
+            }
+        },
+        Err(errs) => {
+            record_typst_diags(&world, &errs, &mut typst_diags, &mut diagnostics);
+            true
+        }
+    };
+
+    if failed {
+        return Err(finish_compile_failure(
+            &world,
+            &typst_diags,
+            diagnostics,
+            download_scope.download_blocked(),
+        ));
     }
 
     let formatted = diagnostics::format(&world, &typst_diags, &diagnostics);
@@ -604,5 +715,33 @@ mod tests {
         maybe_offline_hint(&mut diags, true);
         assert_eq!(diags.len(), 2);
         assert_eq!(diags[1].severity, DiagnosticSeverity::Warning);
+    }
+
+    #[test]
+    fn compile_paged_with_propagates_custom_exporter_diagnostics() {
+        let req = PagedCompileRequest {
+            source: "= Hello".into(),
+            inputs: Dict::new(),
+            base_path: PathBuf::from("."),
+            allow_downloads: false,
+            pages: None,
+            world_date: WorldDate::None,
+            features: Vec::new(),
+            evaluate: None,
+            extra_diagnostics: Vec::new(),
+        };
+        let success = compile_paged_with(req, |doc, _pages| {
+            let pages = doc.pages().len();
+            Ok((pages, vec![diagnostics::warning("custom exporter warning")]))
+        })
+        .expect("custom exporter compile should succeed");
+
+        assert_eq!(success.total_pages, 1);
+        assert_eq!(success.output, 1);
+        assert!(success
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("custom exporter warning")));
+        assert!(success.formatted.contains("custom exporter warning"));
     }
 }

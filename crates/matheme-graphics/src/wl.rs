@@ -1,11 +1,12 @@
-//! Conversion of [`matheme_world::graphics::VectorPage`] into native Wolfram
+//! Conversion of [`crate::extract::VectorPage`] into native Wolfram
 //! Language `System\`Graphics` [`Expr`]s.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
 use matheme_wl::{Expr, Symbol};
-use matheme_world::graphics::{
+
+use crate::extract::{
     cache_generation, EmbeddedImageFormat, GlyphInstances, GlyphKey, LineCapStyle, LineJoinStyle,
     Rgba, Segment, StrokeStyle, Subpath, VectorPage, VectorPrimitive,
 };
@@ -29,6 +30,18 @@ struct GlyphExprCache {
 
 static GLYPH_EXPR_CACHE: LazyLock<RwLock<GlyphExprCache>> =
     LazyLock::new(|| RwLock::new(GlyphExprCache::default()));
+
+pub(crate) fn clear_expr_cache() {
+    if let Ok(mut guard) = GLYPH_EXPR_CACHE.write() {
+        guard.entries.clear();
+    }
+}
+
+/// Convert multiple [`VectorPage`]s into a Wolfram Language `List` of
+/// `System\`Graphics` [`Expr`]s.
+pub fn pages_to_expr(pages: &[VectorPage]) -> Expr {
+    Expr::list(pages.iter().map(page_to_expr))
+}
 
 /// Convert one [`VectorPage`] into a `System\`Graphics` [`Expr`] with explicit
 /// numeric `PlotRange`, zero padding, and exact pt `ImageSize`.
@@ -215,10 +228,7 @@ fn joined_curve_from_encoded(segs_expr: Expr, pts_expr: Expr, closed_flags: Vec<
     )
 }
 
-fn cached_glyph_expr(
-    instance: &GlyphInstances,
-    need_joined: bool,
-) -> (bool, Expr, Option<Expr>) {
+fn cached_glyph_expr(instance: &GlyphInstances, need_joined: bool) -> (bool, Expr, Option<Expr>) {
     let gen_now = cache_generation();
 
     if let Ok(guard) = GLYPH_EXPR_CACHE.read() {
@@ -277,10 +287,7 @@ fn instanced_glyph_expr(curve_expr: Expr, positions: &[[f64; 2]]) -> Expr {
     // length-2 translation lists as `{{{x0, y0}}, {{x1, y1}}}`.
     let translations = match positions {
         [single] => point_expr(*single),
-        [p0, p1] => Expr::list([
-            Expr::list([point_expr(*p0)]),
-            Expr::list([point_expr(*p1)]),
-        ]),
+        [p0, p1] => Expr::list([Expr::list([point_expr(*p0)]), Expr::list([point_expr(*p1)])]),
         many => Expr::list(many.iter().copied().map(point_expr)),
     };
     Expr::normal(
@@ -346,7 +353,10 @@ fn styled_group<I>(
                 fill_group.push(make_filled(item));
                 stroke_group.push(make_joined(item));
             }
-            Some(Expr::list([Expr::list(fill_group), Expr::list(stroke_group)]))
+            Some(Expr::list([
+                Expr::list(fill_group),
+                Expr::list(stroke_group),
+            ]))
         }
         (None, Some(stroke_style)) => {
             let mut group = stroke_directives(stroke_style, plot_width);
@@ -527,7 +537,7 @@ fn stroke_directives(s: &StrokeStyle, plot_width: f64) -> Vec<Expr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matheme_world::graphics::{clear_glyph_cache, UnitGlyphKey, WindingRule};
+    use crate::extract::{clear_glyph_cache, UnitGlyphKey, WindingRule};
     use typst::foundations::Bytes;
 
     #[test]
@@ -608,12 +618,18 @@ mod tests {
         };
         let rendered = page_to_expr(&page).to_string();
         assert!(rendered.contains("System`Inset"), "{rendered}");
-        assert!(rendered.contains("System`Left, System`Bottom"), "{rendered}");
+        assert!(
+            rendered.contains("System`Left, System`Bottom"),
+            "{rendered}"
+        );
         assert!(rendered.contains("System`PlotRangeClipping"), "{rendered}");
         assert!(rendered.contains("System`True"), "{rendered}");
         assert!(rendered.contains("System`ImportByteArray"), "{rendered}");
         assert!(rendered.contains("\"PNG\""), "{rendered}");
-        assert!(rendered.contains("System`GeometricTransformation"), "{rendered}");
+        assert!(
+            rendered.contains("System`GeometricTransformation"),
+            "{rendered}"
+        );
     }
 
     #[test]

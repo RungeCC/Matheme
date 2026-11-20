@@ -1,5 +1,5 @@
 //! Typst world, fonts, package loading and configuration. This crate knows
-//! nothing about Wolfram Language; the WSTP bridge lives in the root `matheme`
+//! nothing about Wolfram Language; the WSTP bridge lives in the `matheme`
 //! crate and only supplies host-specific paths (e.g. Wolfram's bundled fonts)
 //! through [`settings::set_host_font_paths`].
 
@@ -7,12 +7,10 @@ mod cache;
 pub mod compile;
 pub mod diagnostics;
 pub mod fonts;
-pub mod graphics;
 mod loader;
 pub mod packages;
 pub mod query;
 pub mod settings;
-mod winding;
 pub mod world;
 
 pub use fonts::{
@@ -73,7 +71,6 @@ pub fn clear_caches(selection: CacheSelection) -> Vec<CacheTarget> {
     let mut cleared = Vec::with_capacity(3);
     if selection.fonts {
         reset_fonts();
-        graphics::clear_glyph_cache();
         cleared.push(CacheTarget::Fonts);
     }
     if selection.packages {
@@ -82,7 +79,6 @@ pub fn clear_caches(selection: CacheSelection) -> Vec<CacheTarget> {
     }
     if selection.memoization {
         comemo::evict(0);
-        graphics::clear_glyph_cache();
         cleared.push(CacheTarget::Memoization);
     }
     cleared

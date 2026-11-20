@@ -1,23 +1,14 @@
 [workspace]
-members = ["crates/matheme-world", "crates/matheme-wl", "crates/matheme-wstp", "crates/matheme-cli"]
+members = [
+    "crates/matheme",
+    "crates/matheme-graphics",
+    "crates/matheme-world",
+    "crates/matheme-wl",
+    "crates/matheme-wstp",
+    "crates/matheme-cli",
+]
+default-members = ["crates/matheme"]
 resolver = "2"
-
-[package]
-name = "matheme"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[lib]
-name = "matheme"
-crate-type = ["cdylib"]
-
-[dependencies]
-matheme-world = { path = "crates/matheme-world" }
-matheme-wl = { path = "crates/matheme-wl" }
-matheme-wstp = { path = "crates/matheme-wstp" }
-wolfram-library-link = "=0.6.1"
-typst = "=0.15.1"
 
 [profile.release]
 opt-level = 2

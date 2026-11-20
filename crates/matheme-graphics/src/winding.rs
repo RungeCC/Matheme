@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::{BezPath, PathEl, Point, Rect, Vec2};
 
-use crate::graphics::{Segment, Subpath};
+use crate::extract::{Segment, Subpath};
 
 type VKey = (i64, i64);
 
