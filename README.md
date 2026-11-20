@@ -3,7 +3,7 @@
 A bridge that lets the Wolfram Language typeset with [Typst](https://typst.app/).
 A Rust `cdylib` is loaded **in-process** by Wolfram 15 via WSTP `LinkObject`;
 Typst compiles source to PDF, SVG, or HTML, and `MathemeToGraphics` imports the
-compiled output (default `"PDF"`, or `"SVG"`) as native vector `Graphics`. No
+compiled output (default `"SVG"`, or `"PDF"`) as native vector `Graphics`. No
 external process and no Frame-to-Graphics reimplementation.
 The only callback into the kernel is an evaluation of
 `$InstallationDirectory` to locate Wolfram's bundled fonts; it is cached
@@ -175,9 +175,11 @@ res["Graphics"]   (* list of Graphics, one per page *)
 ```
 
 Same options and return shape as `MathemeCompile`, plus a `"Graphics"` key.
-By default `"Format"` is `"PDF"` (imported via `ImportByteArray[pdf, {"PDF", "PageGraphics"}]`
-with automatic `PlotRange` expansion if glyph overhangs extend outside the page box);
-pass `"Format" -> "SVG"` to use `ImportString[..., {"SVG", "Graphics"}]` instead.
+By default `"Format"` is `"SVG"` (imported via `ImportString[..., {"SVG", "Graphics"}]`
+after normalizing root `pt` dimensions); pass `"Format" -> "PDF"` to use
+`ImportByteArray[pdf, {"PDF", "PageGraphics"}]` instead. Both paths automatically
+expand `PlotRange` if glyph descenders or italic overhangs extend outside the
+page box, without altering Typst's internal layout.
 
 ### Diagnostics
 
