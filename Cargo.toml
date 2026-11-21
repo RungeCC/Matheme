@@ -11,6 +11,9 @@ members = [
 default-members = ["crates/matheme"]
 resolver = "2"
 
+[workspace.package]
+license = "Apache-2.0"
+
 [profile.release]
 opt-level = 2
 lto = "thin"

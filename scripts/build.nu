@@ -29,6 +29,12 @@ def main [
     mkdir $kernel_dir $lib_dir
 
     cp ($ROOT | path join "PacletInfo.m") ($paclet_dir | path join "PacletInfo.m")
+    for file in ["LICENSE", "NOTICE"] {
+        cp ($ROOT | path join $file) ($paclet_dir | path join $file)
+    }
+    # Apache-2.0 (Typst) and OFL-1.1 (embedded fonts) notices must travel with
+    # the compiled DLL; see NOTICE for the full list of obligations.
+    cp --recursive ($ROOT | path join "third-party") $paclet_dir
     for file in (glob "Kernel/*.{m,wl}") {
         cp $file $kernel_dir
     }

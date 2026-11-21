@@ -16,17 +16,17 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 
 ## Layout
 
-| Path                       | Role |
-| -------------------------- | ---- |
-| `crates/matheme-world/`    | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics, and `compile_paged_with` export hook. Knows nothing about Wolfram or vector Graphics encoding. |
-| `crates/matheme-graphics/` | Host-agnostic Typst vector graphics IR (`extract`: glyph outlines via `ttf-parser`, embedded SVGs via `usvg`, shapes/clips, bounded sweep-line `NonZero -> EvenOdd` winding resolution via `kurbo`, and O(1) LRU caches) plus an optional Wolfram ``System`Graphics`` encoder behind the `wl` Cargo feature. No WSTP dependency. |
+| Path                       | Role                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/matheme-world/`    | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics, and `compile_paged_with` export hook. Knows nothing about Wolfram or vector Graphics encoding.                                                                                                                                                                  |
+| `crates/matheme-graphics/` | Host-agnostic Typst vector graphics IR (`extract`: glyph outlines via `ttf-parser`, embedded SVGs via `usvg`, shapes/clips, bounded sweep-line `NonZero -> EvenOdd` winding resolution via `kurbo`, and O(1) LRU caches) plus an optional Wolfram ``System`Graphics`` encoder behind the `wl` Cargo feature. No WSTP dependency.                                                                                            |
 | `crates/matheme-wl/`       | Pure bidirectional WL-expression ↔ Typst-value conversion (`convert::to_typst` / `Expr::to_typst` and `convert::from_typst` / `Expr::from_typst`). `Expr`, `Normal<'a>`, `Entry<'a>`/`Rule`, and zero-allocation `const` `Symbol` registries (`fundamental`, `graphics`) expose `From`/`TryFrom` and zero-copy `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
-| `crates/matheme-wstp/`     | Shared WSTP transport wrapper (`WstpLink<'a>`, `EvalOutput`, `WstpError`), persistent client `KernelSession` (launch/connect/reconnect/exit policy + isolated wire context), WSTP `protocol` symbols, and Wolfram installation helpers shared by `crates/matheme/` and `crates/matheme-cli/`. |
-| `crates/matheme/`          | `cdylib` WSTP bridge (`matheme.dll`): one exported WSTP function receives `<\|"Action" -> name, "Arguments" -> <\|…\|>\|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, with dedicated modules for `compile.rs` (Graphics/PDF/SVG/HTML + simultaneous `Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`. |
-| `crates/matheme-cli/`      | Standalone CLI (`matheme` binary) sharing `matheme-world`, `matheme-wl`, and `matheme-wstp` for compiling Typst documents and evaluating Wolfram expressions over WSTP. |
-| `Kernel/`, `PacletInfo.m`  | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects. |
-| `scripts/`                 | WSTP SDK setup and one-shot build. |
-| `output/`                  | Generated build artifacts (gitignored): standalone paclet directory `output/Matheme/` and packaged `output/Matheme-*.paclet`. |
+| `crates/matheme-wstp/`     | Shared WSTP transport wrapper (`WstpLink<'a>`, `EvalOutput`, `WstpError`), persistent client `KernelSession` (launch/connect/reconnect/exit policy + isolated wire context), WSTP `protocol` symbols, and Wolfram installation helpers shared by `crates/matheme/` and `crates/matheme-cli/`.                                                                                                                               |
+| `crates/matheme/`          | `cdylib` WSTP bridge (`matheme.dll`): one exported WSTP function receives `<\|"Action" -> name, "Arguments" -> <\|…\|>\|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, with dedicated modules for `compile.rs` (Graphics/PDF/SVG/HTML + simultaneous `Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`.                  |
+| `crates/matheme-cli/`      | Standalone CLI (`matheme` binary) sharing `matheme-world`, `matheme-wl`, and `matheme-wstp` for compiling Typst documents and evaluating Wolfram expressions over WSTP.                                                                                                                                                                                                                                                     |
+| `Kernel/`, `PacletInfo.m`  | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects.                                                                                                                                                                                                                                                                                                                    |
+| `scripts/`                 | WSTP SDK setup and one-shot build.                                                                                                                                                                                                                                                                                                                                                                                          |
+| `output/`                  | Generated build artifacts (gitignored): standalone paclet directory `output/Matheme/` and packaged `output/Matheme-*.paclet`.                                                                                                                                                                                                                                                                                               |
 
 Versions are pinned: `typst`/`typst-kit` `=0.15.1`, `wolfram-library-link`
 `=0.6.1` (see `Cargo.lock`). `MathemeVersion[]` reports the Typst version from
@@ -137,19 +137,19 @@ MathemeToGraphics[source_String, opts : OptionsPattern[]]
 
 Options (all names are strings):
 
-| Option                | Default       | Meaning                                                                                                                                              |
-| --------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `"Inputs"`            | `<\| \|>`     | Dictionary injected as Typst `sys.inputs`.                                                                                                           |
-| `"BasePath"`          | `Directory[]` | Root for `#include` / `#image` relative paths.                                                                                                       |
-| `"AllowDownloads"`    | `False`       | If `True`, missing Universe packages may be downloaded.                                                                                              |
-| `"TypstTemplate"`     | `None`        | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see _Templates_).                                     |
-| `"Format"`            | `"PDF"`       | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), `"HTML"` (automatically enables the `"html"` feature), or `"Graphics"` (alias `"Vector"`; list of native Wolfram vector `Graphics`). |
+| Option                | Default       | Meaning                                                                                                                                                                                                                                                                                 |
+| --------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"Inputs"`            | `<\| \|>`     | Dictionary injected as Typst `sys.inputs`.                                                                                                                                                                                                                                              |
+| `"BasePath"`          | `Directory[]` | Root for `#include` / `#image` relative paths.                                                                                                                                                                                                                                          |
+| `"AllowDownloads"`    | `False`       | If `True`, missing Universe packages may be downloaded.                                                                                                                                                                                                                                 |
+| `"TypstTemplate"`     | `None`        | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see _Templates_).                                                                                                                                                                        |
+| `"Format"`            | `"PDF"`       | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), `"HTML"` (automatically enables the `"html"` feature), or `"Graphics"` (alias `"Vector"`; list of native Wolfram vector `Graphics`).                                                                                    |
 | `"Pages"`             | `All`         | Page filter (`All`, integer, list of integers/`{start, end}`/`Span`, or range string such as `"1,3-5"`) for `"PDF"`, `"SVG"`, and `"Graphics"` exports (rejected for `"HTML"`). Results report `"Pages"` as the exported page count and `"TotalPages"` as the full document page count. |
-| `"PDFStandard"`       | `Automatic`   | `Automatic`, a standard string (`"1.4"`–`"2.0"`, `"a-1b"`–`"a-4e"`, `"ua-1"`), or a list of standards.                                               |
-| `"PDFTags"`           | `True`        | Whether to emit tagged PDF accessibility structure.                                                                                                  |
-| `"CreationTimestamp"` | `Automatic`   | `Automatic` (system clock), `None`, a `DateObject`, or a Unix timestamp integer.                                                                     |
-| `"Features"`          | `{}`          | Experimental Typst features (`"html"`, `"bundle"`, `"a11y-extras"`).                                                                                 |
-| `"Evaluate"`          | `None`        | Optional Typst code expression, list, or association evaluated against the compiled document's scope and introspector, returned under `"Evaluated"`. |
+| `"PDFStandard"`       | `Automatic`   | `Automatic`, a standard string (`"1.4"`–`"2.0"`, `"a-1b"`–`"a-4e"`, `"ua-1"`), or a list of standards.                                                                                                                                                                                  |
+| `"PDFTags"`           | `True`        | Whether to emit tagged PDF accessibility structure.                                                                                                                                                                                                                                     |
+| `"CreationTimestamp"` | `Automatic`   | `Automatic` (system clock), `None`, a `DateObject`, or a Unix timestamp integer.                                                                                                                                                                                                        |
+| `"Features"`          | `{}`          | Experimental Typst features (`"html"`, `"bundle"`, `"a11y-extras"`).                                                                                                                                                                                                                    |
+| `"Evaluate"`          | `None`        | Optional Typst code expression, list, or association evaluated against the compiled document's scope and introspector, returned under `"Evaluated"`.                                                                                                                                    |
 
 CLI-only flags such as `--watch`, `--open`, `--jobs`, `--timings`, `--deps`, `--diagnostic-format`, and `--ppi` (Wolfram handles rasterization via `Rasterize` / `MathemeToGraphics`) are intentionally not exposed.
 
@@ -190,6 +190,7 @@ visible content/stroke bounds), `PlotRangePadding -> None`, `ImagePadding -> Non
 images still decode inside Wolfram via `ImportByteArray`.
 
 **Known Limitations (`"Format" -> "Graphics"`):**
+
 - Gradient fills/strokes are approximated by midpoint solid colors (with a `Warning` diagnostic).
 - Tiling patterns are approximated by 50% gray (with a `Warning` diagnostic).
 - Non-zero stroke dash phases are ignored (with a `Warning` diagnostic).
@@ -490,7 +491,7 @@ interner (u16-id bounded at 65536) and still does not hit the cache. Given that
 the current per-call World is both correct and just as fast, a persistent
 session / `ManagedLibraryExpression` design is not warranted here.
 
-## Known constraints
+## Known constraints and Todos
 
 - Windows x86-64 + Wolfram 15.0 is the tested target; the WSTP DeveloperKit
   path is version-sensitive (override with `WSTP_SDK_DIR`).
@@ -502,3 +503,40 @@ session / `ManagedLibraryExpression` design is not warranted here.
   differently on machines with different fonts.
 - Structured columns are 1-based while the `Formatted` report shows the CLI's
   0-based column; see _Diagnostics_.
+
+### Todos
+
+- [ ] support dev with linux and macos
+- [ ] rewrite `TypstForm` to make it more systematic and customizable
+- [ ] support internal timing/benchmark
+- [ ] make it more flexible to call `wolfram` in a `typst` file
+
+## License
+
+Matheme's own Rust and Wolfram Language sources are licensed under the
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) and `third-party/` for the
+third-party components compiled into `matheme.dll`.
+
+The project is currently used for private research only; no binary is
+distributed. If you build and redistribute a copy, keep in mind:
+
+- `matheme.dll` statically incorporates the Typst 0.15.1 compiler (Apache-2.0)
+  and 17 unmodified OFL-1.1 font faces from `typst-assets`. Typst requires its
+  NOTICE to accompany any software incorporating the compiler, so ship
+  `LICENSE`, `NOTICE` and the whole `third-party/` directory with the binary.
+  `scripts/build.nu` includes them in `.paclet` builds.
+- `matheme.dll` also statically links `wstp64i4s.lib` from the Wolfram WSTP
+  DeveloperKit. That library is proprietary to Wolfram Research and is **not**
+  covered by Apache-2.0; it is governed by the
+  [MathLink License Agreement](https://www.wolfram.com/legal/agreements/mathlink.html),
+  which permits distribution of the Program for noncommercial purposes only
+  (with the agreement text accompanying each copy) and requires a separate
+  written license from WRI for commercial distribution. Choosing an
+  open-source license for Matheme does not grant distribution rights for the
+  WSTP library, and the SDK itself must never be redistributed.
+- A Wolfram Language installation and the `Wolfram/ErrorTools` paclet are
+  runtime requirements supplied by the user; neither is bundled here.
+  Wolfram's standard agreements also restrict making a Wolfram kernel
+  accessible through internet sites.
+
+Copyright 2026 Runge

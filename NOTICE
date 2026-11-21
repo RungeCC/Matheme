@@ -1,0 +1,96 @@
+Matheme
+Copyright 2026 Runge
+
+Matheme is licensed under the Apache License, Version 2.0 (see LICENSE).
+It statically incorporates third-party components whose own terms are listed
+below. The verbatim upstream license texts and notices are collected in the
+third-party/ directory and must travel with any distributed copy of the
+compiled library or of the .paclet archive.
+
+Scope note: the Apache-2.0 grant above applies to this project's own Rust
+sources (crates/, bench/) and Wolfram Language sources (Kernel/,
+PacletInfo.m). It does NOT extend to any third-party component below, and in
+particular not to the Wolfram WSTP static library.
+
+----------------------------------------------------------------------------
+1. Typst 0.15.1 compiler and companion crates
+----------------------------------------------------------------------------
+typst, typst-assets, typst-eval, typst-html, typst-kit, typst-layout,
+typst-library, typst-macros, typst-pdf, typst-realize, typst-svg,
+typst-syntax, typst-timing, typst-utils, comemo and comemo-macros.
+
+Apache License 2.0, Copyright The Typst Project Developers.
+Verbatim upstream notice: third-party/NOTICE-typst.
+
+Typst requires its NOTICE file to be redistributed with any software that
+incorporates the Typst compiler. Matheme links the compiler into
+matheme.dll, so third-party/NOTICE-typst accompanies every distributed build.
+
+----------------------------------------------------------------------------
+2. Fonts embedded through typst-assets 0.15.1
+----------------------------------------------------------------------------
+The "embedded-fonts" feature of typst-kit compiles 17 unmodified font faces
+into matheme.dll: Libertinus Serif (6), New Computer Modern (7) and
+DejaVu Sans Mono (4).
+
+SIL Open Font License 1.1 (with Reserved Font Names) and the Bitstream Vera /
+DejaVu notices apply. The full OFL text, each family's copyright statement and
+the base-14 PDF font notices are reproduced verbatim in
+third-party/NOTICE-typst-assets. These fonts may be bundled with software but
+may not be sold on their own; no font file has been modified or renamed.
+
+Fonts read at runtime from a Wolfram installation are not redistributed here.
+
+----------------------------------------------------------------------------
+3. option-ext 0.2.0
+----------------------------------------------------------------------------
+Mozilla Public License 2.0. This is the only MPL-2.0 component in the
+resolved dependency graph (typst-kit -> dirs -> dirs-sys -> option-ext).
+License text: third-party/LICENSE-MPL-2.0.
+
+MPL-2.0 is a file-level copyleft. The corresponding source is available from
+https://crates.io/crates/option-ext/0.2.0 and from the local Cargo registry
+source used to build this project; it remains under MPL-2.0 regardless of the
+license chosen for Matheme's own code.
+
+----------------------------------------------------------------------------
+4. Remaining Rust dependencies
+----------------------------------------------------------------------------
+Approximately 419 crates in total, predominantly MIT, Apache-2.0,
+MIT OR Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause, Zlib, Unlicense,
+0BSD and CC0-1.0. The exact resolved set is pinned in Cargo.lock; each crate
+ships its own license text in its Cargo registry source directory. No
+GPL/AGPL/LGPL component is linked (r-efi offers an LGPL option but is used
+under MIT OR Apache-2.0).
+
+----------------------------------------------------------------------------
+5. Wolfram WSTP static library (proprietary - separate terms)
+----------------------------------------------------------------------------
+matheme.dll statically links wstp64i4s.lib from the Wolfram WSTP DeveloperKit.
+That library is proprietary to Wolfram Research, Inc. and is NOT licensed
+under Apache-2.0. Its use is governed by the MathLink License Agreement:
+
+    https://www.wolfram.com/legal/agreements/mathlink.html
+
+Key terms as of 2026-11-21: a free, nonexclusive, perpetual license to use the
+Program to enhance Mathematica interoperability; distribution of the Program
+is permitted for noncommercial purposes only and requires the agreement text
+to accompany each copy; distribution for commercial purposes requires a
+separate written license from Wolfram Research; reverse engineering and
+redistribution of the SDK itself are prohibited. Wolfram's standard license
+agreements also restrict making Mathematica accessible through internet sites.
+
+The .lib file is never committed to this repository (it is staged under the
+gitignored .tmp/ directory by scripts/setup-wstp.nu), but its object code is
+present in any built matheme.dll. Anyone redistributing a build must satisfy
+the MathLink terms independently of the Apache-2.0 license on Matheme's code.
+The Wolfram Language kernel and the Wolfram/ErrorTools paclet are runtime
+requirements supplied by the user, not bundled by this project.
+
+----------------------------------------------------------------------------
+6. Wolfram Rust bindings
+----------------------------------------------------------------------------
+wstp, wstp-sys, wolfram-library-link, wolfram-library-link-sys,
+wolfram-expr, wolfram-app-discovery and related Wolfram Research crates:
+MIT OR Apache-2.0, Copyright Wolfram Research, Inc. These are bindings only;
+they do not change the terms of the WSTP library described in section 5.

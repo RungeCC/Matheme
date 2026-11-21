@@ -3,6 +3,7 @@ name = "matheme-wl"
 version = "0.1.0"
 edition = "2021"
 publish = false
+license.workspace = true
 
 [dependencies]
 typst = "=0.15.1"
