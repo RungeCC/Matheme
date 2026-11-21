@@ -189,13 +189,18 @@ visible content/stroke bounds), `PlotRangePadding -> None`, `ImagePadding -> Non
 `AspectRatio -> Automatic`, and exact point-unit `ImageSize`. Embedded raster
 images still decode inside Wolfram via `ImportByteArray`.
 
+**Supported Vector Features (`"Format" -> "Graphics"`):**
+
+- Linear, radial (concentric and off-center focal), and conic gradients across shapes, strokes, text runs, and embedded SVGs (`LinearGradientFilling`, `RadialGradientFilling`, `ConicGradientFilling`, plus smooth `Texture[Image[...]]` for off-center focal or skewed elliptical gradients), with Typst's adaptive sRGB stop subdivision for Oklab/Oklch/HSL/HSV/linear-RGB color spaces and `relative: "self"` / `"parent"` placement.
+- Vector tilings and SVG `<pattern>` fills with `size`, `spacing`, `offset`, `relative`, cell clipping, and arbitrary affine transforms (vector-instanced `GeometricTransformation` inside `Texture[Graphics[...]]`, falling back to `PatternFilling` for very high-density grids).
+- Non-zero stroke dash phases and per-dash cap forms via `Dashing[lengths, offset, capform]`.
+- Axis-aligned rectangular clips (`Inset[Graphics[..., PlotRangeClipping -> True]]`) and arbitrary curved, holed, or nested non-rectangular clip paths (`Texture[Graphics[...]]` on `FilledCurve`).
+
 **Known Limitations (`"Format" -> "Graphics"`):**
 
-- Gradient fills/strokes are approximated by midpoint solid colors (with a `Warning` diagnostic).
-- Tiling patterns are approximated by 50% gray (with a `Warning` diagnostic).
-- Non-zero stroke dash phases are ignored (with a `Warning` diagnostic).
-- Non-rectangular clip paths are approximated by their axis-aligned bounding box (with a `Warning` diagnostic).
+- Deeply nested tiling patterns (> 4 levels) fall back to 50% gray (with a `Warning` diagnostic).
 - Complex non-zero fill contours that exceed planar winding resolution budgets or fail loop closure are kept as-is (with a `Warning` diagnostic).
+- SVG filters and masks inside embedded SVGs are ignored (with a `Warning` diagnostic).
 - Embedded images with unsupported format extensions are omitted (with a `Warning` diagnostic).
 - Hyperlinks (`FrameItem::Link`) are omitted.
 
