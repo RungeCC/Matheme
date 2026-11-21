@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+default = ["wl"]
+wl = ["dep:matheme-wl"]
+
 [dependencies]
-matheme-wl = { path = "../matheme-wl" }
+matheme-wl = { path = "../matheme-wl", optional = true }
 typst = "=0.15.1"
 typst-layout = "=0.15.1"
 typst-svg = "=0.15.1"

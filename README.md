@@ -19,9 +19,9 @@ Wolfram ──Association──▶ Rust / WSTP ──▶ Typst compile ──▶
 | Path                       | Role |
 | -------------------------- | ---- |
 | `crates/matheme-world/`    | Typst dependency: `World` (with features and clock/timestamp support), font & package caches, selective cache clearing, file loader, CLI-style diagnostics, and `compile_paged_with` export hook. Knows nothing about Wolfram or vector Graphics encoding. |
-| `crates/matheme-graphics/` | Vector graphics backend: extracts glyph outlines (`ttf-parser`), embedded SVGs (`usvg`), and shapes/clips from Typst `PagedDocument` frames with `NonZero -> EvenOdd` winding resolution (`kurbo`), and encodes Wolfram `System\`Graphics` expressions with bounded caches. No WSTP dependency. |
-| `crates/matheme-wl/`       | Pure bidirectional WL-expression ↔ Typst-value conversion (`convert::to_typst` / `Expr::to_typst` and `convert::from_typst` / `Expr::from_typst`). `Expr`, `Normal<'a>`, `Entry<'a>`/`Rule` and `Symbol` wrappers expose `From`/`TryFrom` and zero-copy `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
-| `crates/matheme-wstp/`     | Shared WSTP transport wrapper (`WstpLink<'a>`, `EvalOutput`, `WstpError`) providing context-resolving reads and a unified `EvaluatePacket` → `ReturnPacket` evaluation pipeline shared by `crates/matheme/` and `crates/matheme-cli/`. |
+| `crates/matheme-graphics/` | Host-agnostic Typst vector graphics IR (`extract`: glyph outlines via `ttf-parser`, embedded SVGs via `usvg`, shapes/clips, bounded sweep-line `NonZero -> EvenOdd` winding resolution via `kurbo`, and O(1) LRU caches) plus an optional Wolfram `System\`Graphics` encoder behind the `wl` Cargo feature. No WSTP dependency. |
+| `crates/matheme-wl/`       | Pure bidirectional WL-expression ↔ Typst-value conversion (`convert::to_typst` / `Expr::to_typst` and `convert::from_typst` / `Expr::from_typst`). `Expr`, `Normal<'a>`, `Entry<'a>`/`Rule`, and zero-allocation `const` `Symbol` registries (`fundamental`, `graphics`) expose `From`/`TryFrom` and zero-copy `as_*` accessors; `assoc!` / `rule!` build associations with WL's `key -> value` syntax. No WSTP dependency. |
+| `crates/matheme-wstp/`     | Shared WSTP transport wrapper (`WstpLink<'a>`, `EvalOutput`, `WstpError`), persistent client `KernelSession` (launch/connect/reconnect/exit policy + isolated wire context), WSTP `protocol` symbols, and Wolfram installation helpers shared by `crates/matheme/` and `crates/matheme-cli/`. |
 | `crates/matheme/`          | `cdylib` WSTP bridge (`matheme.dll`): one exported WSTP function receives `<\|"Action" -> name, "Arguments" -> <\|…\|>\|>`; `lib.rs` owns the action table, `call.rs` is the uniform read → dispatch → write pipeline, with dedicated modules for `compile.rs` (Graphics/PDF/SVG/HTML + simultaneous `Evaluate`), `cache.rs`, `version.rs`, `settings.rs`, `query.rs`, `diagnostics.rs`, and `wolfram.rs`. |
 | `crates/matheme-cli/`      | Standalone CLI (`matheme` binary) sharing `matheme-world`, `matheme-wl`, and `matheme-wstp` for compiling Typst documents and evaluating Wolfram expressions over WSTP. |
 | `Kernel/`, `PacletInfo.m`  | Wolfram paclet wrapper and public API. Uses the `Wolfram/ErrorTools` paclet to return `Failure` objects. |
@@ -143,8 +143,8 @@ Options (all names are strings):
 | `"BasePath"`          | `Directory[]` | Root for `#include` / `#image` relative paths.                                                                                                       |
 | `"AllowDownloads"`    | `False`       | If `True`, missing Universe packages may be downloaded.                                                                                              |
 | `"TypstTemplate"`     | `None`        | A key of `$TypstTemplates`, or a `Function` / template applied to `source` before compilation (see _Templates_).                                     |
-| `"Format"`            | `"PDF"`       | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), `"HTML"` (automatically enables the `"html"` feature), or `"Graphics"` (list of native Wolfram vector `Graphics`). |
-| `"Pages"`             | `All`         | Page filter (`All`, integer, list of integers/`{start, end}`/`Span`, or range string such as `"1,3-5"`) for PDF and SVG exports.                     |
+| `"Format"`            | `"PDF"`       | Output format: `"PDF"`, `"SVG"` (list of per-page SVG strings), `"HTML"` (automatically enables the `"html"` feature), or `"Graphics"` (alias `"Vector"`; list of native Wolfram vector `Graphics`). |
+| `"Pages"`             | `All`         | Page filter (`All`, integer, list of integers/`{start, end}`/`Span`, or range string such as `"1,3-5"`) for `"PDF"`, `"SVG"`, and `"Graphics"` exports (rejected for `"HTML"`). Results report `"Pages"` as the exported page count and `"TotalPages"` as the full document page count. |
 | `"PDFStandard"`       | `Automatic`   | `Automatic`, a standard string (`"1.4"`–`"2.0"`, `"a-1b"`–`"a-4e"`, `"ua-1"`), or a list of standards.                                               |
 | `"PDFTags"`           | `True`        | Whether to emit tagged PDF accessibility structure.                                                                                                  |
 | `"CreationTimestamp"` | `Automatic`   | `Automatic` (system clock), `None`, a `DateObject`, or a Unix timestamp integer.                                                                     |
@@ -194,6 +194,8 @@ images still decode inside Wolfram via `ImportByteArray`.
 - Tiling patterns are approximated by 50% gray (with a `Warning` diagnostic).
 - Non-zero stroke dash phases are ignored (with a `Warning` diagnostic).
 - Non-rectangular clip paths are approximated by their axis-aligned bounding box (with a `Warning` diagnostic).
+- Complex non-zero fill contours that exceed planar winding resolution budgets or fail loop closure are kept as-is (with a `Warning` diagnostic).
+- Embedded images with unsupported format extensions are omitted (with a `Warning` diagnostic).
 - Hyperlinks (`FrameItem::Link`) are omitted.
 
 ### Diagnostics
