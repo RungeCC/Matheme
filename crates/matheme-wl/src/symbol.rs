@@ -158,6 +158,8 @@ define_system_symbols! {
         GEOMETRIC_TRANSFORMATION => "GeometricTransformation",
         /// ``System`Line``.
         LINE => "Line",
+        /// ``System`Polygon``.
+        POLYGON => "Polygon",
         /// ``System`Inset``.
         INSET => "Inset",
         /// ``System`Show``.
@@ -168,6 +170,22 @@ define_system_symbols! {
         EDGE_FORM => "EdgeForm",
         /// ``System`FaceForm``.
         FACE_FORM => "FaceForm",
+        /// ``System`LinearGradientFilling``.
+        LINEAR_GRADIENT_FILLING => "LinearGradientFilling",
+        /// ``System`RadialGradientFilling``.
+        RADIAL_GRADIENT_FILLING => "RadialGradientFilling",
+        /// ``System`ConicGradientFilling``.
+        CONIC_GRADIENT_FILLING => "ConicGradientFilling",
+        /// ``System`PatternFilling``.
+        PATTERN_FILLING => "PatternFilling",
+        /// ``System`Texture``.
+        TEXTURE => "Texture",
+        /// ``System`Image``.
+        IMAGE => "Image",
+        /// ``System`ColorSpace``.
+        COLOR_SPACE => "ColorSpace",
+        /// ``System`Background``.
+        BACKGROUND => "Background",
         /// ``System`Thickness``.
         THICKNESS => "Thickness",
         /// ``System`CapForm``.

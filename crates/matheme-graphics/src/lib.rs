@@ -8,14 +8,18 @@
 
 pub mod extract;
 mod lru;
+pub mod paint;
 mod winding;
 #[cfg(feature = "wl")]
 pub mod wl;
 
 pub use extract::{
     cache_generation, clear_glyph_cache, export_vector, DegradationWarning, EmbeddedImageFormat,
-    GlyphInstances, GlyphKey, LineCapStyle, LineJoinStyle, Rgba, Segment, StrokeStyle, Subpath,
+    GlyphInstances, GlyphKey, LineCapStyle, LineJoinStyle, Segment, StrokeStyle, Subpath,
     UnitGlyphKey, VectorExport, VectorPage, VectorPrimitive, WindingRule,
+};
+pub use paint::{
+    ClipRegion, GradientPaint, GradientSpread, GradientStop, PaintStyle, Rgba, TilingPaint,
 };
 #[cfg(feature = "wl")]
 pub use wl::{page_to_expr, pages_to_expr};
