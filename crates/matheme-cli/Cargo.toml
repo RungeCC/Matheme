@@ -15,4 +15,3 @@ matheme-world = { path = "../matheme-world" }
 matheme-wstp = { path = "../matheme-wstp" }
 typst = "=0.15.1"
 wolfram-app-discovery = "0.6.0"
-wstp = "0.6.0"

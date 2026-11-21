@@ -3,7 +3,6 @@
 
 mod cli;
 mod discovery;
-mod kernel;
 
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
@@ -17,13 +16,13 @@ use matheme_world::compile::{
 use matheme_world::query::{FontFilter, FontOrigin, PackageFilter, PackageOriginFilter, Page};
 use matheme_world::settings::{Patch, Update};
 use matheme_world::{datetime_from_unix, WorldDate};
+use matheme_wstp::{EvalOutput, KernelSession};
 use typst::foundations::{Dict, Repr, Str, Value};
 
 use crate::cli::{
     Cli, Command, CompileCmd, EvalCmd, EvalFormat, FontSourceArg, FontsCmd, FormatArg,
     PackageOriginArg, PackagesCmd,
 };
-use crate::kernel::KernelSession;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -138,13 +137,23 @@ fn cmd_version(explicit: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn print_eval_sideband(output: &kernel::EvalOutput) {
+fn print_eval_sideband(output: &EvalOutput) {
     for msg in &output.messages {
         eprintln!("wolfram message: {msg}");
     }
     for line in &output.prints {
         eprintln!("{line}");
     }
+}
+
+fn eval_to_typst(
+    session: &mut KernelSession,
+    wl_code: &str,
+) -> Result<(Value, Vec<String>, EvalOutput), matheme_wstp::KernelError> {
+    let output = session.eval_code(wl_code)?;
+    let mut warnings = Vec::new();
+    let value = output.expr.to_typst(&mut warnings);
+    Ok((value, warnings, output))
 }
 
 fn cmd_eval(cli: &Cli, cmd: &EvalCmd) -> Result<(), String> {
@@ -166,7 +175,7 @@ fn cmd_eval(cli: &Cli, cmd: &EvalCmd) -> Result<(), String> {
                 println!("{}", out.expr);
             }
             EvalFormat::Typst => {
-                let (val, warnings, out) = session.eval_to_typst(code).map_err(|e| e.to_string())?;
+                let (val, warnings, out) = eval_to_typst(session, code).map_err(|e| e.to_string())?;
                 print_eval_sideband(&out);
                 for w in warnings {
                     eprintln!("warning: {w}");
@@ -375,8 +384,7 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
             print_eval_sideband(&out);
         }
         for (key, wl_code) in &cmd.wl_inputs {
-            let (val, warnings, out) = session
-                .eval_to_typst(wl_code)
+            let (val, warnings, out) = eval_to_typst(&mut session, wl_code)
                 .map_err(|e| format!("--wl-input {key}: {e}"))?;
             print_eval_sideband(&out);
             for w in warnings {
@@ -442,10 +450,7 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
             if !failure.formatted.is_empty() {
                 eprint!("{}", failure.formatted);
             }
-            Err(format!(
-                "Typst compilation failed with {} error(s): {}",
-                failure.error_count, failure.summary
-            ))
+            Err(failure.display_message())
         }
     }
 }

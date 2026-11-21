@@ -198,10 +198,21 @@ pub fn serve(link: &mut Link) {
             Ok(action) => action,
             Err(failure) => return Answer::Failure(failure),
         };
-        if action.needs_host_fonts() {
-            wolfram::configure_world_fonts(link);
+        let host_font_warning = if action.needs_host_fonts() {
+            wolfram::configure_world_fonts(link)
+        } else {
+            None
+        };
+        let mut answer = action.execute();
+        if let Some(warning) = host_font_warning {
+            match &mut answer {
+                Answer::Success(outcome) => outcome.warn(warning),
+                Answer::Failure(failure) => {
+                    failure.diagnostics.push(diagnostics::warning(warning));
+                }
+            }
         }
-        action.execute()
+        answer
     }))
     .unwrap_or_else(|payload| {
         Answer::Failure(Failure::new("Call", panic_message(payload, "matheme_call")))

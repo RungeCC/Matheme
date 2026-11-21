@@ -5,6 +5,7 @@
 //! `matheme_world::set_host_font_paths`, and inspects the loaded LibraryLink /
 //! WSTP runtime for [`crate::version::Version`].
 
+#[cfg(not(test))]
 use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -14,8 +15,8 @@ use wolfram_library_link::{
     wstp::{sys as wstp_sys, Link},
 };
 
-use matheme_wl::{Expr, Symbol};
-use matheme_wstp::{EvalOptions, WstpError, WstpLink};
+use matheme_wl::Expr;
+use matheme_wstp::{install, EvalOptions, WstpError, WstpLink};
 
 static INSTALLATION_DIR: OnceLock<PathBuf> = OnceLock::new();
 static HOST_FONTS_SET: OnceLock<()> = OnceLock::new();
@@ -36,8 +37,17 @@ pub struct DllInfo {
 /// metadata with `None` runtime fields when called outside a Wolfram Kernel
 /// (e.g. unit tests).
 pub fn dll_info() -> DllInfo {
+    #[cfg(test)]
+    let library_data: Option<wolfram_library_link::sys::WolframLibraryData> = None;
+    #[cfg(not(test))]
     let library_data = std::panic::catch_unwind(wolfram_library_link::get_library_data).ok();
+    #[cfg(test)]
+    let library_link_runtime: Option<i64> = library_data.map(|_| 0);
+    #[cfg(not(test))]
     let library_link_runtime = library_data.map(|data| unsafe { (*data.raw_library_data).VersionNumber });
+    #[cfg(test)]
+    let wstp_runtime: Option<(i64, i64, i64)> = None;
+    #[cfg(not(test))]
     let wstp_runtime = library_data.and_then(|data| unsafe {
         let env = rtl::getWSLINKEnvironment(data.raw_library_data);
         if env.is_null() {
@@ -64,10 +74,10 @@ pub fn dll_info() -> DllInfo {
 /// Evaluate a WL expression on the bridge's WSTP link via [`WstpLink::eval_with`].
 ///
 /// This mirrors `wolfram_library_link::try_evaluate`, except that the returned
-/// expression is read with a context-resolving reader: Wolfram 15 sends
-/// `ReturnPacket` without a context, which the stock `get_expr()` cannot parse.
+/// expression is read with a context-resolving reader and unified timeout/resync
+/// handling inside [`WstpLink::eval_with`].
 fn evaluate(link: &mut Link, query: &Expr) -> Result<Expr, WstpError> {
-    let result = WstpLink::new(link)
+    WstpLink::new(link)
         .eval_with(query, EvalOptions::library_link(), |raw_link| {
             let processed = unsafe { rtl::processWSLINK(raw_link.raw_link().cast()) };
             if processed == 0 {
@@ -78,38 +88,42 @@ fn evaluate(link: &mut Link, query: &Expr) -> Result<Expr, WstpError> {
                 Ok(())
             }
         })
-        .map(|out| out.expr);
-
-    if matches!(
-        &result,
-        Err(WstpError::Protocol(_) | WstpError::PacketLimit { .. })
-    ) {
-        WstpLink::new(link).try_resync_packet();
-    }
-    result
+        .map(|out| out.expr)
 }
 
 /// Ask the kernel for `$InstallationDirectory`, caching only successful lookups
 /// so a transient WSTP failure can be retried on a subsequent call.
-fn installation(link: &mut Link) -> Option<&'static PathBuf> {
+fn installation(link: &mut Link) -> Result<&'static PathBuf, String> {
     if let Some(dir) = INSTALLATION_DIR.get() {
-        return Some(dir);
+        return Ok(dir);
     }
-    let query = Expr::from(Symbol::INSTALLATION_DIRECTORY);
-    let value = evaluate(link, &query).ok()?;
-    let dir = PathBuf::from(value.as_str()?);
-    let _ = INSTALLATION_DIR.set(dir);
-    INSTALLATION_DIR.get()
+    let query = Expr::from(install::INSTALLATION_DIRECTORY);
+    let value = evaluate(link, &query)
+        .map_err(|err| format!("failed to query $InstallationDirectory for host fonts: {err}"))?;
+    let dir_str = value
+        .as_str()
+        .ok_or_else(|| format!("$InstallationDirectory returned non-string expression: {value}"))?;
+    let _ = INSTALLATION_DIR.set(PathBuf::from(dir_str));
+    INSTALLATION_DIR
+        .get()
+        .ok_or_else(|| "failed to cache $InstallationDirectory".to_owned())
 }
 
 /// Push the discovered directories into the Wolfram-agnostic world crate once
 /// per process so steady-state calls avoid taking the settings write lock.
-pub fn configure_world_fonts(link: &mut Link) {
+///
+/// Returns an optional warning message if host font discovery failed so callers
+/// can surface it as a diagnostic instead of silently degrading fonts.
+pub fn configure_world_fonts(link: &mut Link) -> Option<String> {
     if HOST_FONTS_SET.get().is_some() {
-        return;
+        return None;
     }
-    if let Some(root) = installation(link) {
-        matheme_world::set_host_font_paths(vec![matheme_wstp::wolfram_truetype_font_dir(root)]);
-        let _ = HOST_FONTS_SET.set(());
+    match installation(link) {
+        Ok(root) => {
+            matheme_world::set_host_font_paths(vec![matheme_wstp::wolfram_truetype_font_dir(root)]);
+            let _ = HOST_FONTS_SET.set(());
+            None
+        }
+        Err(warning) => Some(warning),
     }
 }

@@ -22,4 +22,4 @@ pub use convert::{from_typst, to_typst};
 pub use entry::{Entry, Rule};
 pub use expr::Expr;
 pub use normal::Normal;
-pub use symbol::Symbol;
+pub use symbol::{fundamental, graphics, Symbol};
