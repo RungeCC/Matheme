@@ -271,14 +271,13 @@ fn install() -> Arc<FontCache> {
     next
 }
 
-/// Rescan with the current settings. Returns whether the cache was live.
+/// Rescan with the current settings. Always advances [`font_generation`] so
+/// dependent caches (e.g. glyph outline caches) invalidate even when the font
+/// book had not been scanned yet. Returns whether the cache was live.
 pub(crate) fn refresh() -> bool {
-    if FONTS.refresh_if_live(scan).is_some() {
-        invalidate_dependent_caches();
-        true
-    } else {
-        false
-    }
+    let was_live = FONTS.refresh_if_live(scan).is_some();
+    invalidate_dependent_caches();
+    was_live
 }
 
 /// Drop the cache entirely; the next use rescans from the settings. Also

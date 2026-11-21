@@ -12,8 +12,8 @@ If[MemberQ[$Packages, "Matheme`"],
 
 BeginPackage["Matheme`", {"Wolfram`ErrorTools`"}];
 
-MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", \"HTML\", or \"Graphics\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\").";
-MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and returns vector Graphics pages (directly from Typst's Frame tree by default, or imported when \"Format\" is \"SVG\" or \"PDF\").";
+MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", \"HTML\", or \"Graphics\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\"). Paged formats return \"Pages\" (exported page count) and \"TotalPages\" (full compiled page count).";
+MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and returns vector Graphics pages (directly from Typst's Frame tree by default, or imported when \"Format\" is \"SVG\" or \"PDF\"). Rejects non-vector formats such as \"HTML\".";
 TypstForm::usage = "TypstForm[expr] prints as a Typst math expression approximation of expr.";
 MathemeToTypst::usage = "MathemeToTypst[expr, opts] converts expr to a Typst math String.";
 BoxesToTypst::usage = "BoxesToTypst[boxes] converts a Wolfram Language Box expression to a Typst math String.";
@@ -351,28 +351,45 @@ normalizeSvgUnits[svg_String] := StringReplace[svg,
     }]
 ];
 
+(* Extract numeric {x, y} coordinate bounds from Graphics primitives as a
+   fallback when AbsoluteOptions[_, PlotRange] fails to return a 2x2 matrix. *)
+extractCoordBounds[g_Graphics] := Module[{pts},
+  pts = Cases[First[g], {x_?NumericQ, y_?NumericQ} :> {N[x], N[y]}, Infinity];
+  If[Length[pts] > 0,
+    {MinMax[pts[[All, 1]]], MinMax[pts[[All, 2]]]},
+    None
+  ]
+];
+
+validBoundsQ[pr_] := MatrixQ[pr, NumericQ] && Dimensions[pr] === {2, 2};
+
 (* PDF and SVG importers set PlotRange strictly to the page MediaBox/viewBox,
    which can clip glyph descenders or italic overhangs when margin is 0pt;
    switching blindly to PlotRange -> All would add default PlotRangePadding,
    leave ImageSize stale, and drop fixed page margins (e.g. A4 PDF pages).
    Unify all formats with "Format" -> "Graphics": take the union of the page
-   box and the actual primitive content bounds via AbsoluteOptions, and set
+   box and the actual primitive content bounds via AbsoluteOptions (falling
+   back to explicit coordinate extraction if AbsoluteOptions fails), and set
    PlotRangePadding -> None, ImagePadding -> None, and exact ImageSize -> {w, h}. *)
 uncropGraphics[g_Graphics] := Module[
-  {opts, origPR, absPR, x0, x1, y0, y1, w, h},
+  {opts, origPR, absOpts, absPR, contentPR, boxes, x0, x1, y0, y1, w, h},
   opts = Association[Rest[List @@ g]];
   origPR = Lookup[opts, PlotRange, None];
-  absPR = PlotRange /. Quiet[
-    AbsoluteOptions[
-      Graphics[First[g], PlotRange -> All, PlotRangePadding -> None],
-      PlotRange
-    ]
+  absOpts = Check[
+    Quiet[
+      AbsoluteOptions[
+        Graphics[First[g], PlotRange -> All, PlotRangePadding -> None],
+        PlotRange
+      ]
+    ],
+    $Failed
   ];
-  If[
-    MatrixQ[origPR, NumericQ] && Dimensions[origPR] === {2, 2} &&
-    MatrixQ[absPR, NumericQ] && Dimensions[absPR] === {2, 2},
-    {x0, x1} = MinMax[Join[origPR[[1]], absPR[[1]]]];
-    {y0, y1} = MinMax[Join[origPR[[2]], absPR[[2]]]];
+  absPR = If[absOpts === $Failed, None, PlotRange /. absOpts];
+  contentPR = If[validBoundsQ[absPR], absPR, extractCoordBounds[g]];
+  boxes = Select[{origPR, contentPR}, validBoundsQ];
+  If[Length[boxes] > 0,
+    {x0, x1} = MinMax[Flatten[boxes[[All, 1]]]];
+    {y0, y1} = MinMax[Flatten[boxes[[All, 2]]]];
     w = Max[1., x1 - x0];
     h = Max[1., y1 - y0];
     Graphics[
@@ -385,13 +402,32 @@ uncropGraphics[g_Graphics] := Module[
         AspectRatio -> Automatic
       |>]]
     ],
+    Message[
+      MathemeDiagnostic::warning,
+      "MathemeToGraphics",
+      "Could not determine numeric PlotRange bounds; falling back to PlotRange -> All."
+    ];
     Graphics[
       First[g],
-      Sequence @@ Normal[Join[opts, <|PlotRange -> All, PlotRangePadding -> None|>]]
+      Sequence @@ Normal[Join[opts, <|
+        PlotRange -> All,
+        PlotRangePadding -> None,
+        ImagePadding -> None,
+        AspectRatio -> Automatic
+      |>]]
     ]
   ]
 ];
 uncropGraphics[other_] := other;
+
+validateGraphicsFormat[fmt_] := If[
+  StringQ[fmt] && MemberQ[{"graphics", "vector", "svg", "pdf"}, ToLowerCase[fmt]],
+  fmt,
+  raiseCallError[
+    "MathemeToGraphics only supports vector formats \"Graphics\", \"SVG\", or \"PDF\"; got `Format`.",
+    <|"Format" -> fmt|>
+  ]
+];
 
 toGraphics[result_] := Module[{pdf, svg, graphics},
   If[FailureQ[result] || !AssociationQ[result],
@@ -415,18 +451,24 @@ toGraphics[result_] := Module[{pdf, svg, graphics},
           Join[result, <|"Graphics" -> Map[uncropGraphics, graphics]|>]
         ],
       True,
-        Join[result, <|"Graphics" -> {}|>]
+        raiseCallError["MathemeToGraphics received an unsupported compilation result format."]
     ]
   ]
 ];
 
 MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
-  Module[{flatOpts = Flatten[{opts}], merged},
-    merged = If[KeyExistsQ[Association[flatOpts], "Format"],
-      flatOpts,
-      Append[flatOpts, "Format" -> OptionValue[MathemeToGraphics, "Format"]]
-    ];
-    Handle[toGraphics[MathemeCompile[source, Sequence @@ merged]], _Failure]
+  Handle[
+    Module[{flatOpts = Flatten[{opts}], optAssoc, fmt, merged},
+      optAssoc = Association[flatOpts];
+      fmt = Lookup[optAssoc, "Format", OptionValue[MathemeToGraphics, "Format"]];
+      validateGraphicsFormat[fmt];
+      merged = If[KeyExistsQ[optAssoc, "Format"],
+        flatOpts,
+        Append[flatOpts, "Format" -> fmt]
+      ];
+      toGraphics[MathemeCompile[source, Sequence @@ merged]]
+    ],
+    _Failure
   ];
 
 (* ------------------------------------------------------------------------ *)

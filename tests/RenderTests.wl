@@ -176,6 +176,32 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       BoxesToTypst[FractionBox["a", SuperscriptBox["b", "2"]]],
       "frac(a, b^2)",
       TestID -> "BoxesToTypst-Fraction"
+    ],
+    VerificationTest[
+      Module[{src = "Page 1\n#pagebreak()\nPage 2\n#pagebreak()\nPage 3", rG, rS, rP},
+        rG = MathemeToGraphics[src, "Pages" -> 2];
+        rS = MathemeToGraphics[src, "Format" -> "SVG", "Pages" -> {1, 3}];
+        rP = MathemeCompile[src, "Format" -> "PDF", "Pages" -> 2];
+        rG["Pages"] === 1 && rG["TotalPages"] === 3 && Length[rG["Graphics"]] === 1 &&
+          rS["Pages"] === 2 && rS["TotalPages"] === 3 && Length[rS["SVG"]] === 2 && Length[rS["Graphics"]] === 2 &&
+          rP["Pages"] === 1 && rP["TotalPages"] === 3
+      ],
+      True,
+      TestID -> "Pages-Filter-Exported-And-Total-Count-Consistency"
+    ],
+    VerificationTest[
+      Module[{res = MathemeToGraphics["= Hello", "Format" -> "HTML"]},
+        FailureQ[res] && res[[1]] === MathemeCallError
+      ],
+      True,
+      TestID -> "ToGraphics-Rejects-HTML-Format"
+    ],
+    VerificationTest[
+      Module[{res = MathemeCompile["= Hello", "Format" -> "HTML", "Pages" -> {1}]},
+        FailureQ[res] && res[[1]] === MathemeCompileError
+      ],
+      True,
+      TestID -> "Compile-HTML-Rejects-Pages-Option"
     ]
   };
 

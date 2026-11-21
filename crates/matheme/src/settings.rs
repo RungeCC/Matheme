@@ -128,9 +128,8 @@ pub fn run_reset() -> Answer {
 }
 
 fn applied_outcome(applied: world::Applied) -> Outcome {
-    if applied.changes.fonts {
-        matheme_graphics::clear_caches();
-    }
+    // `world::apply` advances `font_generation()` whenever font settings change,
+    // automatically invalidating `matheme-graphics` caches on next export.
     Outcome::new([
         rule!(
             "Changed" -> assoc! {

@@ -339,15 +339,9 @@ fn finish_success(
 }
 
 fn finish_failure(failure: CompileFailure) -> Answer {
-    Failure::new(
-        "Compile",
-        format!(
-            "Typst compilation failed with {} error(s): {}",
-            failure.error_count, failure.summary
-        ),
-    )
-    .with(failure.diagnostics, Some(failure.formatted))
-    .into()
+    Failure::new("Compile", failure.display_message())
+        .with(failure.diagnostics, Some(failure.formatted))
+        .into()
 }
 
 pub fn run(input: CompileArgs) -> Answer {
@@ -386,7 +380,8 @@ pub fn run(input: CompileArgs) -> Answer {
             Ok(success) => finish_success(
                 vec![
                     rule!("Graphics" -> success.output),
-                    rule!("Pages" -> success.total_pages as i64),
+                    rule!("Pages" -> success.exported_pages as i64),
+                    rule!("TotalPages" -> success.total_pages as i64),
                 ],
                 success.evaluated,
                 success.diagnostics,
@@ -422,14 +417,23 @@ pub fn run(input: CompileArgs) -> Answer {
     match compile::compile(request) {
         Ok(success) => {
             let outcome_entries = match success.output {
-                CompileOutput::Pdf { bytes, pages } => vec![
+                CompileOutput::Pdf {
+                    bytes,
+                    pages,
+                    total_pages,
+                } => vec![
                     rule!("PDF" -> Expr::bytes(bytes)),
                     rule!("Pages" -> pages as i64),
+                    rule!("TotalPages" -> total_pages as i64),
                 ],
-                CompileOutput::Svg { pages, total_pages } => vec![
-                    rule!("SVG" -> Expr::list(pages)),
-                    rule!("Pages" -> total_pages as i64),
-                ],
+                CompileOutput::Svg { pages, total_pages } => {
+                    let exported_pages = pages.len();
+                    vec![
+                        rule!("SVG" -> Expr::list(pages)),
+                        rule!("Pages" -> exported_pages as i64),
+                        rule!("TotalPages" -> total_pages as i64),
+                    ]
+                }
                 CompileOutput::Html { html } => vec![rule!("HTML" -> html)],
             };
             finish_success(

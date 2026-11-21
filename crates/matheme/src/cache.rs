@@ -81,7 +81,9 @@ wl_args! {
 
 pub fn run_clear(input: ClearCacheArgs) -> Answer {
     let cleared = world::clear_caches(input.targets.0);
-    if input.targets.0.fonts || input.targets.0.memoization {
+    // Eagerly release cached glyph outlines / WL expressions when Fonts are
+    // explicitly cleared (ordinary font reloads auto-invalidate via font_generation).
+    if input.targets.0.fonts {
         matheme_graphics::clear_caches();
     }
     Outcome::new([rule!(
@@ -146,8 +148,9 @@ pub fn run_warmup(input: WarmupArgs) -> Answer {
 // ---------------------------------------------------------------------------
 
 pub fn run_reload_fonts() -> Answer {
+    // `world::reload_fonts()` advances `font_generation()`, which automatically
+    // invalidates `matheme-graphics` glyph & expression caches on next export.
     let count = world::reload_fonts();
-    matheme_graphics::clear_caches();
     Outcome::new([rule!("Fonts" -> count as i64), font_counts_entry(false)]).into()
 }
 
