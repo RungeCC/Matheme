@@ -47,7 +47,7 @@ cargo test -p matheme-bench
 
 ### Run Wolfram Language end-to-end benchmark
 
-After building the paclet (`bash scripts/build.sh`):
+After building the paclet (`nu scripts/build.nu`):
 
 ```powershell
 wolframscript -file bench/wolfram_bench.wl

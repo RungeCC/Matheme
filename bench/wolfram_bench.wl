@@ -3,7 +3,7 @@
    Compares native "Graphics" export against "SVG" and "PDF" import pipelines
    across math, prose, multi-page filtering, winding resolution, and glyph churn.
 
-   Run after `bash scripts/build.sh`:
+   Run after `nu scripts/build.nu`:
      wolframscript -file bench/wolfram_bench.wl
 *)
 

@@ -5,10 +5,10 @@
 /output/
 *.paclet
 
-# Local scratch space: probe scripts, logs, WSTP SDK alias (see scripts/setup-wstp.sh)
+# Local scratch space: probe scripts, logs, WSTP SDK alias (see scripts/setup-wstp.nu)
 /.tmp/
 
-# Compiler and library artifacts (produced by scripts/build.sh, never committed)
+# Compiler and library artifacts (produced by scripts/build.nu, never committed)
 *.dll
 *.pdb
 *.exp

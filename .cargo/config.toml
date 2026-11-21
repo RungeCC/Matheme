@@ -1,4 +1,4 @@
 [env]
 # Resolved relative to the directory containing .cargo/ (the project root).
-# scripts/setup-wstp.sh copies the WSTP DeveloperKit archive here.
+# scripts/setup-wstp.nu copies the WSTP DeveloperKit archive here.
 WSTP_COMPILER_ADDITIONS_DIRECTORY = { value = ".tmp/wstp-compiler-additions", relative = true, force = false }

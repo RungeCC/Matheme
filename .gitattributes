@@ -1,7 +1,8 @@
 # Normalize line endings in the repository; check out as-is.
 * text=auto
 
-# Shell scripts must stay LF or Git Bash cannot execute them on Windows.
+# Scripts: LF for cross-platform tooling consistency.
+*.nu text eol=lf
 *.sh text eol=lf
 
 # Source and config files: LF for cross-platform tooling consistency.

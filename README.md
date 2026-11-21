@@ -35,16 +35,16 @@ Typst's own build-time `TYPST_VERSION` environment variable
 
 ## Build
 
-Requires Rust (MSVC target, `x86_64-pc-windows-msvc`) and Wolfram 15.0 on
+Requires Rust (MSVC target, `x86_64-pc-windows-msvc`), [Nushell](https://www.nushell.sh/) (`nu`), and Wolfram 15.0 on
 Windows x86-64.
 
-```bash
-bash scripts/build.sh
+```nu
+nu scripts/build.nu
 ```
 
 The script:
 
-1. runs `scripts/setup-wstp.sh`, which copies Wolfram 15's genuine
+1. runs `scripts/setup-wstp.nu`, which copies Wolfram 15's genuine
    `wstp64i4s.lib` (WS* symbols) from the **WSTP DeveloperKit** into `.tmp/`;
 2. runs `cargo build --release -p matheme`;
 3. assembles a standalone paclet directory at `output/Matheme/` (`PacletInfo.m`,
