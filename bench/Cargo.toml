@@ -1,0 +1,31 @@
+[package]
+name = "matheme-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+bench = false
+
+[dependencies]
+matheme-graphics = { path = "../crates/matheme-graphics" }
+matheme-world = { path = "../crates/matheme-world" }
+matheme-wl = { path = "../crates/matheme-wl" }
+matheme-wstp = { path = "../crates/matheme-wstp" }
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "graphics_perf"
+harness = false
+
+[[bench]]
+name = "pipeline_perf"
+harness = false
+
+[[bench]]
+name = "world_perf"
+harness = false

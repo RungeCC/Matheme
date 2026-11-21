@@ -6,6 +6,7 @@ members = [
     "crates/matheme-wl",
     "crates/matheme-wstp",
     "crates/matheme-cli",
+    "bench",
 ]
 default-members = ["crates/matheme"]
 resolver = "2"
