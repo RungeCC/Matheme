@@ -9,7 +9,7 @@
 //! - [`Normal`] for compound `head[args…]` expressions;
 //! - [`Entry`] / [`Rule`] for association elements, keeping `Rule` and
 //!   `RuleDelayed` apart;
-//! - [`Symbol`] for `System`` symbols.
+//! - [`Symbol`] for `` System` `` symbols.
 
 mod convert;
 mod entry;

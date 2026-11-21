@@ -1,12 +1,12 @@
 //! Fully-qualified Wolfram Language symbols, organized by domain.
 //!
 //! All built-in symbol constants are zero-allocation compile-time `const`
-//! values (`Cow::Borrowed("System`...")`), grouped into:
+//! values (``Cow::Borrowed("System`...")``), grouped into:
 //!
 //! - [`fundamental`]: core Wolfram Language data types, sentinels, containers,
 //!   rules, and native value heads mapped by [`crate::to_typst`] /
 //!   [`crate::from_typst`].
-//! - [`graphics`]: Wolfram Language `System\`Graphics` primitives, styling
+//! - [`graphics`]: Wolfram Language ``System`Graphics`` primitives, styling
 //!   directives, options, and alignment anchors.
 //!
 //! Transport-specific symbols (such as WSTP packet heads or kernel globals)
@@ -22,7 +22,7 @@
 use std::borrow::{Borrow, Cow};
 use std::fmt;
 
-/// A fully-qualified Wolfram Language symbol name, e.g. `System`List`.
+/// A fully-qualified Wolfram Language symbol name, e.g. ``System`List``.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Symbol(Cow<'static, str>);
 
@@ -37,7 +37,7 @@ impl Symbol {
         Self(name.into())
     }
 
-    /// Build a dynamic symbol in the `System`` context, e.g. `Symbol::system("List")`.
+    /// Build a dynamic symbol in the `` System` `` context, e.g. `Symbol::system("List")`.
     ///
     /// Prefer constants from [`fundamental`] or [`graphics`] when the symbol is
     /// statically known.
@@ -95,7 +95,7 @@ macro_rules! define_system_symbols {
                 pub const $const_name: Symbol = Symbol::from_static(concat!("System`", $short));
             )*
 
-            /// All `System`` symbols defined in this domain module.
+            /// All `` System` `` symbols defined in this domain module.
             pub const ALL_SYMBOLS: &[Symbol] = &[$($const_name),*];
         }
     };
@@ -104,95 +104,95 @@ macro_rules! define_system_symbols {
 define_system_symbols! {
     /// Fundamental Wolfram Language data, container, rule, and value-conversion symbols.
     pub mod fundamental {
-        /// `System`True`.
+        /// ``System`True``.
         TRUE => "True",
-        /// `System`False`.
+        /// ``System`False``.
         FALSE => "False",
-        /// `System`Null`.
+        /// ``System`Null``.
         NULL => "Null",
-        /// `System`None`, the WL spelling of "no value".
+        /// ``System`None``, the WL spelling of "no value".
         NONE => "None",
-        /// `System`Automatic`, the WL spelling of Typst's `auto`.
+        /// ``System`Automatic``, the WL spelling of Typst's `auto`.
         AUTOMATIC => "Automatic",
-        /// `System`All`, used for unbounded ranges/queries.
+        /// ``System`All``, used for unbounded ranges/queries.
         ALL => "All",
-        /// `System`Full`.
+        /// ``System`Full``.
         FULL => "Full",
-        /// `System`Indeterminate`, used for non-finite `NaN` floats.
+        /// ``System`Indeterminate``, used for non-finite `NaN` floats.
         INDETERMINATE => "Indeterminate",
-        /// `System`DirectedInfinity`, used for `±inf` floats.
+        /// ``System`DirectedInfinity``, used for `±inf` floats.
         DIRECTED_INFINITY => "DirectedInfinity",
-        /// `System`List`.
+        /// ``System`List``.
         LIST => "List",
-        /// `System`Association`.
+        /// ``System`Association``.
         ASSOCIATION => "Association",
-        /// `System`Rule` — immediate rule `key -> value`.
+        /// ``System`Rule`` — immediate rule `key -> value`.
         RULE => "Rule",
-        /// `System`RuleDelayed` — delayed rule `key :> value`.
+        /// ``System`RuleDelayed`` — delayed rule `key :> value`.
         RULE_DELAYED => "RuleDelayed",
-        /// `System`Span`.
+        /// ``System`Span``.
         SPAN => "Span",
-        /// `System`ByteArray`.
+        /// ``System`ByteArray``.
         BYTE_ARRAY => "ByteArray",
-        /// `System`Quantity`.
+        /// ``System`Quantity``.
         QUANTITY => "Quantity",
-        /// `System`RGBColor`.
+        /// ``System`RGBColor``.
         RGB_COLOR => "RGBColor",
-        /// `System`DateObject`.
+        /// ``System`DateObject``.
         DATE_OBJECT => "DateObject",
-        /// `System`TimeObject`.
+        /// ``System`TimeObject``.
         TIME_OBJECT => "TimeObject",
     }
 }
 
 define_system_symbols! {
-    /// Wolfram Language `System`Graphics` primitives, directives, options, and anchors.
+    /// Wolfram Language ``System`Graphics`` primitives, directives, options, and anchors.
     pub mod graphics {
-        /// `System`Graphics`.
+        /// ``System`Graphics``.
         GRAPHICS => "Graphics",
-        /// `System`FilledCurve`.
+        /// ``System`FilledCurve``.
         FILLED_CURVE => "FilledCurve",
-        /// `System`JoinedCurve`.
+        /// ``System`JoinedCurve``.
         JOINED_CURVE => "JoinedCurve",
-        /// `System`GeometricTransformation`.
+        /// ``System`GeometricTransformation``.
         GEOMETRIC_TRANSFORMATION => "GeometricTransformation",
-        /// `System`Line`.
+        /// ``System`Line``.
         LINE => "Line",
-        /// `System`Inset`.
+        /// ``System`Inset``.
         INSET => "Inset",
-        /// `System`Show`.
+        /// ``System`Show``.
         SHOW => "Show",
-        /// `System`ImportByteArray`.
+        /// ``System`ImportByteArray``.
         IMPORT_BYTE_ARRAY => "ImportByteArray",
-        /// `System`EdgeForm`.
+        /// ``System`EdgeForm``.
         EDGE_FORM => "EdgeForm",
-        /// `System`FaceForm`.
+        /// ``System`FaceForm``.
         FACE_FORM => "FaceForm",
-        /// `System`Thickness`.
+        /// ``System`Thickness``.
         THICKNESS => "Thickness",
-        /// `System`CapForm`.
+        /// ``System`CapForm``.
         CAP_FORM => "CapForm",
-        /// `System`JoinForm`.
+        /// ``System`JoinForm``.
         JOIN_FORM => "JoinForm",
-        /// `System`Dashing`.
+        /// ``System`Dashing``.
         DASHING => "Dashing",
-        /// `System`ImageSize`.
+        /// ``System`ImageSize``.
         IMAGE_SIZE => "ImageSize",
-        /// `System`PlotRange`.
+        /// ``System`PlotRange``.
         PLOT_RANGE => "PlotRange",
-        /// `System`PlotRangePadding`.
+        /// ``System`PlotRangePadding``.
         PLOT_RANGE_PADDING => "PlotRangePadding",
-        /// `System`PlotRangeClipping`.
+        /// ``System`PlotRangeClipping``.
         PLOT_RANGE_CLIPPING => "PlotRangeClipping",
-        /// `System`ImagePadding`.
+        /// ``System`ImagePadding``.
         IMAGE_PADDING => "ImagePadding",
-        /// `System`AspectRatio`.
+        /// ``System`AspectRatio``.
         ASPECT_RATIO => "AspectRatio",
-        /// `System`CurveClosed`.
+        /// ``System`CurveClosed``.
         CURVE_CLOSED => "CurveClosed",
-        /// `System`Left`.
+        /// ``System`Left``.
         LEFT => "Left",
-        /// `System`Bottom`.
+        /// ``System`Bottom``.
         BOTTOM => "Bottom",
     }
 }

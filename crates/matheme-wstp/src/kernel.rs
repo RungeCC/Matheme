@@ -61,8 +61,8 @@ pub struct KernelSession {
     target: SessionTarget,
     exit_policy: ExitPolicy,
     /// When `true` (owned launched kernels), the kernel's top-level `$Context`
-    /// is isolated to `"Matheme`WSTP`"` with `$ContextPath = {"System`"}` so
-    /// WSTP transmits all non-`System\`` symbols (including `Global\``) with
+    /// is isolated to ``"Matheme`WSTP`"`` with ``$ContextPath = {"System`"}`` so
+    /// WSTP transmits all non-`` System` `` symbols (including `` Global` ``) with
     /// explicit context prefixes, while user code still evaluates in the user's
     /// logical `$Context` / `$ContextPath`.
     isolate_wire_context: bool,
@@ -70,7 +70,7 @@ pub struct KernelSession {
 }
 
 /// Initialization snippet run once on owned launched kernels so WSTP
-/// serialization preserves exact contexts for all non-`System\`` symbols.
+/// serialization preserves exact contexts for all non-`` System` `` symbols.
 const WIRE_CONTEXT_INIT_WL: &str = r#"
 Matheme`WSTP`$Context = System`$Context;
 Matheme`WSTP`$ContextPath = System`$ContextPath;
@@ -231,7 +231,7 @@ impl KernelSession {
         }
     }
 
-    /// Evaluate a Wolfram Language code string via `System\`ToExpression[code]`.
+    /// Evaluate a Wolfram Language code string via ``System`ToExpression[code]``.
     pub fn eval_code(&mut self, wl_code: &str) -> Result<EvalOutput, KernelError> {
         if self.poisoned {
             return Err(WstpError::Poisoned(

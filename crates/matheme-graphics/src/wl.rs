@@ -1,5 +1,5 @@
 //! Conversion of [`crate::extract::VectorPage`] into native Wolfram
-//! Language `System\`Graphics` [`Expr`]s.
+//! Language ``System`Graphics`` [`Expr`]s.
 
 use std::sync::{LazyLock, Mutex};
 
@@ -455,13 +455,13 @@ impl WlEncoder {
 }
 
 /// Convert multiple [`VectorPage`]s into a Wolfram Language `List` of
-/// `System\`Graphics` [`Expr`]s.
+/// ``System`Graphics`` [`Expr`]s.
 pub fn pages_to_expr(pages: &[VectorPage]) -> Expr {
     let encoder = WlEncoder::new();
     Expr::list(pages.iter().map(|page| encoder.page_to_expr(page)))
 }
 
-/// Convert one [`VectorPage`] into a `System\`Graphics` [`Expr`] with explicit
+/// Convert one [`VectorPage`] into a ``System`Graphics`` [`Expr`] with explicit
 /// numeric `PlotRange`, zero padding, and exact pt `ImageSize`.
 pub fn page_to_expr(page: &VectorPage) -> Expr {
     WlEncoder::new().page_to_expr(page)

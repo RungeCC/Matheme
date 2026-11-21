@@ -163,12 +163,12 @@ impl Expr {
     }
 
     /// Extract raw bytes from either a WXF `ExprKind::ByteArray` (zero-copy) or
-    /// the WSTP `System`ByteArray[{b1, b2, …}]` wire form.
+    /// the WSTP ``System`ByteArray[{b1, b2, …}]`` wire form.
     ///
     /// Returns:
     /// - `Ok(None)` if this expression is not a `ByteArray`;
     /// - `Ok(Some(bytes))` if it is a valid `ByteArray`;
-    /// - `Err(reason)` if it has head `System`ByteArray` but malformed contents.
+    /// - `Err(reason)` if it has head ``System`ByteArray`` but malformed contents.
     pub fn to_bytes(&self) -> Result<Option<Cow<'_, [u8]>>, String> {
         if let Some(bytes) = self.as_byte_array() {
             return Ok(Some(Cow::Borrowed(bytes)));
@@ -204,14 +204,14 @@ impl Expr {
         Normal::from_expr(&self.0)
     }
 
-    /// Zero-copy slice of elements if this expression is a `System`List`.
+    /// Zero-copy slice of elements if this expression is a ``System`List``.
     pub fn as_list(&self) -> Option<&[Expr]> {
         let normal = self.as_normal()?;
         normal.has_head(&Symbol::LIST).then(|| normal.elements())
     }
 
     /// Borrowed association entries from both the WXF `ExprKind::Association`
-    /// form and the `System`Association[System`Rule[…], …]` form sent over WSTP.
+    /// form and the ``System`Association[System`Rule[…], …]`` form sent over WSTP.
     pub fn as_association(&self) -> Option<Vec<Entry<'_>>> {
         match self.0.kind() {
             ExprKind::Association(entries) => Some(

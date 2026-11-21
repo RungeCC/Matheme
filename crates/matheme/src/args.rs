@@ -136,7 +136,7 @@ impl<T: FromExpr> FromExpr for Option<T> {
 // Reusable wrapper types for WL-specific argument idioms
 // ---------------------------------------------------------------------------
 
-/// Either `System`All` (represented as `None`) or a typed value `Some(T)`.
+/// Either ``System`All`` (represented as `None`) or a typed value `Some(T)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllOr<T>(pub Option<T>);
 

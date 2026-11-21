@@ -1,10 +1,10 @@
 //! Typst vector graphics extraction IR and optional Wolfram Language
-//! `System\`Graphics` encoding backend.
+//! ``System`Graphics`` encoding backend.
 //!
 //! - [`extract`] is host-agnostic: it walks a Typst `PagedDocument` and emits
 //!   [`VectorExport`] / [`VectorPage`] IR without depending on Wolfram Language.
 //! - [`wl`] (behind the `wl` Cargo feature, enabled by default) encodes
-//!   [`VectorPage`]s into `System\`Graphics` [`matheme_wl::Expr`]s.
+//!   [`VectorPage`]s into ``System`Graphics`` [`matheme_wl::Expr`]s.
 
 pub mod extract;
 mod lru;
@@ -30,7 +30,7 @@ pub struct GraphicsExport {
 }
 
 /// Extract selected pages of a [`typst_layout::PagedDocument`] and encode them
-/// directly as a Wolfram Language list of `System\`Graphics` expressions.
+/// directly as a Wolfram Language list of ``System`Graphics`` expressions.
 #[cfg(feature = "wl")]
 pub fn export_graphics(
     document: &typst_layout::PagedDocument,

@@ -67,4 +67,4 @@ Comparison between pre-fix baseline (`a8c4c24`) and post-fix Criterion measureme
 | `winding/dense_self_intersecting/1500` | PF-01, IE-07 | unbounded O(E²) | **73.6 µs** | Bounded by `MAX_WINDING_RESOLVE_EDGES` budget; emits `DegradationWarning::NonZeroWindingApproximated` |
 | `stroke_bbox/600_lines_rects_circles` | PF-04, IE-09 | 0.93 ms | **595–662 µs** | **~1.5× speedup** — exact analytical O(1) bbox for lines (all caps) & axis-aligned rects + curve bbox cache |
 | `compile_evaluate/svg_6p_with_25_evaluate_exprs` | PF-03 | 5.56 ms | **6.08 ms** | Identical to `svg_6p_no_evaluate` (6.11 ms): ~0% overhead with comemo-cached eval & moved final `Scope` |
-| `wstp_symbol_resolve/160k_mixed_system_and_global` | PF-05, AP-04 | 20.50 ms | **18.48 ms** | Replaced arbitrary 120-symbol whitelist with exact kernel-side wire context isolation in `KernelSession` + direct `System\`` prefixing |
+| `wstp_symbol_resolve/160k_mixed_system_and_global` | PF-05, AP-04 | 20.50 ms | **18.48 ms** | Replaced arbitrary 120-symbol whitelist with exact kernel-side wire context isolation in `KernelSession` + direct `` System` `` prefixing |

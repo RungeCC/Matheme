@@ -55,7 +55,7 @@ pub mod protocol {
 pub mod install {
     use super::*;
 
-    /// `System`$InstallationDirectory`.
+    /// ``System`$InstallationDirectory``.
     pub const INSTALLATION_DIRECTORY: Symbol = Symbol::from_static("System`$InstallationDirectory");
 
     /// Standard subdirectory under a Wolfram installation containing bundled
@@ -280,7 +280,7 @@ impl<'a> WstpLink<'a> {
         self.link.flush().map_err(WstpError::from)
     }
 
-    /// Write `System\`EvaluatePacket[expr]` to the link without flushing or
+    /// Write ``System`EvaluatePacket[expr]`` to the link without flushing or
     /// dispatching.
     pub fn put_eval_packet(&mut self, expr: &Expr) -> Result<(), WstpError> {
         let packet = eval_packet_expr(expr);
@@ -438,7 +438,7 @@ impl<'a> WstpLink<'a> {
         })
     }
 
-    /// Evaluate a Wolfram Language code string via `System\`ToExpression[code]`.
+    /// Evaluate a Wolfram Language code string via ``System`ToExpression[code]``.
     pub fn eval_code(&mut self, wl_code: &str) -> Result<EvalOutput, WstpError> {
         self.eval_expr(&to_expression_expr(wl_code))
     }
@@ -451,11 +451,11 @@ impl<'a> WstpLink<'a> {
     }
 }
 
-/// Resolve an unqualified symbol name received over WSTP into `System\``.
+/// Resolve an unqualified symbol name received over WSTP into `` System` ``.
 ///
-/// The Wolfram Kernel transmits non-`System\`` symbols (including `Global\``
+/// The Wolfram Kernel transmits non-`` System` `` symbols (including `` Global` ``
 /// and package contexts) fully qualified on WSTP links, and only strips the
-/// `System\`` context prefix — matching `wolfram-library-link`'s own WSTP
+/// `` System` `` context prefix — matching `wolfram-library-link`'s own WSTP
 /// argument reader. Callers with custom `$Context` / `$ContextPath` rules may
 /// override this via [`WstpLink::with_resolver`].
 pub fn resolve_unqualified_symbol(name: &str) -> RawSymbol {
