@@ -192,7 +192,7 @@ images still decode inside Wolfram via `ImportByteArray`.
 **Supported Vector Features (`"Format" -> "Graphics"`):**
 
 - Linear, radial (concentric and off-center focal), and conic gradients across shapes, strokes, text runs, and embedded SVGs (`LinearGradientFilling`, `RadialGradientFilling`, `ConicGradientFilling`, plus smooth `Texture[Image[...]]` for off-center focal or skewed elliptical gradients), with Typst's adaptive sRGB stop subdivision for Oklab/Oklch/HSL/HSV/linear-RGB color spaces and `relative: "self"` / `"parent"` placement.
-- Vector tilings and SVG `<pattern>` fills with `size`, `spacing`, `offset`, `relative`, cell clipping, and arbitrary affine transforms (vector-instanced `GeometricTransformation` inside `Texture[Graphics[...]]`, falling back to `PatternFilling` for very high-density grids).
+- Vector tilings and SVG `<pattern>` fills with `size`, `spacing`, `offset`, `relative`, cell clipping, and arbitrary affine transforms (pure-vector `GeometricTransformation` inside clipped `Inset[Graphics[...]]` for rectangular containers, supersampled `Texture[Graphics[...]]` for curved shapes, falling back to `PatternFilling` for very high-density grids).
 - Non-zero stroke dash phases and per-dash cap forms via `Dashing[lengths, offset, capform]`.
 - Axis-aligned rectangular clips (`Inset[Graphics[..., PlotRangeClipping -> True]]`) and arbitrary curved, holed, or nested non-rectangular clip paths (`Texture[Graphics[...]]` on `FilledCurve`).
 

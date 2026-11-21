@@ -12,8 +12,9 @@ use crate::extract::{
 };
 use crate::lru::{lock_unpoisoned, LruCache};
 use crate::paint::{
-    map_conic_stops_to_wl, project_linear_stops_to_unit, rasterize_gradient_texture,
-    subpaths_ctrl_bounds, tile_grid_translations, ClipRegion, GradientPaint, GradientSpread,
+    map_conic_stops_to_wl, primitives_contain_non_solid_paint, project_linear_stops_to_unit,
+    rasterize_gradient_texture, subpaths_axis_aligned_rect, subpaths_ctrl_bounds,
+    subpaths_oriented_rect, tile_grid_translations, ClipRegion, GradientPaint, GradientSpread,
     GradientStop, PaintStyle, Rgba, TilingPaint,
 };
 
@@ -337,16 +338,12 @@ impl WlEncoder {
         let [[x0, x1], [y0, y1]] = bounds;
         let cw = (x1 - x0).abs().max(1e-6);
         let ch = (y1 - y0).abs().max(1e-6);
-        // Supersample small Texture sub-graphics (up to 4×, targeting >= 288 pt
-        // on the long edge) so non-rectangular clips and tilings stay crisp
-        // under high-DPI rasterization and Notebook zoom; `Thickness` is
-        // proportional to width so visual stroke widths remain identical.
+        // Supersample Texture sub-graphics at 4× (288 DPI equivalent, smoothly
+        // capped at 2048 pt on the long edge) so curved clips and non-rectangular
+        // tilings stay crisp under high-DPI rasterization and Notebook zoom;
+        // `Thickness` is proportional to width so visual stroke widths remain identical.
         let max_dim = cw.max(ch);
-        let tex_scale = if max_dim < 288.0 {
-            (288.0 / max_dim).clamp(1.0, 4.0)
-        } else {
-            1.0
-        };
+        let tex_scale = (2048.0 / max_dim).clamp(1.0, 4.0);
         Expr::normal(
             &graphics::GRAPHICS,
             [
@@ -583,6 +580,28 @@ impl WlEncoder {
                     &combined
                 };
                 let ctrl_bounds = subpaths_ctrl_bounds(all_subpaths)?;
+
+                // Pure-vector fast path for rectangular tiling fills: emit an
+                // exact clipped `Inset[Graphics[...]]` instead of a rasterized
+                // `Texture[Graphics[...]]`, keeping tile edges razor-sharp at
+                // arbitrary zoom levels without alpha-filtering halos.
+                if let PaintStyle::Tiling(tiling) = paint {
+                    if let Some(inset_fill) =
+                        self.tiling_rect_inset_expr(tiling, all_subpaths, ctrl_bounds)
+                    {
+                        return match stroke {
+                            None => Some(inset_fill),
+                            Some(stroke_style) => {
+                                let mut stroke_group = stroke_directives(stroke_style, plot_width);
+                                for sp in &valid_paths {
+                                    stroke_group.push(self.build_joined_curve_expr(sp));
+                                }
+                                Some(Expr::list([inset_fill, Expr::list(stroke_group)]))
+                            }
+                        };
+                    }
+                }
+
                 let (fill_dir, is_texture) = self.paint_fill_directive(paint, ctrl_bounds)?;
                 if is_texture {
                     *has_texture = true;
@@ -618,6 +637,124 @@ impl WlEncoder {
                 }
             }
         }
+    }
+
+    /// Encode a tiling fill on an axis-aligned rectangle (or a rotated rectangle
+    /// whose tiles contain no gradient/texture directives) as a pure-vector
+    /// clipped `Inset[Graphics[...], ...]` with zero texture rasterization.
+    fn tiling_rect_inset_expr(
+        &self,
+        tiling: &TilingPaint,
+        all_subpaths: &[Subpath],
+        ctrl_bounds: [[f64; 2]; 2],
+    ) -> Option<Expr> {
+        if tiling.primitives.is_empty() {
+            return None;
+        }
+        if let Some(rect @ [[x0, x1], [y0, y1]]) = subpaths_axis_aligned_rect(all_subpaths) {
+            let cw = (x1 - x0).abs().max(1e-6);
+            let ch = (y1 - y0).abs().max(1e-6);
+            let translations = tile_grid_translations(tiling, rect, MAX_VECTOR_TILES)?;
+            let mut tile_exprs = Vec::with_capacity(tiling.primitives.len());
+            let mut inner_has_texture = false;
+            for prim in &tiling.primitives {
+                if let Some(e) = self.primitive_to_expr(prim, cw, &mut inner_has_texture) {
+                    tile_exprs.push(e);
+                }
+            }
+            if tile_exprs.is_empty() {
+                return None;
+            }
+            let instanced = instanced_expr(Expr::list(tile_exprs), &translations);
+            let mut elements = Vec::with_capacity(2);
+            if inner_has_texture {
+                elements.push(self.texture_srgb_sentinel());
+            }
+            elements.push(instanced);
+            let inner = Expr::normal(
+                &graphics::GRAPHICS,
+                [
+                    Expr::list(elements),
+                    rule_sym_expr(
+                        &graphics::PLOT_RANGE,
+                        Expr::list([Expr::list([x0, x1]), Expr::list([y0, y1])]),
+                    ),
+                    rule_sym_sym(&graphics::PLOT_RANGE_PADDING, &fundamental::NONE),
+                    rule_sym_sym(&graphics::IMAGE_PADDING, &fundamental::NONE),
+                    rule_sym_expr(&graphics::PLOT_RANGE_CLIPPING, Expr::boolean(true)),
+                    rule_sym_sym(&graphics::ASPECT_RATIO, &fundamental::FULL),
+                ],
+            );
+            return Some(Expr::normal(
+                &graphics::INSET,
+                [
+                    inner,
+                    point_expr([x0, y0]),
+                    self.origin_left_bottom.clone(),
+                    Expr::list([cw, ch]),
+                ],
+            ));
+        }
+
+        // Rotated rectangle fast path: safe whenever tile primitives contain
+        // no gradient/texture directives (Wolfram does not rotate gradient
+        // filling axes inside rotated `Inset` / `GeometricTransformation`).
+        if !primitives_contain_non_solid_paint(&tiling.primitives) {
+            if let Some(orect) = subpaths_oriented_rect(all_subpaths) {
+                let translations = tile_grid_translations(tiling, ctrl_bounds, MAX_VECTOR_TILES)?;
+                let mut tile_exprs = Vec::with_capacity(tiling.primitives.len());
+                let mut inner_has_texture = false;
+                for prim in &tiling.primitives {
+                    if let Some(e) =
+                        self.primitive_to_expr(prim, orect.width, &mut inner_has_texture)
+                    {
+                        tile_exprs.push(e);
+                    }
+                }
+                if tile_exprs.is_empty() || inner_has_texture {
+                    return None;
+                }
+                let instanced = instanced_expr(Expr::list(tile_exprs), &translations);
+                let [c, s] = orect.dir;
+                let [ox, oy] = orect.origin;
+                // Map page coords p -> local unrotated rect coords R_{-θ}(p - origin).
+                let inv_rot_mat = Expr::list([Expr::list([c, s]), Expr::list([-s, c])]);
+                let inv_trans = point_expr([-c * ox - s * oy, s * ox - c * oy]);
+                let local_tiles = Expr::normal(
+                    &graphics::GEOMETRIC_TRANSFORMATION,
+                    [instanced, Expr::list([inv_rot_mat, inv_trans])],
+                );
+                let inner = Expr::normal(
+                    &graphics::GRAPHICS,
+                    [
+                        Expr::list([local_tiles]),
+                        rule_sym_expr(
+                            &graphics::PLOT_RANGE,
+                            Expr::list([
+                                Expr::list([0.0, orect.width]),
+                                Expr::list([0.0, orect.height]),
+                            ]),
+                        ),
+                        rule_sym_sym(&graphics::PLOT_RANGE_PADDING, &fundamental::NONE),
+                        rule_sym_sym(&graphics::IMAGE_PADDING, &fundamental::NONE),
+                        rule_sym_expr(&graphics::PLOT_RANGE_CLIPPING, Expr::boolean(true)),
+                        rule_sym_sym(&graphics::ASPECT_RATIO, &fundamental::FULL),
+                    ],
+                );
+                return Some(Expr::normal(
+                    &graphics::INSET,
+                    [
+                        inner,
+                        point_expr(orect.origin),
+                        self.origin_left_bottom.clone(),
+                        Expr::list([orect.width, orect.height]),
+                        point_expr(orect.dir),
+                    ],
+                ));
+            }
+        }
+
+        None
     }
 
     /// Encode a [`PaintStyle`] into a Wolfram fill directive plus a flag
@@ -1286,6 +1423,87 @@ mod tests {
         assert!(
             rendered.contains("System`Dashing[{0.1, 0.05}, 0.03, \"Round\"]"),
             "{rendered}"
+        );
+    }
+
+    #[test]
+    fn rectangular_conic_tiling_uses_pure_vector_inset_without_texture() {
+        let tile_sp = Subpath {
+            start: [0.0, 0.0],
+            segments: vec![
+                Segment::Line([30.0, 0.0]),
+                Segment::Line([30.0, 30.0]),
+                Segment::Line([0.0, 30.0]),
+                Segment::Line([0.0, 0.0]),
+            ],
+            closed: true,
+        };
+        let rect_sp = Subpath {
+            start: [10.0, 10.0],
+            segments: vec![
+                Segment::Line([440.0, 10.0]),
+                Segment::Line([440.0, 90.0]),
+                Segment::Line([10.0, 90.0]),
+                Segment::Line([10.0, 10.0]),
+            ],
+            closed: true,
+        };
+        let stops = vec![
+            GradientStop {
+                offset: 0.0,
+                color: Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+            },
+            GradientStop {
+                offset: 0.5,
+                color: Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+            },
+        ];
+        let tile_prim = VectorPrimitive::Paths {
+            paths: vec![vec![tile_sp]],
+            fill: Some(PaintStyle::Gradient(GradientPaint::Conic {
+                local_to_page: [30.0, 0.0, 0.0, -30.0, 0.0, 30.0],
+                container_size: [30.0, 30.0],
+                center: [0.5, 0.5],
+                angle: 0.0,
+                stops,
+            })),
+            stroke: None,
+            winding: WindingRule::EvenOdd,
+        };
+        let tiling = TilingPaint {
+            tile_size: [30.0, 30.0],
+            step: [40.0, 50.0],
+            offset: [0.0, 0.0],
+            grid_to_page: [1.0, 0.0, 0.0, -1.0, 10.0, 90.0],
+            primitives: vec![tile_prim],
+        };
+        let page = VectorPage {
+            size: [450.0, 100.0],
+            bounds: [[0.0, 450.0], [0.0, 100.0]],
+            primitives: vec![VectorPrimitive::Paths {
+                paths: vec![vec![rect_sp]],
+                fill: Some(PaintStyle::Tiling(Box::new(tiling))),
+                stroke: Some(StrokeStyle {
+                    color: Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                    thickness: 1.0,
+                    cap: LineCapStyle::Butt,
+                    join: LineJoinStyle::Miter,
+                    miter_limit: 4.0,
+                    dash: Some((vec![1.0, 2.0], 0.0)),
+                }),
+                winding: WindingRule::EvenOdd,
+            }],
+        };
+        let rendered = page_to_expr(&page).to_string();
+        assert!(rendered.contains("System`Inset"), "{rendered}");
+        assert!(rendered.contains("System`ConicGradientFilling"), "{rendered}");
+        assert!(
+            !rendered.contains("System`Texture"),
+            "axis-aligned rectangular tiling must not rasterize via Texture: {rendered}"
         );
     }
 

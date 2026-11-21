@@ -363,6 +363,147 @@ pub fn subpaths_ctrl_bounds<'a>(subpaths: impl IntoIterator<Item = &'a Subpath>)
     }
 }
 
+/// Right-handed oriented rectangle `origin + s * dir + t * (-dir[1], dir[0])`
+/// for `s in [0, width]`, `t in [0, height]`, where `dir = [cos θ, sin θ]`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrientedRect {
+    pub origin: [f64; 2],
+    pub width: f64,
+    pub height: f64,
+    pub dir: [f64; 2],
+}
+
+/// Extract the 4 distinct vertices of a single closed polygonal subpath if it
+/// consists purely of line segments and has exactly 4 non-degenerate corners.
+fn single_closed_quad(subpaths: &[Subpath]) -> Option<[[f64; 2]; 4]> {
+    if subpaths.len() != 1 {
+        return None;
+    }
+    let sp = &subpaths[0];
+    if !sp.closed || sp.segments.len() < 3 || sp.segments.len() > 5 {
+        return None;
+    }
+    if !sp.start[0].is_finite() || !sp.start[1].is_finite() {
+        return None;
+    }
+    let mut verts = Vec::with_capacity(5);
+    verts.push(sp.start);
+    for seg in &sp.segments {
+        let crate::extract::Segment::Line(p) = *seg else {
+            return None;
+        };
+        if !p[0].is_finite() || !p[1].is_finite() {
+            return None;
+        }
+        let prev = *verts.last().unwrap();
+        if (p[0] - prev[0]).hypot(p[1] - prev[1]) > 1e-6 {
+            verts.push(p);
+        }
+    }
+    if verts.len() >= 2 {
+        let first = verts[0];
+        let last = *verts.last().unwrap();
+        if (last[0] - first[0]).hypot(last[1] - first[1]) <= 1e-6 {
+            verts.pop();
+        }
+    }
+    if verts.len() != 4 {
+        return None;
+    }
+    Some([verts[0], verts[1], verts[2], verts[3]])
+}
+
+/// If `subpaths` is a single closed axis-aligned rectangle (including 90°/180°/270°
+/// rotations), return its `[[x_min, x_max], [y_min, y_max]]` bounds.
+pub fn subpaths_axis_aligned_rect(subpaths: &[Subpath]) -> Option<[[f64; 2]; 2]> {
+    let verts = single_closed_quad(subpaths)?;
+    let mut x0 = f64::INFINITY;
+    let mut x1 = f64::NEG_INFINITY;
+    let mut y0 = f64::INFINITY;
+    let mut y1 = f64::NEG_INFINITY;
+    for &[x, y] in &verts {
+        x0 = x0.min(x);
+        x1 = x1.max(x);
+        y0 = y0.min(y);
+        y1 = y1.max(y);
+    }
+    let w = x1 - x0;
+    let h = y1 - y0;
+    if w <= 1e-6 || h <= 1e-6 {
+        return None;
+    }
+    let tol = 1e-5 * w.max(h);
+    let mut prev_horiz: Option<bool> = None;
+    for i in 0..4 {
+        let a = verts[i];
+        let b = verts[(i + 1) % 4];
+        let dx = (b[0] - a[0]).abs();
+        let dy = (b[1] - a[1]).abs();
+        let is_horiz = if dy <= tol && dx > tol {
+            true
+        } else if dx <= tol && dy > tol {
+            false
+        } else {
+            return None;
+        };
+        if prev_horiz == Some(is_horiz) {
+            return None;
+        }
+        prev_horiz = Some(is_horiz);
+    }
+    Some([[x0, x1], [y0, y1]])
+}
+
+/// If `subpaths` is a single closed (possibly rotated) rectangle, return its
+/// right-handed [`OrientedRect`] parameterization.
+pub fn subpaths_oriented_rect(subpaths: &[Subpath]) -> Option<OrientedRect> {
+    let [v0, v1, v2, v3] = single_closed_quad(subpaths)?;
+    let mut u = [v1[0] - v0[0], v1[1] - v0[1]];
+    let mut v = [v3[0] - v0[0], v3[1] - v0[1]];
+    let mut w = u[0].hypot(u[1]);
+    let mut h = v[0].hypot(v[1]);
+    if w <= 1e-6 || h <= 1e-6 {
+        return None;
+    }
+    let tol = 1e-5 * w.max(h);
+    // Parallelogram closure: v2 == v0 + u + v.
+    let err_x = v2[0] - (v0[0] + u[0] + v[0]);
+    let err_y = v2[1] - (v0[1] + u[1] + v[1]);
+    if err_x.hypot(err_y) > tol {
+        return None;
+    }
+    // Right-angle check: u ⊥ v.
+    let dot = u[0] * v[0] + u[1] * v[1];
+    if dot.abs() > 1e-5 * w * h {
+        return None;
+    }
+    // Ensure right-handed frame (det(u, v) > 0).
+    let det = u[0] * v[1] - u[1] * v[0];
+    if det < 0.0 {
+        std::mem::swap(&mut u, &mut v);
+        std::mem::swap(&mut w, &mut h);
+    }
+    Some(OrientedRect {
+        origin: v0,
+        width: w,
+        height: h,
+        dir: [u[0] / w, u[1] / w],
+    })
+}
+
+/// Returns `true` if any primitive in `primitives` uses a gradient, tiling,
+/// nested clip, or embedded image (i.e. anything whose orientation, `Inset`, or
+/// texture coordinates should not be nested inside a rotated `Inset`).
+pub fn primitives_contain_non_solid_paint(primitives: &[VectorPrimitive]) -> bool {
+    primitives.iter().any(|p| match p {
+        VectorPrimitive::Paths { fill, .. } => {
+            matches!(fill, Some(PaintStyle::Gradient(_) | PaintStyle::Tiling(_)))
+        }
+        VectorPrimitive::Clip { .. } | VectorPrimitive::Image { .. } => true,
+        VectorPrimitive::Glyphs { .. } | VectorPrimitive::Line { .. } => false,
+    })
+}
+
 /// Fold an arbitrary parameter `s` into `[0.0, 1.0]` according to `spread`.
 pub fn apply_spread(s: f64, spread: GradientSpread) -> f64 {
     match spread {
@@ -927,5 +1068,57 @@ mod tests {
         let t1 = eval_radial_2circle([1.0, 0.5], [0.5, 0.5], 0.5, [0.25, 0.5], 0.0, GradientSpread::Pad).unwrap();
         assert!(t0.abs() < 1e-9, "t0={t0}");
         assert!((t1 - 1.0).abs() < 1e-9, "t1={t1}");
+    }
+
+    #[test]
+    fn detects_axis_aligned_and_oriented_rectangles() {
+        use crate::extract::Segment;
+        let rect = vec![Subpath {
+            start: [10.0, 20.0],
+            segments: vec![
+                Segment::Line([110.0, 20.0]),
+                Segment::Line([110.0, 60.0]),
+                Segment::Line([10.0, 60.0]),
+                Segment::Line([10.0, 20.0]),
+            ],
+            closed: true,
+        }];
+        assert_eq!(subpaths_axis_aligned_rect(&rect), Some([[10.0, 110.0], [20.0, 60.0]]));
+
+        // 30-degree rotated 50x20 rectangle
+        let ang = 30.0_f64.to_radians();
+        let (c, s) = (ang.cos(), ang.sin());
+        let p0 = [5.0, 8.0];
+        let p1 = [p0[0] + 50.0 * c, p0[1] + 50.0 * s];
+        let p2 = [p1[0] - 20.0 * s, p1[1] + 20.0 * c];
+        let p3 = [p0[0] - 20.0 * s, p0[1] + 20.0 * c];
+        let rot = vec![Subpath {
+            start: p0,
+            segments: vec![Segment::Line(p1), Segment::Line(p2), Segment::Line(p3)],
+            closed: true,
+        }];
+        assert_eq!(subpaths_axis_aligned_rect(&rot), None);
+        let orect = subpaths_oriented_rect(&rot).expect("rotated rect");
+        assert!((orect.width - 50.0).abs() < 1e-6);
+        assert!((orect.height - 20.0).abs() < 1e-6);
+        assert!((orect.dir[0] - c).abs() < 1e-6 && (orect.dir[1] - s).abs() < 1e-6);
+
+        // Holed rect (2 subpaths) must be rejected.
+        let holed = vec![rect[0].clone(), rect[0].clone()];
+        assert_eq!(subpaths_axis_aligned_rect(&holed), None);
+        assert_eq!(subpaths_oriented_rect(&holed), None);
+
+        // Curved subpath must be rejected.
+        let curved = vec![Subpath {
+            start: [0.0, 0.0],
+            segments: vec![
+                Segment::Cubic([10.0, 0.0], [20.0, 10.0], [20.0, 20.0]),
+                Segment::Line([0.0, 20.0]),
+                Segment::Line([0.0, 0.0]),
+            ],
+            closed: true,
+        }];
+        assert_eq!(subpaths_axis_aligned_rect(&curved), None);
+        assert_eq!(subpaths_oriented_rect(&curved), None);
     }
 }
