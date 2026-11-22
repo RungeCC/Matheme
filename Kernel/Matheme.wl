@@ -6,17 +6,19 @@
    both public and private symbols before re-defining them. *)
 If[MemberQ[$Packages, "Matheme`"],
   Quiet[Matheme`MathemeClose[]];
-  Unprotect["Matheme`*", "Matheme`Private`*"];
-  ClearAll["Matheme`*", "Matheme`Private`*"]
+  Unprotect["Matheme`*", "Matheme`Private`*", "Matheme`Private`TypstForm`*"];
+  ClearAll["Matheme`*", "Matheme`Private`*", "Matheme`Private`TypstForm`*"]
 ];
 
 BeginPackage["Matheme`", {"Wolfram`ErrorTools`"}];
 
 MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", \"HTML\", or \"Graphics\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\"). Paged formats return \"Pages\" (exported page count) and \"TotalPages\" (full compiled page count).";
 MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and returns vector Graphics pages (directly from Typst's Frame tree by default, or imported when \"Format\" is \"SVG\" or \"PDF\"). Rejects non-vector formats such as \"HTML\".";
-TypstForm::usage = "TypstForm[expr] prints as a Typst math expression approximation of expr.";
-MathemeToTypst::usage = "MathemeToTypst[expr, opts] converts expr to a Typst math String.";
-BoxesToTypst::usage = "BoxesToTypst[boxes] converts a Wolfram Language Box expression to a Typst math String.";
+TypstForm::usage = "TypstForm[expr, opts] prints as a customizable Typst math expression representation of expr.";
+MathemeToTypst::usage = "MathemeToTypst[expr, opts] converts expr to a Typst math String. Supports customization via \"Form\", \"ExpressionRules\", \"BoxRules\", \"TemplateRules\", \"CharacterRules\", \"OperatorNames\", \"DelimiterStyle\", \"FractionStyle\", \"ConstantStyle\", \"DifferentialStyle\", \"TransposeSymbol\", \"ConjugateStyle\", \"BlackboardStyle\", \"ScriptStyle\", \"MultiLetterStyle\", \"MatrixDelimiter\", \"PreserveStyle\", \"StripContext\", \"UnknownCharacterHandler\", and \"UnsupportedBoxHandler\".";
+BoxesToTypst::usage = "BoxesToTypst[boxes, opts] converts a Wolfram Language Box expression to a Typst math String.";
+TypstRaw::usage = "TypstRaw[str] embeds a literal Typst math fragment verbatim inside expressions converted by TypstForm or MathemeToTypst.";
+MakeTypst::usage = "MakeTypst[expr] (or MakeTypst[expr, conv]) is an extensible UpValue formatting hook checked by TypstForm and MathemeToTypst before boxing expr.";
 MathemeVersion::usage = "MathemeVersion[] returns version metadata for Matheme, Typst, LibraryLink, and WSTP.";
 MathemeSettings::usage = "MathemeSettings[] returns the active compiler settings.";
 MathemeSetSettings::usage = "MathemeSetSettings[patch] updates settings (Null resets a field) and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
@@ -34,6 +36,7 @@ MathemeCallError::usage = "MathemeCallError is the Failure tag for invalid argum
 MathemeCompileError::usage = "MathemeCompileError is the Failure tag for Typst compilation and evaluation errors.";
 MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal diagnostics.";
 TypstForm::unspt = "TypstForm of `1` is not supported.";
+TypstForm::unkchar = "Unmapped Wolfram private-use character `1` (`2`) encountered in TypstForm; falling back to text literal.";
 
 $TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates (pass a key to \"TypstTemplate\").";
 
@@ -331,7 +334,7 @@ compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
 MathemeCompile[source_String, opts : OptionsPattern[]] :=
   Handle[compileChecked[source, opts], _Failure];
 MathemeCompile[TypstForm[expr_, tOpts : OptionsPattern[]], opts : OptionsPattern[]] :=
-  Module[{src = MathemeToTypst[expr, tOpts], flatOpts = Flatten[{opts}], merged},
+  Module[{src = Matheme`Private`TypstForm`typstFormToString[expr, tOpts], flatOpts = Flatten[{opts}], merged},
     merged = If[KeyExistsQ[Association[flatOpts], "TypstTemplate"],
       flatOpts,
       Append[flatOpts, "TypstTemplate" -> "Equation"]
@@ -561,6 +564,8 @@ Scan[
   Function[f, SyntaxInformation[f] = {"ArgumentsPattern" -> {_, OptionsPattern[]}}],
   {MathemeCompile, MathemeToGraphics, TypstForm, MathemeToTypst, BoxesToTypst}
 ];
+SyntaxInformation[TypstRaw] = {"ArgumentsPattern" -> {_}};
+SyntaxInformation[MakeTypst] = {"ArgumentsPattern" -> {_, _.}};
 SyntaxInformation[MathemeWarmup] = {"ArgumentsPattern" -> {OptionsPattern[]}};
 SyntaxInformation[MathemeSetSettings] = {"ArgumentsPattern" -> {___}};
 Scan[
@@ -581,6 +586,7 @@ End[];
 Scan[
   SetAttributes[#, {Protected, ReadProtected}] &,
   {MathemeCompile, MathemeToGraphics, TypstForm, MathemeToTypst, BoxesToTypst,
+   TypstRaw, MakeTypst,
    MathemeVersion, MathemeSettings,
    MathemeSetSettings, MathemeResetSettings, MathemeReloadFonts,
    MathemeReloadPackages, MathemeWarmup, MathemeQueryFonts,

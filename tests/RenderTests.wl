@@ -169,7 +169,7 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
     ],
     VerificationTest[
       ToString[TypstForm[Global`x^2 + 1/Global`y]],
-      "x^2+frac(1, y)",
+      "x^2 + frac(1, y)",
       TestID -> "TypstForm-ToString"
     ],
     VerificationTest[

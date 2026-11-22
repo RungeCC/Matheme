@@ -20,13 +20,12 @@ def main [
     ^cargo build --release -p matheme
 
     let paclet_dir = ($ROOT | path join "output" "Matheme")
-    let kernel_dir = ($paclet_dir | path join "Kernel")
     let lib_dir = ($paclet_dir | path join "LibraryResources" "Windows-x86-64")
 
     if ($paclet_dir | path exists) {
         rm --recursive --force $paclet_dir
     }
-    mkdir $kernel_dir $lib_dir
+    mkdir $lib_dir
 
     cp ($ROOT | path join "PacletInfo.m") ($paclet_dir | path join "PacletInfo.m")
     for file in ["LICENSE", "NOTICE"] {
@@ -35,9 +34,8 @@ def main [
     # Apache-2.0 (Typst) and OFL-1.1 (embedded fonts) notices must travel with
     # the compiled DLL; see NOTICE for the full list of obligations.
     cp --recursive ($ROOT | path join "third-party") $paclet_dir
-    for file in (glob "Kernel/*.{m,wl}") {
-        cp $file $kernel_dir
-    }
+    # Copy Kernel/ including subdirectories such as Kernel/TypstForm/.
+    cp --recursive ($ROOT | path join "Kernel") $paclet_dir
     cp ($ROOT | path join "target" "release" "matheme.dll") ($lib_dir | path join "matheme.dll")
 
     for old in (glob "output/Matheme-*.paclet") {

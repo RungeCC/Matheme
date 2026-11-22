@@ -232,6 +232,27 @@ the offline-package hint) are issued as `MathemeDiagnostic::warning` messages.
 Errors are not messages: they are carried by `MathemeCompileError`'s Failure
 object together with the CLI-style `Formatted` report.
 
+### TypstForm
+
+`TypstForm`, `MathemeToTypst`, and `BoxesToTypst` convert Wolfram Language expressions and Box structures into idiomatic Typst 0.15 math strings (implemented modularly under `Kernel/TypstForm/`). Passing `TypstForm[expr, opts]` directly to `MathemeCompile` or `MathemeToGraphics` automatically wraps the equation with `"TypstTemplate" -> "Equation"` unless overridden:
+
+```wolfram
+Abs[x] // TypstForm
+(* abs(x) *)
+
+MeijerG[{{a, b, c}, {d, e, f}}, {{a, b, c}, {d, e, f}}, x] // TypstForm
+(* G_(6, 6)^(3, 3)(x mid(|) mat(delim: #none, a\, b\, c\, d\, e\, f; a\, b\, c\, d\, e\, f)) *)
+
+MathemeToGraphics[TypstForm[HoldForm[Integrate[Sin[x]/x, {x, 0, Infinity}]]]]
+```
+
+**Customization layers** (per-call options or globally via `SetOptions[TypstForm, ...]`):
+
+- **Raw Typst fragments**: `TypstRaw["hat(H)"]` embeds literal Typst anywhere inside an expression while preserving Wolfram operator precedence (e.g. `1 / (1 + TypstRaw["hat(H)"])` → `frac(1, hat(H) + 1)`).
+- **Per-type `UpValues` (`MakeTypst`)**: attach `myKet /: MakeTypst[myKet[x_]] := "lr(|" <> MathemeToTypst[x] <> " chevron.r)"` (or 2-argument `MakeTypst[myBra[x_], conv_]` to format held arguments without evaluating them); recursive `MathemeToTypst` calls automatically inherit active options.
+- **Rule & table hooks**: `"ExpressionRules"`, `"BoxRules"`, `"TemplateRules"` (overrides built-in or custom `TemplateBox` tags with a `Function[{args, conv}, ...]` or `StringTemplate`), `"CharacterRules"`, `"OperatorNames"`, `"UnknownCharacterHandler"`, and `"UnsupportedBoxHandler"`.
+- **Style options**: `"Form"` (`TraditionalForm` / `StandardForm`), `"DelimiterStyle"` (`"Semantic"` / `"Explicit"`), `"FractionStyle"` (`"Fraction"` / `"Slash"`), `"ConstantStyle"` (`"Italic"` / `"Upright"`), `"DifferentialStyle"` (`"Upright"` / `"Italic"`), `"TransposeSymbol"` (default `"upright(T)"`), `"ConjugateStyle"` (`"Superscript"` / `"Overline"`), `"BlackboardStyle"` (`"Function"` / `"Shorthand"`), `"ScriptStyle"` (`"Calligraphic"` / `"Script"`), `"MultiLetterStyle"` (`"Quoted"` / `"Italic"` / `"Upright"`), `"MatrixDelimiter"` (`Automatic` / `None`), `"PreserveStyle"` (`True` / `False`), and `"StripContext"` (`True` / `False`).
+
 ### Templates
 
 `$TypstTemplates` is a protected, read-only Association of Typst source
@@ -512,7 +533,7 @@ session / `ManagedLibraryExpression` design is not warranted here.
 ### Todos
 
 - [ ] support dev with linux and macos
-- [ ] rewrite `TypstForm` to make it more systematic and customizable
+- [x] rewrite `TypstForm` to make it more systematic and customizable
 - [ ] support internal timing/benchmark
 - [ ] make it more flexible to call `wolfram` in a `typst` file
 
