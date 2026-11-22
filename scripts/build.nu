@@ -36,6 +36,9 @@ def main [
     cp --recursive ($ROOT | path join "third-party") $paclet_dir
     # Copy Kernel/ including subdirectories such as Kernel/TypstForm/.
     cp --recursive ($ROOT | path join "Kernel") $paclet_dir
+    # FrontEnd completion data (specialArgFunctions.tr); declared by the
+    # AutoCompletionData extension in PacletInfo.m.
+    cp --recursive ($ROOT | path join "AutoCompletionData") $paclet_dir
     cp ($ROOT | path join "target" "release" "matheme.dll") ($lib_dir | path join "matheme.dll")
 
     for old in (glob "output/Matheme-*.paclet") {

@@ -7,6 +7,8 @@ Paclet[
   License -> "Apache-2.0",
   Extensions -> {
     {"Kernel", Root -> ".", Context -> "Matheme`"},
-    {"LibraryResources", Root -> "LibraryResources"}
+    {"LibraryResources", Root -> "LibraryResources"},
+    (* Merged into the FrontEnd's specialArgFunctions table. *)
+    {"AutoCompletionData", Root -> "AutoCompletionData"}
   }
 ]
