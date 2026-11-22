@@ -219,7 +219,10 @@ callUnchecked[name_String, arguments_Association] := Module[{result, tag, droppe
   ];
   dropped = KeyDrop[result, "Status"];
   If[KeyExistsQ[dropped, "Formatted"],
-    Append[dropped, "FormattedCell" -> formatDiagnosticCell[dropped["Formatted"]]],
+    If[StringQ[dropped["Formatted"]] && StringTrim[dropped["Formatted"]] === "",
+      KeyDrop[dropped, "Formatted"],
+      Append[dropped, "FormattedCell" -> formatDiagnosticCell[dropped["Formatted"]]]
+    ],
     dropped
   ]
 ];
@@ -300,10 +303,6 @@ Options[MathemeCompile] = {
   "Features" -> {},
   "Evaluate" -> None
 };
-Options[MathemeToGraphics] = Normal[Join[
-  Association[Options[MathemeCompile]],
-  <|"Format" -> "Graphics"|>
-]];
 Options[compileChecked] = Options[MathemeCompile];
 
 compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
@@ -432,12 +431,13 @@ validateGraphicsFormat[fmt_] := If[
   ]
 ];
 
-toGraphics[result_] := Module[{pdf, svg, graphics},
+toGraphics[result_] := Module[{pdf, svg, graphics, info},
   If[FailureQ[result] || !AssociationQ[result],
     result,
     graphics = Lookup[result, "Graphics", Null];
     pdf = Lookup[result, "PDF", Null];
     svg = Lookup[result, "SVG", Null];
+    info = KeyDrop[result, {"PDF", "SVG", "Graphics"}];
     Which[
       ListQ[graphics] && AllTrue[graphics, Head[#] === Graphics &],
         result,
@@ -445,19 +445,33 @@ toGraphics[result_] := Module[{pdf, svg, graphics},
         graphics = Map[ImportString[normalizeSvgUnits[#], {"SVG", "Graphics"}] &, svg];
         If[!AllTrue[graphics, Head[#] === Graphics &],
           raiseCallError["Failed to import SVG output as Graphics."],
-          Join[result, <|"Graphics" -> Map[uncropGraphics, graphics]|>]
+          Join[<|"Graphics" -> Map[uncropGraphics, graphics]|>, info]
         ],
       Head[pdf] === ByteArray,
         graphics = ImportByteArray[pdf, {"PDF", "PageGraphics"}];
         If[!ListQ[graphics],
           raiseCallError["Failed to import PDF bytes as Graphics."],
-          Join[result, <|"Graphics" -> Map[uncropGraphics, graphics]|>]
+          Join[<|"Graphics" -> Map[uncropGraphics, graphics]|>, info]
         ],
       True,
         raiseCallError["MathemeToGraphics received an unsupported compilation result format."]
     ]
   ]
 ];
+
+Options[MathemeToGraphics] = {
+  "Inputs" -> <||>,
+  "BasePath" -> Automatic,
+  "AllowDownloads" -> False,
+  "TypstTemplate" -> None,
+  "Format" -> "Graphics",
+  "Pages" -> All,
+  "PDFStandard" -> Automatic,
+  "PDFTags" -> True,
+  "CreationTimestamp" -> Automatic,
+  "Features" -> {},
+  "Evaluate" -> None
+};
 
 MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
   Handle[

@@ -331,7 +331,9 @@ fn finish_success(
         warnings.extend(conv_warnings.into_iter().map(diagnostics::warning));
         outcome_entries.push(rule!("Evaluated" -> expr));
     }
-    outcome_entries.push(rule!("Formatted" -> formatted));
+    if !formatted.is_empty() {
+        outcome_entries.push(rule!("Formatted" -> formatted));
+    }
 
     let mut outcome = Outcome::new(outcome_entries);
     outcome.warnings = warnings;

@@ -77,6 +77,8 @@ mod tests {
         assert!(!Action::parse("close", &[]).unwrap().needs_host_fonts());
         assert!(Action::parse("warmup", &[]).unwrap().needs_host_fonts());
         assert!(Action::parse("queryFonts", &[]).unwrap().needs_host_fonts());
-        assert!(!Action::parse("queryPackages", &[]).unwrap().needs_host_fonts());
+        assert!(!Action::parse("queryPackages", &[])
+            .unwrap()
+            .needs_host_fonts());
     }
 }

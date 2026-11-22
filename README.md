@@ -121,7 +121,7 @@ res = MathemeCompile["= Hello $x^2$", "Inputs" -> <|"title" -> "demo"|>];
 res["PDF"]        (* ByteArray *)
 res["Pages"]
 res["Diagnostics"]  (* present when there are warnings *)
-res["Formatted"]  (* plain-text diagnostic report, typst-cli style *)
+res["Formatted"]    (* plain-text diagnostic report, present when there are diagnostics *)
 ```
 
 On failure `MathemeCompile` returns a `Failure` tagged
@@ -206,11 +206,7 @@ images still decode inside Wolfram via `ImportByteArray`.
 
 ### Diagnostics
 
-`Formatted` is always a plain-text `String` rendered like `typst` CLI (suitable
-for logging, `wolframscript`, and string assertions; `""` when there are no
-diagnostics). `FormattedCell` provides the Notebook-ready `"Code"`-styled
-`DisplayForm[Cell[..., "Code"]]` representation (with ASCII-normalized borders
-so FrontEnd alignment stays exact):
+`Formatted` and `FormattedCell` are included only when diagnostics (warnings or errors) are present. `Formatted` is a plain-text `String` rendered like `typst` CLI (suitable for logging, `wolframscript`, and string assertions), and `FormattedCell` provides the Notebook-ready `"Code"`-styled `DisplayForm[Cell[..., "Code"]]` representation (with ASCII-normalized borders so FrontEnd alignment stays exact):
 
 ```text
 error: unclosed delimiter

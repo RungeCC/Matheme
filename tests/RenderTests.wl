@@ -91,15 +91,17 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       TestID -> "ToGraphics-AllFormats-SizeConsistency-Equation"
     ],
     VerificationTest[
-      Module[{res = MathemeToGraphics["integral_0^infinity e^(-x^2) dif x", "TypstTemplate" -> "Equation", "Format" -> "SVG"], g, svg, vb, pr, vbW, vbH, prW, prH},
-        g = First[res["Graphics"]];
-        svg = First[res["SVG"]];
+      Module[{src = "integral_0^infinity e^(-x^2) dif x", resG, resS, g, svg, vb, pr, vbW, vbH, prW, prH},
+        resG = MathemeToGraphics[src, "TypstTemplate" -> "Equation", "Format" -> "SVG"];
+        resS = MathemeCompile[src, "TypstTemplate" -> "Equation", "Format" -> "SVG"];
+        g = First[resG["Graphics"]];
+        svg = First[resS["SVG"]];
         vb = parseNumber /@ StringSplit[First[StringCases[svg, "viewBox=\"" ~~ v : Shortest[___] ~~ "\"" :> v]]];
         {vbW, vbH} = vb[[3 ;; 4]];
         pr = PlotRange /. Options[g, PlotRange];
         prW = Abs[pr[[1, 2]] - pr[[1, 1]]];
         prH = Abs[pr[[2, 2]] - pr[[2, 1]]];
-        MatrixQ[pr, NumericQ] && prW >= vbW - 10^-4 && prH >= vbH - 10^-4
+        !KeyExistsQ[resG, "SVG"] && MatrixQ[pr, NumericQ] && prW >= vbW - 10^-4 && prH >= vbH - 10^-4
       ],
       True,
       TestID -> "ToGraphics-SVG-Covers-ViewBox"
@@ -178,16 +180,30 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       TestID -> "BoxesToTypst-Fraction"
     ],
     VerificationTest[
-      Module[{src = "Page 1\n#pagebreak()\nPage 2\n#pagebreak()\nPage 3", rG, rS, rP},
+      Module[{src = "Page 1\n#pagebreak()\nPage 2\n#pagebreak()\nPage 3", rG, rS, rSC, rP},
         rG = MathemeToGraphics[src, "Pages" -> 2];
         rS = MathemeToGraphics[src, "Format" -> "SVG", "Pages" -> {1, 3}];
-        rP = MathemeCompile[src, "Format" -> "PDF", "Pages" -> 2];
+        rSC = MathemeCompile[src, "Format" -> "SVG", "Pages" -> {1, 3}];
+        rP = MathemeCompile[src, "Format" -> "PDF", "Pages" -> 2, "PDFTags" -> False];
         rG["Pages"] === 1 && rG["TotalPages"] === 3 && Length[rG["Graphics"]] === 1 &&
-          rS["Pages"] === 2 && rS["TotalPages"] === 3 && Length[rS["SVG"]] === 2 && Length[rS["Graphics"]] === 2 &&
+          rS["Pages"] === 2 && rS["TotalPages"] === 3 && !KeyExistsQ[rS, "SVG"] && Length[rS["Graphics"]] === 2 &&
+          rSC["Pages"] === 2 && rSC["TotalPages"] === 3 && Length[rSC["SVG"]] === 2 &&
           rP["Pages"] === 1 && rP["TotalPages"] === 3
       ],
       True,
       TestID -> "Pages-Filter-Exported-And-Total-Count-Consistency"
+    ],
+    VerificationTest[
+      Module[{rC, rG, rErr},
+        rC = MathemeCompile["x^2", "TypstTemplate" -> "Equation", "Format" -> "PDF"];
+        rG = MathemeToGraphics["x^2", "TypstTemplate" -> "Equation"];
+        rErr = MathemeCompile["#let x ="];
+        !KeyExistsQ[rC, "Formatted"] && !KeyExistsQ[rC, "FormattedCell"] &&
+          !KeyExistsQ[rG, "Formatted"] && !KeyExistsQ[rG, "FormattedCell"] &&
+          FailureQ[rErr] && StringQ[rErr["Formatted"]] && StringLength[rErr["Formatted"]] > 0
+      ],
+      True,
+      TestID -> "Diagnostics-Omit-Formatted-When-Clean"
     ],
     VerificationTest[
       Module[{res = MathemeToGraphics["= Hello", "Format" -> "HTML"]},
