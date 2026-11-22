@@ -1,5 +1,8 @@
 (* ::Package:: *)
-(* End-to-end rendering, sizing consistency, and regression suite for Matheme. *)
+(* End-to-end rendering, sizing consistency, and regression suite for Matheme.
+   Every case here calls MathemeCompile / MathemeToGraphics and needs the
+   built matheme.dll.  Wolfram-only conversion tests live in
+   ../wolfram/TypstFormTests.wl; visual equivalence in ./VisualTests.wl. *)
 
 BeginPackage["Matheme`Tests`", {"Matheme`"}];
 
@@ -168,16 +171,6 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       ],
       True,
       TestID -> "ToGraphics-TypstForm-Matrix"
-    ],
-    VerificationTest[
-      ToString[TypstForm[Global`x^2 + 1/Global`y]],
-      "x^2 + frac(1, y)",
-      TestID -> "TypstForm-ToString"
-    ],
-    VerificationTest[
-      BoxesToTypst[FractionBox["a", SuperscriptBox["b", "2"]]],
-      "frac(a, b^2)",
-      TestID -> "BoxesToTypst-Fraction"
     ],
     VerificationTest[
       Module[{src = "Page 1\n#pagebreak()\nPage 2\n#pagebreak()\nPage 3", rG, rS, rSC, rP},

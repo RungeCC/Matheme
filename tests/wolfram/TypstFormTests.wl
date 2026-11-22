@@ -1,22 +1,14 @@
 (* ::Package:: *)
-(* Comprehensive correctness, Typst 0.15.1 compilation, and customization test suite for TypstForm. *)
+(* Correctness and customization suite for the Wolfram-only conversion layer:
+   MathemeToTypst / BoxesToTypst / TypstForm.  No matheme.dll or WSTP call is
+   made here -- loading Get["Matheme`"] is enough.  Tests that compile Typst
+   or render Graphics live in ../backend/TypstFormCompileTests.wl. *)
 
 BeginPackage["Matheme`TypstFormTests`", {"Matheme`"}];
 
-RunMathemeTypstFormTests::usage = "RunMathemeTypstFormTests[] executes the TypstForm correctness, compilation, and customization test suite.";
+RunMathemeTypstFormTests::usage = "RunMathemeTypstFormTests[] executes the TypstForm correctness and customization test suite (Wolfram-only, no backend).";
 
 Begin["`Private`"];
-
-hasPuaQ[s_String] :=
-  AnyTrue[ToCharacterCode[s], (16^^e000 <= # <= 16^^f8ff) || (16^^f0000 <= # <= 16^^10ffff) &];
-
-compilesCleanlyQ[typst_String] := Module[{res},
-  If[hasPuaQ[typst], Return[False, Module]];
-  res = Quiet[MathemeToGraphics[typst, "TypstTemplate" -> "Equation"]];
-  !FailureQ[res] && AssociationQ[res] &&
-    ListQ[res["Graphics"]] && Length[res["Graphics"]] >= 1 &&
-    Head[First[res["Graphics"]]] === Graphics
-];
 
 RunMathemeTypstFormTests[] := Module[{tests, results, passed, total, symKet, symBra, symConst},
   ClearAll[symKet, symBra, symConst];
@@ -47,24 +39,9 @@ RunMathemeTypstFormTests[] := Module[{tests, results, passed, total, symKet, sym
       TestID -> "Regression-MeijerG-MidAndEscapedCommas"
     ],
     VerificationTest[
-      Module[{res = MathemeToGraphics[TypstForm[MeijerG[{{Global`a, Global`b, Global`c}, {Global`d, Global`e, Global`f}}, {{Global`a, Global`b, Global`c}, {Global`d, Global`e, Global`f}}, Global`x]]]},
-        !FailureQ[res] && Head[First[res["Graphics"]]] === Graphics &&
-          Length[Cases[First[res["Graphics"]], _FilledCurve, Infinity]] >= 15
-      ],
-      True,
-      TestID -> "Regression-MeijerG-EndToEnd-Graphics"
-    ],
-    VerificationTest[
       MathemeToTypst[EllipticF[Global`phi, Global`m]],
       "F(phi mid(|) m)",
       TestID -> "Regression-EllipticF-VerticalSeparator"
-    ],
-    VerificationTest[
-      Module[{ts = MathemeToTypst[FoxH[{{{Global`a, Global`A}}, {{Global`b, Global`B}}}, {{{Global`c, Global`c1}}, {{Global`d, Global`d1}}}, Global`z]]},
-        !hasPuaQ[ts] && StringContainsQ[ts, "mid(|)"] && compilesCleanlyQ[ts]
-      ],
-      True,
-      TestID -> "Regression-FoxH-AssociationTemplateAndMid"
     ],
     VerificationTest[
       MathemeToTypst[WeierstrassP[Global`z, {Global`g2, Global`g3}]],
@@ -182,35 +159,6 @@ RunMathemeTypstFormTests[] := Module[{tests, results, passed, total, symKet, sym
       MathemeToTypst[Overscript[Global`a + Global`b, "\[OverBrace]"]],
       "overbrace(a + b)",
       TestID -> "Overscript-QuotedOverBrace"
-    ],
-
-    (* --- PUA Zero-Leak Checks --- *)
-    VerificationTest[
-      And @@ (compilesCleanlyQ[MathemeToTypst[#]] & /@ {
-        Abs[Global`x],
-        Norm[Global`x, 2],
-        MeijerG[{{Global`a, Global`b}, {Global`c}}, {{Global`d}, {Global`e, Global`f}}, Global`x],
-        EllipticF[Global`phi, Global`m],
-        HypergeometricPFQ[{Global`a, Global`b}, {Global`c}, Global`z],
-        HoldForm[D[Global`f[Global`x, Global`y], {Global`x, 2}, Global`y]],
-        Derivative[1, 2][Global`f][Global`x, Global`y],
-        ConditionalExpression[Global`x^2, Global`x > 0],
-        Inactivate[Integrate[Global`x^2, {Global`x, 0, 1}]],
-        Quantity[9.8, "Meters"/"Seconds"^2],
-        Style[Global`x + Global`y, Bold, Red],
-        TwoWayRule[Global`a, Global`b],
-        UndirectedEdge[Global`a, Global`b],
-        DirectedEdge[Global`a, Global`b],
-        <|"a" -> 1, "b" -> 2|>,
-        \[FormalX]^2 + \[FormalAlpha],
-        2.5*^-6,
-        Row[{"hello ", Global`x + 1, " world"}],
-        ForAll[Global`x, Element[Global`x, Reals], Global`x^2 >= 0],
-        Piecewise[{{Global`x^2, Global`x > 0}, {-Global`x, Global`x <= 0}}],
-        MatrixForm[{{Global`a/Global`b, Global`c}, {Global`d, Global`e}}]
-      }),
-      True,
-      TestID -> "EndToEnd-AllExpressionsCompileCleanlyWithZeroPUALeak"
     ],
 
     (* --- Style Options --- *)
@@ -358,37 +306,24 @@ RunMathemeTypstFormTests[] := Module[{tests, results, passed, total, symKet, sym
       TestID -> "Custom-UnsupportedBoxHandler"
     ],
     VerificationTest[
-      Module[{orig = Options[TypstForm, "ConstantStyle"], res1, res2},
+      Module[{orig = Options[TypstForm, "ConstantStyle"], res1},
         SetOptions[TypstForm, "ConstantStyle" -> "Upright"];
         res1 = ToString[TypstForm[Exp[I Global`x]]];
-        res2 = MathemeToGraphics[TypstForm[Exp[I Global`x]]];
         SetOptions[TypstForm, orig];
-        res1 === "upright(e)^(upright(i) x)" && !FailureQ[res2] && Head[First[res2["Graphics"]]] === Graphics
+        res1 === "upright(e)^(upright(i) x)"
       ],
       True,
-      TestID -> "Custom-SetOptions-TypstForm-HonoredByCompile"
+      TestID -> "Custom-SetOptions-TypstForm-ToString"
     ],
     VerificationTest[
-      Module[{vals, src, res},
-        vals = DeleteDuplicates@Select[
-          StringTrim /@ Join[
-            Values[Matheme`Private`TypstForm`$typstDefaultCharMap],
-            Values[Matheme`Private`TypstForm`$typstDoubleStruckShorthands],
-            Values[Matheme`Private`TypstForm`$typstScriptStyleLetters],
-            Values[Matheme`Private`TypstForm`$typstDefaultOperatorMap]
-          ],
-          # =!= "" &
-        ];
-        vals = Map[
-          If[MemberQ[{"(", ")", "[", "]", "{", "}"}, #], "\\" <> #, #] &,
-          vals
-        ];
-        src = StringRiffle[("$ " <> # <> " $") & /@ vals, "\n"];
-        res = Quiet[MathemeCompile[src, "Format" -> "Graphics"]];
-        !FailureQ[res]
-      ],
-      True,
-      TestID -> "Tables-AllCharAndOperatorMappingsCompileInTypst"
+      ToString[TypstForm[Global`x^2 + 1/Global`y]],
+      "x^2 + frac(1, y)",
+      TestID -> "TypstForm-ToString"
+    ],
+    VerificationTest[
+      BoxesToTypst[FractionBox["a", SuperscriptBox["b", "2"]]],
+      "frac(a, b^2)",
+      TestID -> "BoxesToTypst-Fraction"
     ]
   };
 

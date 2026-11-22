@@ -1,5 +1,6 @@
 (* ::Package:: *)
-(* Visual equivalence verification suite for Matheme's native Typst Frame -> WL Graphics exporter.
+(* Backend suite (needs matheme.dll / WSTP).  Visual equivalence verification
+   for Matheme's native Typst Frame -> WL Graphics exporter.
    Compares both uncropped absolute-scale rasterization (144 DPI) and cropped high-resolution
    rasterization against ground truth ("SVG" via Wolfram's SVG importer for standard text/math/
    shapes, and "PDFImage" via Typst PDF rasterization for features where Wolfram's SVG importer
@@ -162,7 +163,9 @@ $VisualTestCases = {
   {"Visual-Text-Basic", "Hello, Wolfram & Typst!", "Text", False, "SVG"},
   {"Visual-Text-Descenders", "xxyyzz gjpqy", "Text", False, "SVG"},
   {"Visual-Text-Lorem", "#block(width: 240pt, lorem(80))", "Text", False, "SVG"},
-  {"Visual-Text-Chinese-Offline", "永和九年，岁在癸丑，暮春之初，会于会稽山阴之兰亭。", "Text", False, "SVG"},
+  (* \:xxxx escapes keep this file pure ASCII: Get[] reads it with
+     $CharacterEncoding == "CP936" on Windows, which garbles literal CJK. *)
+  {"Visual-Text-Chinese-Offline", "\:6c38\:548c\:4e5d\:5e74\:ff0c\:5c81\:5728\:7678\:4e11\:ff0c\:66ae\:6625\:4e4b\:521d\:ff0c\:4f1a\:4e8e\:4f1a\:7a3d\:5c71\:9634\:4e4b\:5170\:4ead\:3002", "Text", False, "SVG"},
   {"Visual-Clip-Box", "#box(width: 24pt, height: 20pt, clip: true, rect(width: 60pt, height: 60pt, fill: red))", "Text", False, "PDFImage"},
   {"Visual-NonZero-Star", "#pad(2pt, polygon(fill: rgb(\"#2563eb\"), fill-rule: \"non-zero\", (15pt, 0pt), (25pt, 30pt), (0pt, 12pt), (30pt, 12pt), (5pt, 30pt)))", "Text", False, "PDFImage"},
   {"Visual-NonZero-Overlap", "#pad(2pt, curve(fill: rgb(\"#dc2626\"), fill-rule: \"non-zero\", curve.move((0pt, 0pt)), curve.line((20pt, 0pt)), curve.line((20pt, 20pt)), curve.line((0pt, 20pt)), curve.close(), curve.move((10pt, 10pt)), curve.line((30pt, 10pt)), curve.line((30pt, 30pt)), curve.line((10pt, 30pt)), curve.close()))", "Text", False, "PDFImage"},
