@@ -205,27 +205,61 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       TestID -> "Pages-Filter-Exported-And-Total-Count-Consistency"
     ],
     VerificationTest[
-      Module[{rC, rG, rErr},
+      Module[{rC, rG, rErr, diags},
         rC = MathemeCompile["x^2", "TypstTemplate" -> "Equation", "Format" -> "PDF"];
         rG = MathemeToGraphics["x^2", "TypstTemplate" -> "Equation"];
         rErr = MathemeCompile["#let x ="];
+        diags = rErr["Diagnostics"];
         !KeyExistsQ[rC, "Formatted"] && !KeyExistsQ[rC, "FormattedCell"] &&
           !KeyExistsQ[rG, "Formatted"] && !KeyExistsQ[rG, "FormattedCell"] &&
-          FailureQ[rErr] && StringQ[rErr["Formatted"]] && StringLength[rErr["Formatted"]] > 0
+          FailureQ[rErr] && rErr[[1]] === MathemeCompileError &&
+          rErr["ErrorKind"] === "Compile" &&
+          !KeyExistsQ[rErr[[2]], "Formatted"] &&
+          Head[rErr["FormattedCell"]] === DisplayForm &&
+          Length[diags] >= 1 &&
+          diags[[1, "Severity"]] === "Error" &&
+          diags[[1, "Source"]] === "Typst"
       ],
       True,
-      TestID -> "Diagnostics-Omit-Formatted-When-Clean"
+      TestID -> "Diagnostics-FormattedCell-And-Source-Classification"
+    ],
+    VerificationTest[
+      Module[{res = Quiet[MathemeCompile["= Hello", "Inputs" -> <|"bad" :> 1|>]], diags},
+        !FailureQ[res] &&
+          !KeyExistsQ[res, "Formatted"] &&
+          Head[res["FormattedCell"]] === DisplayForm &&
+          Length[res["Diagnostics"]] === 1 &&
+          res["Diagnostics"][[1, "Severity"]] === "Warning" &&
+          res["Diagnostics"][[1, "Source"]] === "Conversion"
+      ],
+      True,
+      TestID -> "Diagnostics-Conversion-Warning-Includes-Source-And-FormattedCell"
+    ],
+    VerificationTest[
+      Module[{res, diags, hints},
+        res = MathemeCompile["#import \"@preview/matheme-nonexistent-pkg:0.0.1\": *", "AllowDownloads" -> False];
+        diags = res["Diagnostics"];
+        hints = Select[diags, #["Severity"] === "Hint" &];
+        FailureQ[res] && res[[1]] === MathemeCompileError &&
+          Length[hints] === 1 &&
+          hints[[1, "Source"]] === "Package"
+      ],
+      True,
+      TestID -> "Diagnostics-Offline-Package-Emits-Hint-Not-Warning"
     ],
     VerificationTest[
       Module[{res = MathemeToGraphics["= Hello", "Format" -> "HTML"]},
-        FailureQ[res] && res[[1]] === MathemeCallError
+        FailureQ[res] && res[[1]] === MathemeCallError &&
+          !KeyExistsQ[res[[2]], "Formatted"] && !KeyExistsQ[res[[2]], "FormattedCell"]
       ],
       True,
       TestID -> "ToGraphics-Rejects-HTML-Format"
     ],
     VerificationTest[
       Module[{res = MathemeCompile["= Hello", "Format" -> "HTML", "Pages" -> {1}]},
-        FailureQ[res] && res[[1]] === MathemeCompileError
+        FailureQ[res] && res[[1]] === MathemeCallError &&
+          res["ErrorKind"] === "Call" &&
+          !KeyExistsQ[res[[2]], "Formatted"] && !KeyExistsQ[res[[2]], "FormattedCell"]
       ],
       True,
       TestID -> "Compile-HTML-Rejects-Pages-Option"

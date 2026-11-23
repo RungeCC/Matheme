@@ -14,6 +14,7 @@ use world::query::{
 
 use crate::args::{self, AllOr, FromExpr};
 use crate::call::{Answer, Outcome};
+use crate::diagnostics::DiagnosticSource;
 use crate::wl_args;
 
 /// Default page size. Small enough that a bare `MathemeQueryFonts[]` does not
@@ -195,7 +196,10 @@ pub fn run_packages(query: PackageQueryArgs) -> Answer {
     }
     if query.allow_downloads && !world::query::universe_cached() {
         if let Err(err) = world::prefetch_universe_index() {
-            outcome.warn(format!("failed to fetch Universe index: {err}"));
+            outcome.warn(
+                DiagnosticSource::Package,
+                format!("failed to fetch Universe index: {err}"),
+            );
         }
     }
     let filter = query.filter();
@@ -268,7 +272,7 @@ mod tests {
     fn unknown_keys_return_a_failure() {
         let err = with_entries([Rule::new("Mystery", 1_i64)], FontQueryArgs::parse_args)
             .expect_err("unknown font query key");
-        assert_eq!(err.tag, "Call");
+        assert_eq!(err.kind, crate::call::ErrorKind::Call);
         assert!(
             err.message.contains("unknown queryFonts key: Mystery"),
             "{}",
@@ -287,7 +291,7 @@ mod tests {
         );
         let err = FontQueryArgs::parse_args(&association.as_association().expect("association"))
             .expect_err("delayed rule");
-        assert_eq!(err.tag, "Call");
+        assert_eq!(err.kind, crate::call::ErrorKind::Call);
         assert!(err.message.contains("RuleDelayed"), "{}", err.message);
     }
 }

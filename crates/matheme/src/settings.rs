@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn unknown_keys_return_a_failure() {
         let err = with_entries([Rule::new("Mystery", 1_i64)], parse).expect_err("unknown key");
-        assert_eq!(err.tag, "Call");
+        assert_eq!(err.kind, crate::call::ErrorKind::Call);
         assert!(
             err.message.contains("unknown setSettings key: Mystery"),
             "{}",
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn wrong_types_return_a_failure_with_field_context() {
         let err = with_entries([Rule::new("SystemFonts", "yes")], parse).expect_err("wrong type");
-        assert_eq!(err.tag, "Call");
+        assert_eq!(err.kind, crate::call::ErrorKind::Call);
         assert!(
             err.message.contains("setSettings.SystemFonts: expected True or False"),
             "{}",
@@ -218,7 +218,7 @@ mod tests {
     fn malformed_proxy_returns_a_failure() {
         let err = with_entries([Rule::new("Proxy", "://not-a-valid-proxy")], parse)
             .expect_err("malformed proxy");
-        assert_eq!(err.tag, "Call");
+        assert_eq!(err.kind, crate::call::ErrorKind::Call);
         assert!(
             err.message.contains("setSettings.Proxy: invalid proxy"),
             "{}",

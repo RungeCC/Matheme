@@ -388,9 +388,10 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
                 .map_err(|e| format!("--wl-input {key}: {e}"))?;
             print_eval_sideband(&out);
             for w in warnings {
-                extra_diagnostics.push(matheme_world::diagnostics::warning(format!(
-                    "--wl-input {key}: {w}"
-                )));
+                extra_diagnostics.push(matheme_world::diagnostics::warning(
+                    matheme_world::diagnostics::DiagnosticSource::Conversion,
+                    format!("--wl-input {key}: {w}"),
+                ));
             }
             inputs.insert(Str::from(key.as_str()), val);
         }

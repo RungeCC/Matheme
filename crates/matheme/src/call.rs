@@ -9,25 +9,73 @@
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
 
-use matheme_wl::{assoc, Entry, Expr, Rule};
+use matheme_wl::{Entry, Expr, Rule};
 use matheme_wstp::WstpLink;
 use wolfram_library_link::wstp::Link;
 
-use crate::diagnostics::{self, Diagnostic};
+use crate::diagnostics::{self, Diagnostic, DiagnosticSource};
 use crate::wolfram;
 
-/// The successful answer: named rules plus non-fatal warnings.
+/// Failure category serialized onto the wire as `"ErrorKind"` and mapped by
+/// `Kernel/Matheme.wl` to the corresponding `Wolfram/ErrorTools` failure tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// Invalid user-supplied arguments, options, or option combinations
+    /// (`MathemeCallError`).
+    Call,
+    /// Typst compilation, layout, export, or evaluation failure
+    /// (`MathemeCompileError`).
+    Compile,
+    /// LibraryLink / WSTP transport or bridge envelope protocol mismatch
+    /// (`MathemeLibraryError`).
+    Library,
+    /// Caught Rust panic or unrecoverable internal invariant violation
+    /// (`MathemeInternalError`).
+    Internal,
+}
+
+impl ErrorKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Call => "Call",
+            Self::Compile => "Compile",
+            Self::Library => "Library",
+            Self::Internal => "Internal",
+        }
+    }
+}
+
+impl From<ErrorKind> for Expr {
+    fn from(kind: ErrorKind) -> Self {
+        Expr::from(kind.as_str())
+    }
+}
+
+fn non_empty_report(report: Option<String>) -> Option<String> {
+    report.filter(|text| !text.trim().is_empty())
+}
+
+fn append_report_line(report: &mut Option<String>, diag: &Diagnostic) {
+    if let Some(text) = report.as_mut() {
+        text.push_str(&diagnostics::format_line(diag));
+    }
+}
+
+/// The successful answer: named rules, non-fatal diagnostics, and an optional
+/// formatted diagnostic report for the Wolfram layer to render into a `Cell`.
 #[derive(Default)]
 pub struct Outcome {
     pub entries: Vec<Rule>,
-    pub warnings: Vec<Diagnostic>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub report: Option<String>,
 }
 
 impl Outcome {
     pub fn new(entries: impl IntoIterator<Item = Rule>) -> Self {
         Self {
             entries: entries.into_iter().collect(),
-            warnings: Vec::new(),
+            diagnostics: Vec::new(),
+            report: None,
         }
     }
 
@@ -35,41 +83,83 @@ impl Outcome {
         self.entries.extend(entries);
     }
 
-    pub fn warn(&mut self, message: impl Into<String>) {
-        self.warnings.push(diagnostics::warning(message));
-    }
-}
-
-/// A shaped error. The Wolfram layer turns `tag` into an ErrorTools failure
-/// tag and keeps `diagnostics` / `formatted` as its payload.
-#[derive(Debug)]
-pub struct Failure {
-    pub tag: &'static str,
-    pub message: String,
-    pub diagnostics: Vec<Diagnostic>,
-    pub formatted: Option<String>,
-}
-
-impl Failure {
-    pub fn new(tag: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            tag,
-            message: message.into(),
-            diagnostics: Vec::new(),
-            formatted: None,
-        }
+    pub fn warn(&mut self, source: DiagnosticSource, message: impl Into<String>) {
+        let diag = diagnostics::warning(source, message);
+        append_report_line(&mut self.report, &diag);
+        self.diagnostics.push(diag);
     }
 
-    pub fn with(mut self, diagnostics: Vec<Diagnostic>, formatted: Option<String>) -> Self {
+    pub fn with_diagnostics(
+        mut self,
+        diagnostics: Vec<Diagnostic>,
+        report: Option<String>,
+    ) -> Self {
         self.diagnostics = diagnostics;
-        self.formatted = formatted;
+        self.report = non_empty_report(report);
         self
     }
 }
 
-/// Build a `"Call"` failure for invalid arguments or bridge-level errors.
+/// A typed error. The Wolfram layer maps `kind` to an `ErrorTools` failure tag
+/// and turns any non-empty `report` into `FormattedCell`.
+#[derive(Debug)]
+pub struct Failure {
+    pub kind: ErrorKind,
+    pub message: String,
+    pub diagnostics: Vec<Diagnostic>,
+    pub report: Option<String>,
+}
+
+impl Failure {
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            diagnostics: Vec::new(),
+            report: None,
+        }
+    }
+
+    pub fn call(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Call, message)
+    }
+
+    pub fn compile(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Compile, message)
+    }
+
+    pub fn library(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Library, message)
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Internal, message)
+    }
+
+    pub fn with_diagnostics(
+        mut self,
+        diagnostics: Vec<Diagnostic>,
+        report: Option<String>,
+    ) -> Self {
+        self.diagnostics = diagnostics;
+        self.report = non_empty_report(report);
+        self
+    }
+
+    pub fn push_diagnostic(&mut self, diag: Diagnostic) {
+        append_report_line(&mut self.report, &diag);
+        self.diagnostics.push(diag);
+    }
+}
+
+/// Build an [`ErrorKind::Call`] failure for invalid user arguments or options.
 pub fn error(message: impl Into<String>) -> Failure {
-    Failure::new("Call", message)
+    Failure::call(message)
+}
+
+/// Build an [`ErrorKind::Library`] failure for WSTP / envelope protocol errors.
+pub fn library_error(message: impl Into<String>) -> Failure {
+    Failure::library(message)
 }
 
 pub enum Answer {
@@ -97,54 +187,54 @@ fn read_action<A>(
 ) -> Result<A, Failure> {
     let expr = WstpLink::new(link)
         .read_expr()
-        .map_err(|err| error(format!("failed to read WSTP call: {err}")))?;
+        .map_err(|err| library_error(format!("failed to read WSTP call: {err}")))?;
 
     // A LinkObject function always delivers its WL arguments as a List; the
     // package passes exactly one expression, the Action/Arguments envelope.
     let args = expr
         .as_list()
-        .ok_or_else(|| error("expected an argument list"))?;
+        .ok_or_else(|| library_error("expected an argument list"))?;
     let [envelope] = args else {
-        return Err(error("expected exactly one call envelope"));
+        return Err(library_error("expected exactly one call envelope"));
     };
     let entries = envelope
         .as_association()
-        .ok_or_else(|| error("expected an Action/Arguments association"))?;
+        .ok_or_else(|| library_error("expected an Action/Arguments association"))?;
 
     let mut action: Option<&str> = None;
     let mut arguments: Option<&Expr> = None;
 
     for entry in &entries {
-        let (key_expr, value_expr) = entry.pair().map_err(error)?;
-        let key = key_expr
-            .as_str()
-            .ok_or_else(|| error(format!("envelope key must be a String, got: {key_expr}")))?;
+        let (key_expr, value_expr) = entry.pair().map_err(library_error)?;
+        let key = key_expr.as_str().ok_or_else(|| {
+            library_error(format!("envelope key must be a String, got: {key_expr}"))
+        })?;
         match key {
             "Action" => {
                 if action.is_some() {
-                    return Err(error("duplicate envelope key: Action"));
+                    return Err(library_error("duplicate envelope key: Action"));
                 }
                 action = Some(
                     value_expr
                         .as_str()
-                        .ok_or_else(|| error("envelope.Action: expected a WL String"))?,
+                        .ok_or_else(|| library_error("envelope.Action: expected a WL String"))?,
                 );
             }
             "Arguments" => {
                 if arguments.is_some() {
-                    return Err(error("duplicate envelope key: Arguments"));
+                    return Err(library_error("duplicate envelope key: Arguments"));
                 }
                 arguments = Some(value_expr);
             }
-            other => return Err(error(format!("unknown envelope key: {other}"))),
+            other => return Err(library_error(format!("unknown envelope key: {other}"))),
         }
     }
 
-    let action = action.ok_or_else(|| error("missing envelope key: Action"))?;
-    let arguments = arguments.ok_or_else(|| error("missing envelope key: Arguments"))?;
+    let action = action.ok_or_else(|| library_error("missing envelope key: Action"))?;
+    let arguments = arguments.ok_or_else(|| library_error("missing envelope key: Arguments"))?;
     let arg_entries = arguments
         .as_association()
-        .ok_or_else(|| error("Arguments must be an Association"))?;
+        .ok_or_else(|| library_error("Arguments must be an Association"))?;
 
     parse_action(action, &arg_entries)
 }
@@ -154,28 +244,38 @@ fn diagnostics_expr(items: &[Diagnostic]) -> Expr {
 }
 
 /// The wire shape is deliberately uniform: `Status` decides which branch the
-/// Wolfram layer takes, `Diagnostics` carries warnings for `Message`, and
-/// `ErrorTag` / `Message` / `Formatted` describe a failure.
+/// Wolfram layer takes, `Diagnostics` carries structured diagnostics,
+/// `DiagnosticReport` carries an optional internal plain-text report that
+/// `Kernel/Matheme.wl` renders into `FormattedCell` (and drops from the public
+/// result), and `ErrorKind` / `Message` describe a failure.
 fn render(answer: Answer) -> Expr {
     match answer {
         Answer::Success(outcome) => {
             let mut rules = vec![Rule::new("Status", "Success")];
             rules.extend(outcome.entries);
-            if !outcome.warnings.is_empty() {
+            if !outcome.diagnostics.is_empty() {
                 rules.push(Rule::new(
                     "Diagnostics",
-                    diagnostics_expr(&outcome.warnings),
+                    diagnostics_expr(&outcome.diagnostics),
                 ));
+            }
+            if let Some(report) = non_empty_report(outcome.report) {
+                rules.push(Rule::new("DiagnosticReport", report));
             }
             Expr::association(rules)
         }
-        Answer::Failure(failure) => assoc! {
-            "Status" -> "Error",
-            "ErrorTag" -> failure.tag,
-            "Message" -> failure.message,
-            "Diagnostics" -> diagnostics_expr(&failure.diagnostics),
-            "Formatted" -> failure.formatted.unwrap_or_default(),
-        },
+        Answer::Failure(failure) => {
+            let mut rules = vec![
+                Rule::new("Status", "Error"),
+                Rule::new("ErrorKind", failure.kind),
+                Rule::new("Message", failure.message),
+                Rule::new("Diagnostics", diagnostics_expr(&failure.diagnostics)),
+            ];
+            if let Some(report) = non_empty_report(failure.report) {
+                rules.push(Rule::new("DiagnosticReport", report));
+            }
+            Expr::association(rules)
+        }
     }
 }
 
@@ -206,16 +306,16 @@ pub fn serve(link: &mut Link) {
         let mut answer = action.execute();
         if let Some(warning) = host_font_warning {
             match &mut answer {
-                Answer::Success(outcome) => outcome.warn(warning),
+                Answer::Success(outcome) => outcome.warn(DiagnosticSource::Host, warning),
                 Answer::Failure(failure) => {
-                    failure.diagnostics.push(diagnostics::warning(warning));
+                    failure.push_diagnostic(diagnostics::warning(DiagnosticSource::Host, warning));
                 }
             }
         }
         answer
     }))
     .unwrap_or_else(|payload| {
-        Answer::Failure(Failure::new("Call", panic_message(payload, "matheme_call")))
+        Answer::Failure(Failure::internal(panic_message(payload, "matheme_call")))
     });
 
     // Never panic across the FFI boundary if the WSTP link itself failed.
@@ -237,16 +337,42 @@ pub fn with_entries<R>(
 mod tests {
     use super::*;
 
-    #[test]
-    fn failure_renders_uniformly() {
-        let expr = render(Answer::Failure(Failure::new("Compile", "bad source")));
-        let args = expr.as_association().expect("association");
-        let tag = args
+    fn assoc_field<'a>(entries: &'a [Entry<'a>], name: &str) -> Option<&'a Expr> {
+        entries
             .iter()
-            .find(|entry| entry.key_name() == Some("ErrorTag"))
+            .find(|entry| entry.key_name() == Some(name))
             .and_then(|entry| entry.pair().ok())
             .map(|(_, v)| v)
-            .expect("tag");
-        assert_eq!(tag.as_str(), Some("Compile"));
+    }
+
+    #[test]
+    fn failure_renders_typed_error_kind_and_omits_empty_report() {
+        let expr = render(Answer::Failure(Failure::compile("bad source")));
+        let args = expr.as_association().expect("association");
+        assert_eq!(
+            assoc_field(&args, "ErrorKind").and_then(Expr::as_str),
+            Some("Compile")
+        );
+        assert!(
+            assoc_field(&args, "DiagnosticReport").is_none(),
+            "empty report must be omitted from the wire association"
+        );
+        assert!(assoc_field(&args, "Formatted").is_none());
+
+        let with_report = render(Answer::Failure(
+            Failure::internal("panic detail").with_diagnostics(
+                vec![diagnostics::warning(DiagnosticSource::Host, "extra")],
+                Some("warning: extra\n".into()),
+            ),
+        ));
+        let args = with_report.as_association().expect("association");
+        assert_eq!(
+            assoc_field(&args, "ErrorKind").and_then(Expr::as_str),
+            Some("Internal")
+        );
+        assert_eq!(
+            assoc_field(&args, "DiagnosticReport").and_then(Expr::as_str),
+            Some("warning: extra\n")
+        );
     }
 }

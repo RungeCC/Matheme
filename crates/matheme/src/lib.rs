@@ -47,11 +47,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_action_returns_call_failure() {
+    fn unknown_action_returns_library_failure() {
         let err = Action::parse("nonexistent", &[])
             .err()
             .expect("unknown action");
-        assert_eq!(err.tag, "Call");
+        assert_eq!(err.kind, call::ErrorKind::Library);
         assert!(err.message.contains("unknown action"), "{}", err.message);
     }
 
@@ -61,7 +61,7 @@ mod tests {
             let err = Action::parse("version", args)
                 .err()
                 .expect("unexpected args");
-            assert_eq!(err.tag, "Call");
+            assert_eq!(err.kind, call::ErrorKind::Call);
             assert!(
                 err.message.contains("takes no arguments"),
                 "{}",

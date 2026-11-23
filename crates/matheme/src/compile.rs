@@ -17,7 +17,7 @@ use typst::foundations::Dict;
 
 use crate::args::{self, AssocExpr, FromArgs, FromExpr};
 use crate::call::{Answer, Failure, Outcome};
-use crate::diagnostics;
+use crate::diagnostics::{self, DiagnosticSource};
 use crate::wl_args;
 
 // ---------------------------------------------------------------------------
@@ -322,31 +322,36 @@ fn evaluated_to_expr(values: &EvaluatedValues, warnings: &mut Vec<String>) -> Ex
 fn finish_success(
     mut outcome_entries: Vec<Rule>,
     evaluated: Option<EvaluatedValues>,
-    mut warnings: Vec<diagnostics::Diagnostic>,
-    formatted: String,
+    mut diags: Vec<diagnostics::Diagnostic>,
+    mut formatted: String,
 ) -> Answer {
     if let Some(ref evaluated) = evaluated {
         let mut conv_warnings = Vec::new();
         let expr = evaluated_to_expr(evaluated, &mut conv_warnings);
-        warnings.extend(conv_warnings.into_iter().map(diagnostics::warning));
+        for warning in conv_warnings {
+            let diag = diagnostics::warning(DiagnosticSource::Conversion, warning);
+            formatted.push_str(&diagnostics::format_line(&diag));
+            diags.push(diag);
+        }
         outcome_entries.push(rule!("Evaluated" -> expr));
     }
-    if !formatted.is_empty() {
-        outcome_entries.push(rule!("Formatted" -> formatted));
-    }
 
-    let mut outcome = Outcome::new(outcome_entries);
-    outcome.warnings = warnings;
-    outcome.into()
+    Outcome::new(outcome_entries)
+        .with_diagnostics(diags, Some(formatted))
+        .into()
 }
 
 fn finish_failure(failure: CompileFailure) -> Answer {
-    Failure::new("Compile", failure.display_message())
-        .with(failure.diagnostics, Some(failure.formatted))
+    Failure::compile(failure.display_message())
+        .with_diagnostics(failure.diagnostics, Some(failure.formatted))
         .into()
 }
 
 pub fn run(input: CompileArgs) -> Answer {
+    if input.format == CompileFormat::Html && input.pages.0.is_some() {
+        return Failure::call("\"Pages\" filtering is not supported for HTML output.").into();
+    }
+
     let mut inputs = Dict::new();
     let mut input_warnings = Vec::new();
     if let Some(input_entries) = input.inputs.0.as_association() {
@@ -354,7 +359,7 @@ pub fn run(input: CompileArgs) -> Answer {
     }
     let extra_diagnostics = input_warnings
         .into_iter()
-        .map(diagnostics::warning)
+        .map(|msg| diagnostics::warning(DiagnosticSource::Conversion, msg))
         .collect();
 
     if input.format == CompileFormat::Graphics {
@@ -375,7 +380,7 @@ pub fn run(input: CompileArgs) -> Answer {
             let warnings = export
                 .warnings
                 .into_iter()
-                .map(|w| diagnostics::warning(w.message()))
+                .map(|w| diagnostics::warning(DiagnosticSource::Graphics, w.message()))
                 .collect();
             Ok((export.graphics, warnings))
         }) {
@@ -509,5 +514,19 @@ mod tests {
             .err()
             .expect("duplicate key");
         assert!(err.message.contains("duplicate compile key: Format"), "{}", err.message);
+    }
+
+    #[test]
+    fn html_with_pages_returns_call_failure() {
+        let expr = base_args([Rule::new("Format", "HTML"), Rule::new("Pages", "1")]);
+        let parsed = CompileArgs::parse_args(&expr.as_association().unwrap()).expect("parsed");
+        match run(parsed) {
+            Answer::Failure(failure) => {
+                assert_eq!(failure.kind, crate::call::ErrorKind::Call);
+                assert!(failure.message.contains("HTML"), "{}", failure.message);
+                assert!(failure.report.is_none());
+            }
+            Answer::Success(_) => panic!("HTML with Pages must return Failure"),
+        }
     }
 }

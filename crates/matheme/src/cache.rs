@@ -6,6 +6,7 @@ use matheme_world::{self as world, CacheSelection};
 
 use crate::args::FromExpr;
 use crate::call::{Answer, Outcome};
+use crate::diagnostics::DiagnosticSource;
 use crate::settings;
 use crate::wl_args;
 
@@ -132,7 +133,10 @@ pub fn run_warmup(input: WarmupArgs) -> Answer {
             Ok(count) => outcome.extend([rule!("PackageIndex" -> count as i64)]),
             Err(err) => {
                 outcome.extend([rule!("PackageIndex" -> Expr::null())]);
-                outcome.warn(format!("failed to prefetch Universe index: {err}"));
+                outcome.warn(
+                    DiagnosticSource::Package,
+                    format!("failed to prefetch Universe index: {err}"),
+                );
             }
         }
         outcome.extend([rule!(

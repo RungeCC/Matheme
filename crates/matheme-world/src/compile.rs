@@ -26,7 +26,7 @@ pub use typst::{Feature, Features};
 pub use typst_layout::PagedDocument;
 pub use typst_pdf::{PdfStandard, PdfStandards, Timestamp};
 
-use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity};
+use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity, DiagnosticSource};
 use crate::world::{MathemeWorld, WorldDate};
 
 /// Evict memoized Typst entries older than this many compilations so memory
@@ -317,7 +317,8 @@ fn resolve_features(mut requested: Vec<Feature>, format: OutputFormat) -> Featur
 
 fn maybe_offline_hint(diagnostics: &mut Vec<Diagnostic>, download_blocked: bool) {
     if download_blocked {
-        diagnostics.push(diagnostics::warning(
+        diagnostics.push(diagnostics::hint(
+            DiagnosticSource::Package,
             "Package downloads are disabled; enable downloads to fetch missing packages.",
         ));
     }
@@ -561,7 +562,7 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
                 return Err(CompileFailure {
                     summary: msg.clone(),
                     error_count: 1,
-                    diagnostics: vec![diagnostics::error(msg.clone())],
+                    diagnostics: vec![diagnostics::error(DiagnosticSource::Host, msg.clone())],
                     formatted: format!("error: {msg}\n"),
                 });
             }
@@ -666,9 +667,10 @@ fn evaluate_spec(
     let main_source = match world.source(world.main()) {
         Ok(source) => source,
         Err(err) => {
-            diagnostics.push(diagnostics::error(format!(
-                "failed to load main source for evaluation: {err}"
-            )));
+            diagnostics.push(diagnostics::error(
+                DiagnosticSource::Host,
+                format!("failed to load main source for evaluation: {err}"),
+            ));
             return Err(());
         }
     };
@@ -782,7 +784,10 @@ mod tests {
 
     #[test]
     fn offline_hint_only_fires_when_download_was_actually_blocked() {
-        let mut diags = vec![diagnostics::error("cannot find variable package")];
+        let mut diags = vec![diagnostics::error(
+            DiagnosticSource::Typst,
+            "cannot find variable package",
+        )];
         maybe_offline_hint(&mut diags, false);
         assert_eq!(
             diags.len(),
@@ -792,7 +797,8 @@ mod tests {
 
         maybe_offline_hint(&mut diags, true);
         assert_eq!(diags.len(), 2);
-        assert_eq!(diags[1].severity, DiagnosticSeverity::Warning);
+        assert_eq!(diags[1].severity, DiagnosticSeverity::Hint);
+        assert_eq!(diags[1].source, DiagnosticSource::Package);
     }
 
     #[test]
@@ -810,7 +816,13 @@ mod tests {
         };
         let success = compile_paged_with(req, |doc, _pages| {
             let pages = doc.pages().len();
-            Ok((pages, vec![diagnostics::warning("custom exporter warning")]))
+            Ok((
+                pages,
+                vec![diagnostics::warning(
+                    DiagnosticSource::Graphics,
+                    "custom exporter warning",
+                )],
+            ))
         })
         .expect("custom exporter compile should succeed");
 
@@ -820,8 +832,15 @@ mod tests {
         assert!(success
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("custom exporter warning")));
-        assert!(success.formatted.contains("custom exporter warning"));
+            .any(|d| d.message.contains("custom exporter warning")
+                && d.source == DiagnosticSource::Graphics));
+        assert!(
+            success
+                .formatted
+                .contains("warning: custom exporter warning"),
+            "non-Typst warnings must format with 'warning:' prefix, got: {}",
+            success.formatted
+        );
     }
 
     #[test]

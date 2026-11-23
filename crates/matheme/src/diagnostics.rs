@@ -2,7 +2,9 @@
 
 use matheme_wl::{assoc, Expr};
 
-pub use matheme_world::diagnostics::{warning, Diagnostic, Location};
+pub use matheme_world::diagnostics::{
+    format_line, warning, Diagnostic, DiagnosticSource, Location,
+};
 
 fn location_expr(location: &Option<Location>) -> Expr {
     let Some(location) = location else {
@@ -20,6 +22,7 @@ fn location_expr(location: &Option<Location>) -> Expr {
 pub fn expr(diag: &Diagnostic) -> Expr {
     assoc! {
         "Severity" -> diag.severity.as_str(),
+        "Source" -> diag.source.as_str(),
         "Message" -> diag.message.as_str(),
         "Location" -> location_expr(&diag.location),
         "Hints" -> Expr::list(diag.hints.iter().map(|hint| {
@@ -35,5 +38,27 @@ pub fn expr(diag: &Diagnostic) -> Expr {
                 "Text" -> trace.text.as_str(),
             }
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_severity_and_source() {
+        let diag = warning(DiagnosticSource::Graphics, "winding fallback");
+        let rendered = expr(&diag);
+        let entries = rendered.as_association().expect("association");
+        let field = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.key_name() == Some(name))
+                .and_then(|entry| entry.pair().ok())
+                .and_then(|(_, value)| value.as_str())
+        };
+        assert_eq!(field("Severity"), Some("Warning"));
+        assert_eq!(field("Source"), Some("Graphics"));
+        assert_eq!(field("Message"), Some("winding fallback"));
     }
 }

@@ -45,13 +45,50 @@ pub struct Trace {
 pub enum DiagnosticSeverity {
     Error,
     Warning,
+    Hint,
 }
 
 impl DiagnosticSeverity {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Error => "Error",
             Self::Warning => "Warning",
+            Self::Hint => "Hint",
+        }
+    }
+
+    pub const fn report_prefix(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Hint => "hint",
+        }
+    }
+}
+
+/// Subsystem that produced a [`Diagnostic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSource {
+    /// Emitted by the Typst compiler, evaluator, or exporter.
+    Typst,
+    /// Emitted by the native vector graphics exporter (`matheme-graphics`).
+    Graphics,
+    /// Emitted while converting values between the host language and Typst.
+    Conversion,
+    /// Emitted by package resolution, Universe index, or offline download policy.
+    Package,
+    /// Emitted by host-environment discovery or bridge runtime checks.
+    Host,
+}
+
+impl DiagnosticSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Typst => "Typst",
+            Self::Graphics => "Graphics",
+            Self::Conversion => "Conversion",
+            Self::Package => "Package",
+            Self::Host => "Host",
         }
     }
 }
@@ -59,12 +96,11 @@ impl DiagnosticSeverity {
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
+    pub source: DiagnosticSource,
     pub message: String,
     pub location: Option<Location>,
     pub hints: Vec<Hint>,
     pub trace: Vec<Trace>,
-    /// True for host/bridge-level warnings that did not come from Typst.
-    pub custom: bool,
 }
 
 /// Resolve a diagnostic span the same way `typst-kit`'s `WorldFiles::range`
@@ -126,6 +162,7 @@ pub fn from_typst(diag: &SourceDiagnostic, world: &MathemeWorld) -> Diagnostic {
             Severity::Error => DiagnosticSeverity::Error,
             Severity::Warning => DiagnosticSeverity::Warning,
         },
+        source: DiagnosticSource::Typst,
         message: diag.message.to_string(),
         hints: diag
             .hints
@@ -151,36 +188,46 @@ pub fn from_typst(diag: &SourceDiagnostic, world: &MathemeWorld) -> Diagnostic {
             })
             .collect(),
         location,
-        custom: false,
     }
 }
 
-/// A host/bridge-level error (failed source load, internal evaluation failure).
-pub fn error(message: impl Into<String>) -> Diagnostic {
+fn non_typst(
+    severity: DiagnosticSeverity,
+    source: DiagnosticSource,
+    message: impl Into<String>,
+) -> Diagnostic {
     Diagnostic {
-        severity: DiagnosticSeverity::Error,
+        severity,
+        source,
         message: message.into(),
         location: None,
         hints: vec![],
         trace: vec![],
-        custom: true,
     }
 }
 
-/// A host/bridge-level warning (bad option, offline hint, unsupported input value).
-pub fn warning(message: impl Into<String>) -> Diagnostic {
-    Diagnostic {
-        severity: DiagnosticSeverity::Warning,
-        message: message.into(),
-        location: None,
-        hints: vec![],
-        trace: vec![],
-        custom: true,
-    }
+/// A non-Typst diagnostic with error severity.
+pub fn error(source: DiagnosticSource, message: impl Into<String>) -> Diagnostic {
+    non_typst(DiagnosticSeverity::Error, source, message)
+}
+
+/// A non-Typst diagnostic with warning severity.
+pub fn warning(source: DiagnosticSource, message: impl Into<String>) -> Diagnostic {
+    non_typst(DiagnosticSeverity::Warning, source, message)
+}
+
+/// A non-Typst diagnostic with hint severity (advisory note, not a warning).
+pub fn hint(source: DiagnosticSource, message: impl Into<String>) -> Diagnostic {
+    non_typst(DiagnosticSeverity::Hint, source, message)
+}
+
+/// Format a single non-Typst diagnostic line (`error:` / `warning:` / `hint:`).
+pub fn format_line(diag: &Diagnostic) -> String {
+    format!("{}: {}\n", diag.severity.report_prefix(), diag.message)
 }
 
 /// Render Typst diagnostics with the CLI's codespan formatter, then append
-/// custom diagnostics as plain `error:` / `hint:` lines.
+/// non-Typst diagnostics as plain `error:` / `warning:` / `hint:` lines.
 pub fn format(
     world: &MathemeWorld,
     typst_diags: &[SourceDiagnostic],
@@ -196,12 +243,34 @@ pub fn format(
         return format!("failed to render diagnostics: {err}");
     }
     let mut text = String::from_utf8_lossy(buffer.as_slice()).into_owned();
-    for diag in all.iter().filter(|d| d.custom) {
-        let prefix = match diag.severity {
-            DiagnosticSeverity::Error => "error",
-            DiagnosticSeverity::Warning => "hint",
-        };
-        text.push_str(&format!("{prefix}: {}\n", diag.message));
+    for diag in all.iter().filter(|d| d.source != DiagnosticSource::Typst) {
+        text.push_str(&format_line(diag));
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn severity_and_source_render_distinct_labels_and_prefixes() {
+        let err = error(DiagnosticSource::Host, "boom");
+        let warn = warning(DiagnosticSource::Graphics, "degraded");
+        let note = hint(DiagnosticSource::Package, "enable downloads");
+
+        assert_eq!(err.severity.as_str(), "Error");
+        assert_eq!(warn.severity.as_str(), "Warning");
+        assert_eq!(note.severity.as_str(), "Hint");
+
+        assert_eq!(DiagnosticSource::Typst.as_str(), "Typst");
+        assert_eq!(err.source.as_str(), "Host");
+        assert_eq!(warn.source.as_str(), "Graphics");
+        assert_eq!(DiagnosticSource::Conversion.as_str(), "Conversion");
+        assert_eq!(note.source.as_str(), "Package");
+
+        assert_eq!(format_line(&err), "error: boom\n");
+        assert_eq!(format_line(&warn), "warning: degraded\n");
+        assert_eq!(format_line(&note), "hint: enable downloads\n");
+    }
 }

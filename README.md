@@ -78,7 +78,7 @@ All option names are strings. `MathemeToGraphics` shares the same options, with 
 | `"Features"` | `{}` | Experimental Typst features: `"html"`, `"bundle"`, `"a11y-extras"`. |
 | `"Evaluate"` | `None` | Typst expression evaluated against the document, returned under `"Evaluated"`. |
 
-Downloads are off by default: use `"AllowDownloads" -> True` per call or `"Downloads" -> True` in the settings. Paged exports report `"Pages"` and `"TotalPages"`; results also carry `Diagnostics`, `Formatted`, and `FormattedCell` when there are diagnostics.
+Downloads are off by default: use `"AllowDownloads" -> True` per call or `"Downloads" -> True` in the settings. Paged exports report `"Pages"` and `"TotalPages"`; results also carry `Diagnostics` and `FormattedCell` when there are diagnostics.
 
 ## Results and errors
 
@@ -86,19 +86,20 @@ Success returns a plain Association. Failure returns an ErrorTools `Failure` obj
 
 ```wolfram
 res = MathemeCompile["#let x ="];
-FailureQ[res]        (* True *)
-res[[1]]             (* MathemeCompileError *)
-res["Diagnostics"]   (* structured diagnostics *)
-res["Formatted"]     (* typst-CLI style plain-text report *)
+FailureQ[res]         (* True *)
+res[[1]]              (* MathemeCompileError *)
+res["Diagnostics"]    (* structured diagnostics with Severity and Source *)
+res["FormattedCell"]  (* Notebook-ready Code Cell diagnostic report *)
 ```
 
 | Tag | Raised when |
 | --- | ----------- |
-| `MathemeCompileError` | Typst compilation fails. |
-| `MathemeCallError` | Invalid arguments, settings, or a network operation. |
-| `MathemeLibraryError` | The DLL cannot be loaded or returns something unexpected. |
+| `MathemeCompileError` | Typst compilation, export, or evaluation fails. |
+| `MathemeCallError` | Invalid arguments, options, option combinations, or settings. |
+| `MathemeLibraryError` | The shared library cannot be loaded, or WSTP transport / envelope protocol fails. |
+| `MathemeInternalError` | An unexpected internal backend panic or invariant violation occurs. |
 
-Non-fatal warnings are issued as `MathemeDiagnostic::warning` messages and stay available in the result's `Diagnostics` field.
+Each entry in `Diagnostics` includes `"Severity"` (`"Error"`, `"Warning"`, or `"Hint"`), `"Source"` (`"Typst"`, `"Graphics"`, `"Conversion"`, `"Package"`, or `"Host"`), `"Message"`, `"Location"`, `"Hints"`, and `"Trace"`. Non-fatal `"Warning"` diagnostics are issued as `MathemeDiagnostic::warning` messages while `"Hint"` diagnostics stay silently attached to `Diagnostics` and `FormattedCell`.
 
 ## Templates and TypstForm
 

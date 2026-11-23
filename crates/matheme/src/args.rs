@@ -314,7 +314,9 @@ macro_rules! wl_actions {
                     $(
                         $action_name => $crate::wl_actions!(@parse $action_name, $variant $(, $args)? ; entries),
                     )*
-                    other => Err($crate::call::error(format!("unknown action: {other}"))),
+                    other => Err($crate::call::library_error(format!(
+                        "unknown action: {other}"
+                    ))),
                 }
             }
 

@@ -31,10 +31,11 @@ MathemeQueryPackages::usage = "MathemeQueryPackages[filters] queries cached loca
 ClearMathemeCache::usage = "ClearMathemeCache[targets] drops \"Fonts\", \"Packages\", \"Memoization\", or All caches without unloading the library.";
 MathemeClose::usage = "MathemeClose[] clears all caches, closes the WSTP link, and unloads the DLL.";
 
-MathemeLibraryError::usage = "MathemeLibraryError is the Failure tag for library load or protocol errors.";
-MathemeCallError::usage = "MathemeCallError is the Failure tag for invalid arguments, settings, or network errors.";
-MathemeCompileError::usage = "MathemeCompileError is the Failure tag for Typst compilation and evaluation errors.";
-MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal diagnostics.";
+MathemeLibraryError::usage = "MathemeLibraryError is the Failure tag for library load, WSTP transport, or bridge protocol errors.";
+MathemeCallError::usage = "MathemeCallError is the Failure tag for invalid arguments, options, or settings.";
+MathemeCompileError::usage = "MathemeCompileError is the Failure tag for Typst compilation, export, and evaluation errors.";
+MathemeInternalError::usage = "MathemeInternalError is the Failure tag for unexpected internal backend panics or invariant violations.";
+MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal warning diagnostics.";
 TypstForm::unspt = "TypstForm of `1` is not supported.";
 TypstForm::unkchar = "Unmapped Wolfram private-use character `1` (`2`) encountered in TypstForm; falling back to text literal.";
 
@@ -61,14 +62,15 @@ Protect[$TypstTemplates];
 
 Begin["`Private`"];
 
-(* Register the three failure tags once, when the package is loaded. *)
+(* Register the four failure tags once, when the package is loaded. *)
 Scan[CreateErrorType[#, {}] &,
-  {MathemeLibraryError, MathemeCallError, MathemeCompileError}];
+  {MathemeLibraryError, MathemeCallError, MathemeCompileError, MathemeInternalError}];
 
 $errorTags = <|
   "Library" -> MathemeLibraryError,
   "Call" -> MathemeCallError,
-  "Compile" -> MathemeCompileError
+  "Compile" -> MathemeCompileError,
+  "Internal" -> MathemeInternalError
 |>;
 
 $displayNames = <|
@@ -138,10 +140,11 @@ diagnosticText[diag_Association] := Module[
     message]
 ];
 
-(* Warnings are messages; errors are carried by the Failure object. *)
+(* Warnings are issued as Messages; hints stay in Diagnostics / FormattedCell,
+   and errors are carried by the Failure object. *)
 issueDiagnostics[name_, diagnostics_] := Scan[
   Function[diag,
-    If[AssociationQ[diag] && Lookup[diag, "Severity", "Warning"] === "Warning",
+    If[AssociationQ[diag] && Lookup[diag, "Severity", None] === "Warning",
       Message[MathemeDiagnostic::warning, Lookup[$displayNames, name, name],
         diagnosticText[diag]]]
   ],
@@ -185,8 +188,8 @@ formatDiagnosticCell[text_String] := Module[{formatted = normalizeDiagnosticBord
 ];
 formatDiagnosticCell[other_] := other;
 
-failureDetails[name_, result_] := With[{formatted = Lookup[result, "Formatted", ""]},
-  <|
+failureDetails[name_, result_] := Module[{report = Lookup[result, "DiagnosticReport", None], base},
+  base = <|
     "MessageTemplate" -> "Matheme `Operation` failed: `Detail`",
     "MessageParameters" -> <|
       "Operation" -> Lookup[$displayNames, name, name],
@@ -194,14 +197,16 @@ failureDetails[name_, result_] := With[{formatted = Lookup[result, "Formatted", 
     |>,
     "Message" -> Lookup[result, "Message", "unknown error"],
     "Operation" -> Lookup[$displayNames, name, name],
-    "ErrorTag" -> Lookup[result, "ErrorTag", "Call"],
-    "Diagnostics" -> Lookup[result, "Diagnostics", {}],
-    "Formatted" -> formatted,
-    "FormattedCell" -> formatDiagnosticCell[formatted]
-  |>
+    "ErrorKind" -> Lookup[result, "ErrorKind", "Library"],
+    "Diagnostics" -> Lookup[result, "Diagnostics", {}]
+  |>;
+  If[StringQ[report] && StringTrim[report] =!= "",
+    Append[base, "FormattedCell" -> formatDiagnosticCell[report]],
+    base
+  ]
 ];
 
-callUnchecked[name_String, arguments_Association] := Module[{result, tag, dropped},
+callUnchecked[name_String, arguments_Association] := Module[{result, tag, report, dropped},
   If[!loadFunctions[],
     With[{t = MathemeLibraryError},
       Raise[t, <|
@@ -220,15 +225,13 @@ callUnchecked[name_String, arguments_Association] := Module[{result, tag, droppe
   ];
   issueDiagnostics[name, Lookup[result, "Diagnostics", {}]];
   If[Lookup[result, "Status", "Error"] =!= "Success",
-    tag = Lookup[$errorTags, Lookup[result, "ErrorTag", "Call"], MathemeCallError];
+    tag = Lookup[$errorTags, Lookup[result, "ErrorKind", "Library"], MathemeLibraryError];
     With[{t = tag, details = failureDetails[name, result]}, Raise[t, details]]
   ];
-  dropped = KeyDrop[result, "Status"];
-  If[KeyExistsQ[dropped, "Formatted"],
-    If[StringQ[dropped["Formatted"]] && StringTrim[dropped["Formatted"]] === "",
-      KeyDrop[dropped, "Formatted"],
-      Append[dropped, "FormattedCell" -> formatDiagnosticCell[dropped["Formatted"]]]
-    ],
+  report = Lookup[result, "DiagnosticReport", None];
+  dropped = KeyDrop[result, {"Status", "DiagnosticReport"}];
+  If[StringQ[report] && StringTrim[report] =!= "",
+    Append[dropped, "FormattedCell" -> formatDiagnosticCell[report]],
     dropped
   ]
 ];
@@ -613,7 +616,7 @@ Scan[
    MathemeQueryPackages, ClearMathemeCache, MathemeClose}
 ];
 Scan[Protect, {MathemeLibraryError, MathemeCallError, MathemeCompileError,
-  MathemeDiagnostic}];
+  MathemeInternalError, MathemeDiagnostic}];
 
 EndPackage[];
 
