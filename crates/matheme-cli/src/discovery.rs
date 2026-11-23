@@ -28,8 +28,11 @@ fn bundled_font_dir(install_dir: &Path) -> Option<PathBuf> {
 }
 
 fn infer_install_dir(kernel_path: &Path) -> Option<PathBuf> {
+    // Resolve symlinks (e.g. `/usr/bin/WolframKernel -> /opt/WolframEngine/Executables/WolframKernel`)
+    // so we can locate the real `<install_dir>/SystemFiles` directory.
+    let resolved = std::fs::canonicalize(kernel_path).unwrap_or_else(|_| kernel_path.to_path_buf());
     // On Windows/Linux, WolframKernel sits directly in `<install_dir>` (or `<install_dir>/Executables`).
-    let parent = kernel_path.parent()?;
+    let parent = resolved.parent()?;
     if parent.join("SystemFiles").is_dir() {
         return Some(parent.to_path_buf());
     }
@@ -202,6 +205,18 @@ fn find_in_standard_dirs() -> Vec<KernelCandidate> {
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        for (dir, name) in [
+            ("/opt/Wolfram", "Wolfram"),
+            ("/opt/Mathematica", "Mathematica"),
+            ("/opt/WolframEngine", "WolframEngine"),
+            ("/usr/local/Wolfram/WolframEngine", "WolframEngine"),
+        ] {
+            if let Some(c) =
+                candidate_from_install_dir(PathBuf::from(dir), name.to_owned(), "standard install dir")
+            {
+                found.push(c);
+            }
+        }
         let roots = ["/usr/local/Wolfram", "/opt/Wolfram"]
             .into_iter()
             .map(PathBuf::from);

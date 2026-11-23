@@ -88,11 +88,17 @@ $displayNames = <|
 
 MathemeDiagnostic::warning = "Matheme `1`: `2`";
 
+$libraryFileName = Switch[$OperatingSystem,
+  "Windows", "matheme.dll",
+  "MacOSX", "matheme.dylib",
+  _, "matheme.so"
+];
+
 $library = Module[{found = Quiet[FindLibrary["matheme"]]},
   If[TrueQ[found =!= $Failed],
     found,
     FileNameJoin[{DirectoryName[DirectoryName[$Input]], "LibraryResources",
-      $SystemID, "matheme.dll"}]
+      $SystemID, $libraryFileName}]
   ]
 ];
 

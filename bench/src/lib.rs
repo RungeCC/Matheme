@@ -94,7 +94,7 @@ pub fn doc_winding_dense_self_intersecting(num_vertices: usize) -> String {
          #polygon(fill: rgb(\"#dc2626\"), fill-rule: \"non-zero\"",
     );
     let step = 3;
-    let n = if num_vertices % 3 == 0 {
+    let n = if num_vertices.is_multiple_of(3) {
         num_vertices + 1
     } else {
         num_vertices

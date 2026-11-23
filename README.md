@@ -10,9 +10,9 @@ In a notebook FrontEnd, option names, settings keys, and query/cache filter keys
 
 ## Requirements
 
-- Wolfram 15.0 on Windows x86-64 (the tested target)
+- Wolfram 15.0 on Windows x86-64 or Linux x86-64 (tested on Windows Wolfram 15.0 and Arch Linux WolframEngine 15.0)
 - The `Wolfram/ErrorTools` paclet (shipped with Wolfram 15)
-- A built paclet: `nu scripts/build.nu` (Rust MSVC toolchain, Nushell, and the WSTP DeveloperKit) produces `output/Matheme/` and `output/Runge__Matheme-0.1.0.paclet`
+- A built paclet: `nu scripts/build.nu` (Rust toolchain, Nushell, and the WSTP DeveloperKit; on Linux also `openssl` and `util-linux-libs`/`libuuid`) produces `output/Matheme/` and `output/Runge__Matheme-0.1.0.paclet` (pass `-j <N>` to limit Cargo parallelism on memory-constrained machines)
 
 ## Install and load
 
