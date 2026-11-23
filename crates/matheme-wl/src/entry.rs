@@ -38,6 +38,12 @@ impl Rule {
     }
 }
 
+impl From<Rule> for Expr {
+    fn from(rule: Rule) -> Self {
+        Self::normal(&Symbol::RULE, [rule.key, rule.value])
+    }
+}
+
 /// One borrowed element of an association.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Entry<'a> {

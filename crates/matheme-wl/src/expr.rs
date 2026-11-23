@@ -9,7 +9,9 @@ use std::borrow::{Borrow, Cow};
 use std::fmt;
 
 use typst::foundations::Value;
-use wolfram_library_link::expr::{Expr as RawExpr, ExprKind, RuleEntry, Symbol as RawSymbol};
+use wolfram_library_link::expr::{
+    Expr as RawExpr, ExprKind, NumericArray, RuleEntry, Symbol as RawSymbol,
+};
 
 use crate::convert;
 use crate::entry::{Entry, Rule};
@@ -68,6 +70,27 @@ impl Expr {
 
     pub fn bytes(bytes: impl Into<Vec<u8>>) -> Self {
         RawExpr::new(ExprKind::ByteArray(bytes.into())).into()
+    }
+
+    /// A packed ``System`NumericArray`` of `"UnsignedInteger8"` elements with
+    /// the given `dimensions`.
+    ///
+    /// Over WSTP (`Link::put_expr`), `NumericArray` serializes directly via WXF
+    /// (`BinaryDeserialize[ByteArray[...]]`) in a single contiguous byte-array
+    /// transfer rather than constructing per-element `List` expressions.
+    pub fn numeric_array_u8(dimensions: &[usize], data: &[u8]) -> Self {
+        let expected: usize = dimensions.iter().copied().product();
+        assert_eq!(
+            data.len(),
+            expected,
+            "NumericArray byte length ({}) does not match product of dimensions ({dimensions:?} -> {expected})",
+            data.len()
+        );
+        RawExpr::new(ExprKind::NumericArray(NumericArray::from_slice::<u8>(
+            dimensions.to_vec(),
+            data,
+        )))
+        .into()
     }
 
     /// A normal expression `head[elements…]`.
@@ -158,6 +181,14 @@ impl Expr {
     pub fn as_byte_array(&self) -> Option<&[u8]> {
         match self.0.kind() {
             ExprKind::ByteArray(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Borrow the underlying [`NumericArray`] if this expression is one.
+    pub fn as_numeric_array(&self) -> Option<&NumericArray> {
+        match self.0.kind() {
+            ExprKind::NumericArray(arr) => Some(arr),
             _ => None,
         }
     }
@@ -483,5 +514,14 @@ mod tests {
         let entries = expr.as_association().expect("WXF association");
         assert!(entries[0].pair().is_ok());
         assert!(matches!(entries[1], Entry::RuleDelayed { .. }));
+    }
+
+    #[test]
+    fn numeric_array_u8_round_trips_dimensions_and_bytes() {
+        let pixels = [255_u8, 0, 128, 255, 10, 20, 30, 40];
+        let expr = Expr::numeric_array_u8(&[1, 2, 4], &pixels);
+        let na = expr.as_numeric_array().expect("NumericArray");
+        assert_eq!(na.dimensions(), &[1, 2, 4]);
+        assert_eq!(na.try_as_slice::<u8>(), Some(pixels.as_slice()));
     }
 }

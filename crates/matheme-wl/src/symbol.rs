@@ -182,6 +182,8 @@ define_system_symbols! {
         TEXTURE => "Texture",
         /// ``System`Image``.
         IMAGE => "Image",
+        /// ``System`Raster``.
+        RASTER => "Raster",
         /// ``System`ColorSpace``.
         COLOR_SPACE => "ColorSpace",
         /// ``System`Background``.

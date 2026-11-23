@@ -19,7 +19,7 @@
    must contain literal strings/lists; With injects them.  Everything is
    best-effort: headless kernels skip the block, a missing .tr file is
    ignored, and Quiet/Check keeps a missing or changed FrontEnd symbol from
-   breaking Get["Matheme`"]. *)
+   breaking Get["Runge`Matheme`"]. *)
 
 If[TrueQ[$Notebooks] || MatchQ[Quiet[$FrontEnd], _FrontEndObject],
 

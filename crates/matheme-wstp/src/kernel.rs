@@ -61,7 +61,7 @@ pub struct KernelSession {
     target: SessionTarget,
     exit_policy: ExitPolicy,
     /// When `true` (owned launched kernels), the kernel's top-level `$Context`
-    /// is isolated to ``"Matheme`WSTP`"`` with ``$ContextPath = {"System`"}`` so
+    /// is isolated to ``"Runge`Matheme`WSTP`"`` with ``$ContextPath = {"System`"}`` so
     /// WSTP transmits all non-`` System` `` symbols (including `` Global` ``) with
     /// explicit context prefixes, while user code still evaluates in the user's
     /// logical `$Context` / `$ContextPath`.
@@ -72,9 +72,9 @@ pub struct KernelSession {
 /// Initialization snippet run once on owned launched kernels so WSTP
 /// serialization preserves exact contexts for all non-`` System` `` symbols.
 const WIRE_CONTEXT_INIT_WL: &str = r#"
-Matheme`WSTP`$Context = System`$Context;
-Matheme`WSTP`$ContextPath = System`$ContextPath;
-System`$Context = "Matheme`WSTP`";
+Runge`Matheme`WSTP`$Context = System`$Context;
+Runge`Matheme`WSTP`$ContextPath = System`$ContextPath;
+System`$Context = "Runge`Matheme`WSTP`";
 System`$ContextPath = {"System`"};
 System`Null
 "#;
@@ -83,9 +83,9 @@ System`Null
 /// `$Context` / `$ContextPath` (persisting any `Needs[...]` / `Begin[...]`
 /// changes) while letting the kernel return under the isolated wire context.
 fn isolated_eval_expr(wl_code: &str) -> Expr {
-    use matheme_wl::Symbol;
-    let ctx_var = Symbol::from_static("Matheme`WSTP`$Context");
-    let path_var = Symbol::from_static("Matheme`WSTP`$ContextPath");
+    use matheme_wl::{list, normal, Symbol};
+    let ctx_var = Symbol::from_static("Runge`Matheme`WSTP`$Context");
+    let path_var = Symbol::from_static("Runge`Matheme`WSTP`$ContextPath");
     let sys_ctx = Symbol::from_static("System`$Context");
     let sys_path = Symbol::from_static("System`$ContextPath");
     let set = Symbol::from_static("System`Set");
@@ -93,20 +93,18 @@ fn isolated_eval_expr(wl_code: &str) -> Expr {
     let with_local = Symbol::from_static("Internal`WithLocalSettings");
     let compound = Symbol::from_static("System`CompoundExpression");
 
-    let bindings = Expr::list([
-        Expr::normal(&set, [Expr::symbol(&sys_ctx), Expr::symbol(&ctx_var)]),
-        Expr::normal(&set, [Expr::symbol(&sys_path), Expr::symbol(&path_var)]),
-    ]);
-    let body = Expr::normal(&crate::protocol::TO_EXPRESSION, [Expr::string(wl_code)]);
-    let save_ctx = Expr::normal(
+    let bindings = list![
+        normal!(&set, &sys_ctx, &ctx_var),
+        normal!(&set, &sys_path, &path_var),
+    ];
+    let body = normal!(&crate::protocol::TO_EXPRESSION, wl_code);
+    let save_ctx = normal!(
         &compound,
-        [
-            Expr::normal(&set, [Expr::symbol(&ctx_var), Expr::symbol(&sys_ctx)]),
-            Expr::normal(&set, [Expr::symbol(&path_var), Expr::symbol(&sys_path)]),
-        ],
+        normal!(&set, &ctx_var, &sys_ctx),
+        normal!(&set, &path_var, &sys_path),
     );
-    let inner = Expr::normal(&with_local, [Expr::null(), body, save_ctx]);
-    Expr::normal(&block, [bindings, inner])
+    let inner = normal!(&with_local, Expr::null(), body, save_ctx);
+    normal!(&block, bindings, inner)
 }
 
 impl KernelSession {

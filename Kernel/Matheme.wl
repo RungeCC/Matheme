@@ -4,13 +4,13 @@
 
 (* A reload must close any open WSTP link / DLL reference first, then drop
    both public and private symbols before re-defining them. *)
-If[MemberQ[$Packages, "Matheme`"],
-  Quiet[Matheme`MathemeClose[]];
-  Unprotect["Matheme`*", "Matheme`Private`*", "Matheme`Private`TypstForm`*"];
-  ClearAll["Matheme`*", "Matheme`Private`*", "Matheme`Private`TypstForm`*"]
+If[MemberQ[$Packages, "Runge`Matheme`"],
+  Quiet[Runge`Matheme`MathemeClose[]];
+  Unprotect["Runge`Matheme`*", "Runge`Matheme`Private`*", "Runge`Matheme`Private`TypstForm`*"];
+  ClearAll["Runge`Matheme`*", "Runge`Matheme`Private`*", "Runge`Matheme`Private`TypstForm`*"]
 ];
 
-BeginPackage["Matheme`", {"Wolfram`ErrorTools`"}];
+BeginPackage["Runge`Matheme`", {"Wolfram`ErrorTools`"}];
 
 MathemeCompile::usage = "MathemeCompile[source, opts] compiles Typst source to \"PDF\", \"SVG\", \"HTML\", or \"Graphics\" (with optional \"Evaluate\", \"Pages\", \"PDFStandard\", \"PDFTags\", \"CreationTimestamp\", \"Features\", \"Inputs\", \"BasePath\", \"AllowDownloads\", and \"TypstTemplate\"). Paged formats return \"Pages\" (exported page count) and \"TotalPages\" (full compiled page count).";
 MathemeToGraphics::usage = "MathemeToGraphics[source, opts] compiles Typst source and returns vector Graphics pages (directly from Typst's Frame tree by default, or imported when \"Format\" is \"SVG\" or \"PDF\"). Rejects non-vector formats such as \"HTML\".";
@@ -333,7 +333,7 @@ compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
 MathemeCompile[source_String, opts : OptionsPattern[]] :=
   Handle[compileChecked[source, opts], _Failure];
 MathemeCompile[TypstForm[expr_, tOpts : OptionsPattern[]], opts : OptionsPattern[]] :=
-  Module[{src = Matheme`Private`TypstForm`typstFormToString[expr, tOpts], flatOpts = Flatten[{opts}], merged},
+  Module[{src = Runge`Matheme`Private`TypstForm`typstFormToString[expr, tOpts], flatOpts = Flatten[{opts}], merged},
     merged = If[KeyExistsQ[Association[flatOpts], "TypstTemplate"],
       flatOpts,
       Append[flatOpts, "TypstTemplate" -> "Equation"]
@@ -610,3 +610,7 @@ Scan[Protect, {MathemeLibraryError, MathemeCallError, MathemeCompileError,
   MathemeDiagnostic}];
 
 EndPackage[];
+
+(* Register FrontEnd argument completions when loaded via Get["Runge`Matheme`"]
+   (which resolves directly to Kernel/Matheme.wl) or via direct Get. *)
+Get[FileNameJoin[{DirectoryName[$InputFileName], "Completions.wl"}]];

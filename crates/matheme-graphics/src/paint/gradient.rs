@@ -1,178 +1,13 @@
-//! Host-agnostic paint IR (solid colors, gradients, tilings), clip regions, and
-//! exact coordinate/stop mapping math shared between [`crate::extract`] and
-//! [`crate::wl`].
+//! Gradient stop expansion, coordinate projection, two-circle radial evaluation,
+//! and RGBA texture rasterization for non-native gradient configurations.
 
 use std::f64::consts::TAU;
 
 use kurbo::{Affine, Point};
 use typst::layout::{Ratio, Size};
-use typst::visualize::{Color, Gradient, GradientStop as TypstGradientStop, RatioOrAngle};
+use typst::visualize::{Gradient, GradientStop as TypstGradientStop, RatioOrAngle};
 
-use crate::extract::{Subpath, VectorPrimitive};
-
-/// RGBA color with components in `0.0..=1.0` (sRGB, straight/unpremultiplied alpha).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rgba {
-    pub r: f64,
-    pub g: f64,
-    pub b: f64,
-    pub a: f64,
-}
-
-impl Rgba {
-    pub fn from_color(color: &Color) -> Self {
-        let rgb = color.to_rgb();
-        Self {
-            r: f64::from(rgb.red),
-            g: f64::from(rgb.green),
-            b: f64::from(rgb.blue),
-            a: f64::from(rgb.alpha),
-        }
-    }
-
-    pub fn with_opacity(self, opacity: f64) -> Self {
-        Self {
-            a: (self.a * opacity).clamp(0.0, 1.0),
-            ..self
-        }
-    }
-
-    /// Linearly interpolate two RGBA colors in sRGB space.
-    pub fn lerp(self, other: Self, t: f64) -> Self {
-        let t = t.clamp(0.0, 1.0);
-        let u = 1.0 - t;
-        Self {
-            r: self.r * u + other.r * t,
-            g: self.g * u + other.g * t,
-            b: self.b * u + other.b * t,
-            a: self.a * u + other.a * t,
-        }
-    }
-
-    /// Quantize to `[R, G, B, A]` bytes in `0..=255`.
-    pub fn to_u8_rgba(self) -> [u8; 4] {
-        let q = |v: f64| -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 };
-        [q(self.r), q(self.g), q(self.b), q(self.a)]
-    }
-}
-
-/// How a gradient behaves outside its `[0, 1]` parameter domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GradientSpread {
-    Pad,
-    Reflect,
-    Repeat,
-}
-
-/// One color stop at normalized offset `0.0..=1.0`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GradientStop {
-    pub offset: f64,
-    pub color: Rgba,
-}
-
-/// Host-agnostic vector gradient definition in page Y-Up point coordinates.
-#[derive(Debug, Clone, PartialEq)]
-pub enum GradientPaint {
-    /// Linear gradient where parameter `s(p) = (p - origin) · grad` in page Y-Up
-    /// coordinates. Exact under arbitrary rotation, reflection, non-uniform
-    /// scaling, and skew.
-    Linear {
-        origin: [f64; 2],
-        grad: [f64; 2],
-        stops: Vec<GradientStop>,
-        spread: GradientSpread,
-    },
-    /// Two-circle radial gradient defined in local space mapped to page Y-Up
-    /// coordinates by column-major affine `local_to_page`.
-    Radial {
-        local_to_page: [f64; 6],
-        center: [f64; 2],
-        radius: f64,
-        focal_center: [f64; 2],
-        focal_radius: f64,
-        stops: Vec<GradientStop>,
-        spread: GradientSpread,
-    },
-    /// Conic (sweep) gradient around `center` in local space mapped to page
-    /// Y-Up coordinates by column-major affine `local_to_page`.
-    ///
-    /// For Typst conic gradients, angles are measured in screen/page aspect
-    /// space (true circular angle in the container's physical coordinates),
-    /// starting at `start_angle` (in radians, Typst CW convention from left
-    /// when `start_angle == 0`, converted to `start_angle_rad` in Y-Up page
-    /// angle space when `aspect_preserving` is true).
-    Conic {
-        /// Affine mapping local container `[0..1]^2` (Y-Down) to page Y-Up points.
-        local_to_page: [f64; 6],
-        /// Container physical `[width, height]` in local points before extra transform.
-        container_size: [f64; 2],
-        /// Center in local normalized `[0..1]^2` coordinates.
-        center: [f64; 2],
-        /// Typst conic start angle in radians (CW from left in container space).
-        angle: f64,
-        stops: Vec<GradientStop>,
-    },
-}
-
-/// Repeating 2D vector tiling (Typst `tiling(...)` or SVG `<pattern>`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct TilingPaint {
-    /// Tile cell primitives extracted in the tile's linear-transformed page
-    /// orientation with tile origin at `(0, 0)`.
-    pub primitives: Vec<VectorPrimitive>,
-    /// Tile cell clip dimensions `[w, h]` in local tile coordinates (before
-    /// `grid_to_page`).
-    pub tile_size: [f64; 2],
-    /// Lattice step `[step_x, step_y]` (`size + spacing`) in local tile coordinates.
-    pub step: [f64; 2],
-    /// Phase offset `[ox, oy]` in local tile coordinates.
-    pub offset: [f64; 2],
-    /// Column-major affine mapping local tile lattice coordinates `(gx, gy)`
-    /// into page Y-Up point coordinates.
-    pub grid_to_page: [f64; 6],
-}
-
-/// Fill or stroke paint style.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PaintStyle {
-    Solid(Rgba),
-    Gradient(GradientPaint),
-    Tiling(Box<TilingPaint>),
-}
-
-impl PaintStyle {
-    pub fn as_solid(&self) -> Option<Rgba> {
-        match *self {
-            Self::Solid(c) => Some(c),
-            _ => None,
-        }
-    }
-}
-
-/// Clip region enclosing child primitives.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ClipRegion {
-    /// Axis-aligned rectangle `[[x_min, x_max], [y_min, y_max]]`.
-    Rect([[f64; 2]; 2]),
-    /// Arbitrary closed curve clip path (already resolved to EvenOdd winding),
-    /// paired with both its geometric bounding box (`bounds`) and its
-    /// control-point bounding box (`ctrl_bounds`).
-    Path {
-        subpaths: Vec<Subpath>,
-        bounds: [[f64; 2]; 2],
-        ctrl_bounds: [[f64; 2]; 2],
-    },
-}
-
-impl ClipRegion {
-    pub fn bounds(&self) -> [[f64; 2]; 2] {
-        match self {
-            Self::Rect(b) => *b,
-            Self::Path { bounds, .. } => *bounds,
-        }
-    }
-}
+use crate::ir::{GradientPaint, GradientSpread, GradientStop, PaintStyle, Rgba};
 
 /// Expand a Typst [`Gradient`]'s stops into sRGB [`GradientStop`]s, using
 /// Typst's own adaptive subdivision so Oklab / Oklch / HSL / HSV / linear-RGB /
@@ -209,7 +44,8 @@ pub fn expand_typst_gradient_stops(gradient: &Gradient) -> Vec<GradientStop> {
         if end_t > start_t && gradient.anti_alias() {
             let start = TypstGradientStop::new(start_c.clone(), *start_t);
             let end = TypstGradientStop::new(end_c.clone(), *end_t);
-            for (mid_c, mid_t) in gradient.generate_intermediate_stops_for_rgb_interpolation(&start, &end)
+            for (mid_c, mid_t) in
+                gradient.generate_intermediate_stops_for_rgb_interpolation(&start, &end)
             {
                 out.push(GradientStop {
                     offset: mid_t.get().clamp(0.0, 1.0),
@@ -237,9 +73,10 @@ pub fn typst_gradient_to_paint(
 ) -> PaintStyle {
     let stops = expand_typst_gradient_stops(gradient);
     if stops.len() <= 1 {
-        let c = stops
-            .first()
-            .map_or_else(|| Rgba::from_color(&gradient.sample(RatioOrAngle::Ratio(Ratio::new(0.5)))), |s| s.color);
+        let c = stops.first().map_or_else(
+            || Rgba::from_color(&gradient.sample(RatioOrAngle::Ratio(Ratio::new(0.5)))),
+            |s| s.color,
+        );
         return PaintStyle::Solid(c);
     }
 
@@ -259,7 +96,13 @@ pub fn typst_gradient_to_paint(
                 typst::layout::Quadrant::Fourth => (0.0, 1.0),
             };
             let g_uv = [cos / factor, sin / factor];
-            match linear_paint_from_local(container_to_page, [x1, y1], g_uv, stops, GradientSpread::Pad) {
+            match linear_paint_from_local(
+                container_to_page,
+                [x1, y1],
+                g_uv,
+                stops,
+                GradientSpread::Pad,
+            ) {
                 Some(gp) => PaintStyle::Gradient(gp),
                 None => PaintStyle::Solid(Rgba::from_color(
                     &gradient.sample(RatioOrAngle::Ratio(Ratio::new(0.5))),
@@ -301,9 +144,6 @@ pub fn linear_paint_from_local(
         return None;
     }
     let inv_det = 1.0 / det;
-    // A_lin = [[sx, kx], [ky, sy]]
-    // A_lin^{-1} = inv_det * [[sy, -kx], [-ky, sx]]
-    // (A_lin^{-1})^T = inv_det * [[sy, -ky], [-kx, sx]]
     let gx = inv_det * (sy * g_local[0] - ky * g_local[1]);
     let gy = inv_det * (-kx * g_local[0] + sx * g_local[1]);
     if !gx.is_finite() || !gy.is_finite() {
@@ -315,192 +155,6 @@ pub fn linear_paint_from_local(
         grad: [gx, gy],
         stops,
         spread,
-    })
-}
-
-/// Compute the control-point bounding box `[[x_min, x_max], [y_min, y_max]]` of
-/// one or more [`Subpath`]s.
-///
-/// Wolfram Language computes both `Texture` UV bounds and
-/// `Linear/Radial/ConicGradientFilling` bounding boxes from `FilledCurve`'s
-/// control points (not the tighter geometric Bezier hull), so using this box
-/// keeps gradient and texture alignment exact to the pixel.
-pub fn subpaths_ctrl_bounds<'a>(subpaths: impl IntoIterator<Item = &'a Subpath>) -> Option<[[f64; 2]; 2]> {
-    let mut x0 = f64::INFINITY;
-    let mut x1 = f64::NEG_INFINITY;
-    let mut y0 = f64::INFINITY;
-    let mut y1 = f64::NEG_INFINITY;
-    let mut include = |p: [f64; 2]| {
-        if p[0].is_finite() && p[1].is_finite() {
-            x0 = x0.min(p[0]);
-            x1 = x1.max(p[0]);
-            y0 = y0.min(p[1]);
-            y1 = y1.max(p[1]);
-        }
-    };
-
-    for sp in subpaths {
-        if sp.segments.is_empty() {
-            continue;
-        }
-        include(sp.start);
-        for seg in &sp.segments {
-            match *seg {
-                crate::extract::Segment::Line(p) => include(p),
-                crate::extract::Segment::Cubic(c1, c2, p) => {
-                    include(c1);
-                    include(c2);
-                    include(p);
-                }
-            }
-        }
-    }
-
-    if x0.is_finite() && y0.is_finite() {
-        Some([[x0, x1], [y0, y1]])
-    } else {
-        None
-    }
-}
-
-/// Right-handed oriented rectangle `origin + s * dir + t * (-dir[1], dir[0])`
-/// for `s in [0, width]`, `t in [0, height]`, where `dir = [cos θ, sin θ]`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OrientedRect {
-    pub origin: [f64; 2],
-    pub width: f64,
-    pub height: f64,
-    pub dir: [f64; 2],
-}
-
-/// Extract the 4 distinct vertices of a single closed polygonal subpath if it
-/// consists purely of line segments and has exactly 4 non-degenerate corners.
-fn single_closed_quad(subpaths: &[Subpath]) -> Option<[[f64; 2]; 4]> {
-    if subpaths.len() != 1 {
-        return None;
-    }
-    let sp = &subpaths[0];
-    if !sp.closed || sp.segments.len() < 3 || sp.segments.len() > 5 {
-        return None;
-    }
-    if !sp.start[0].is_finite() || !sp.start[1].is_finite() {
-        return None;
-    }
-    let mut verts = Vec::with_capacity(5);
-    verts.push(sp.start);
-    for seg in &sp.segments {
-        let crate::extract::Segment::Line(p) = *seg else {
-            return None;
-        };
-        if !p[0].is_finite() || !p[1].is_finite() {
-            return None;
-        }
-        let prev = *verts.last().unwrap();
-        if (p[0] - prev[0]).hypot(p[1] - prev[1]) > 1e-6 {
-            verts.push(p);
-        }
-    }
-    if verts.len() >= 2 {
-        let first = verts[0];
-        let last = *verts.last().unwrap();
-        if (last[0] - first[0]).hypot(last[1] - first[1]) <= 1e-6 {
-            verts.pop();
-        }
-    }
-    if verts.len() != 4 {
-        return None;
-    }
-    Some([verts[0], verts[1], verts[2], verts[3]])
-}
-
-/// If `subpaths` is a single closed axis-aligned rectangle (including 90°/180°/270°
-/// rotations), return its `[[x_min, x_max], [y_min, y_max]]` bounds.
-pub fn subpaths_axis_aligned_rect(subpaths: &[Subpath]) -> Option<[[f64; 2]; 2]> {
-    let verts = single_closed_quad(subpaths)?;
-    let mut x0 = f64::INFINITY;
-    let mut x1 = f64::NEG_INFINITY;
-    let mut y0 = f64::INFINITY;
-    let mut y1 = f64::NEG_INFINITY;
-    for &[x, y] in &verts {
-        x0 = x0.min(x);
-        x1 = x1.max(x);
-        y0 = y0.min(y);
-        y1 = y1.max(y);
-    }
-    let w = x1 - x0;
-    let h = y1 - y0;
-    if w <= 1e-6 || h <= 1e-6 {
-        return None;
-    }
-    let tol = 1e-5 * w.max(h);
-    let mut prev_horiz: Option<bool> = None;
-    for i in 0..4 {
-        let a = verts[i];
-        let b = verts[(i + 1) % 4];
-        let dx = (b[0] - a[0]).abs();
-        let dy = (b[1] - a[1]).abs();
-        let is_horiz = if dy <= tol && dx > tol {
-            true
-        } else if dx <= tol && dy > tol {
-            false
-        } else {
-            return None;
-        };
-        if prev_horiz == Some(is_horiz) {
-            return None;
-        }
-        prev_horiz = Some(is_horiz);
-    }
-    Some([[x0, x1], [y0, y1]])
-}
-
-/// If `subpaths` is a single closed (possibly rotated) rectangle, return its
-/// right-handed [`OrientedRect`] parameterization.
-pub fn subpaths_oriented_rect(subpaths: &[Subpath]) -> Option<OrientedRect> {
-    let [v0, v1, v2, v3] = single_closed_quad(subpaths)?;
-    let mut u = [v1[0] - v0[0], v1[1] - v0[1]];
-    let mut v = [v3[0] - v0[0], v3[1] - v0[1]];
-    let mut w = u[0].hypot(u[1]);
-    let mut h = v[0].hypot(v[1]);
-    if w <= 1e-6 || h <= 1e-6 {
-        return None;
-    }
-    let tol = 1e-5 * w.max(h);
-    // Parallelogram closure: v2 == v0 + u + v.
-    let err_x = v2[0] - (v0[0] + u[0] + v[0]);
-    let err_y = v2[1] - (v0[1] + u[1] + v[1]);
-    if err_x.hypot(err_y) > tol {
-        return None;
-    }
-    // Right-angle check: u ⊥ v.
-    let dot = u[0] * v[0] + u[1] * v[1];
-    if dot.abs() > 1e-5 * w * h {
-        return None;
-    }
-    // Ensure right-handed frame (det(u, v) > 0).
-    let det = u[0] * v[1] - u[1] * v[0];
-    if det < 0.0 {
-        std::mem::swap(&mut u, &mut v);
-        std::mem::swap(&mut w, &mut h);
-    }
-    Some(OrientedRect {
-        origin: v0,
-        width: w,
-        height: h,
-        dir: [u[0] / w, u[1] / w],
-    })
-}
-
-/// Returns `true` if any primitive in `primitives` uses a gradient, tiling,
-/// nested clip, or embedded image (i.e. anything whose orientation, `Inset`, or
-/// texture coordinates should not be nested inside a rotated `Inset`).
-pub fn primitives_contain_non_solid_paint(primitives: &[VectorPrimitive]) -> bool {
-    primitives.iter().any(|p| match p {
-        VectorPrimitive::Paths { fill, .. } => {
-            matches!(fill, Some(PaintStyle::Gradient(_) | PaintStyle::Tiling(_)))
-        }
-        VectorPrimitive::Clip { .. } | VectorPrimitive::Image { .. } => true,
-        VectorPrimitive::Glyphs { .. } | VectorPrimitive::Line { .. } => false,
     })
 }
 
@@ -527,7 +181,6 @@ pub fn sample_stops(stops: &[GradientStop], s: f64, spread: GradientSpread) -> R
     if t >= last.offset {
         return last.color;
     }
-    // Binary search for the first stop with offset >= t.
     let idx = stops.partition_point(|st| st.offset < t);
     if idx == 0 {
         return stops[0].color;
@@ -550,12 +203,6 @@ pub struct ProjectedLinearStops {
 
 /// Project stops from `s ∈ [0, 1]` via `t = t_start + s * span` (`span > 0`)
 /// into Wolfram `LinearGradientFilling`'s strict `[0, 1]` stop domain.
-///
-/// When `[t_start, t_start + span]` lies inside `[0, 1]`, stops map directly
-/// and Wolfram's native padding (`"Fixed"`, `"Periodic"`, `"Reflected"`) handles
-/// regions outside `[t_start, t_end]`. When `[t_start, t_end]` extends past
-/// `0` or `1`, stops are clipped/unrolled analytically onto `[0, 1]` so Wolfram
-/// never rescales out-of-range offsets.
 pub fn project_linear_stops_to_unit(
     stops: &[GradientStop],
     t_start: f64,
@@ -657,7 +304,6 @@ pub fn map_conic_stops_to_wl(
         return vec![(0.0, c), (TAU, c)];
     }
 
-    // Build full coverage over s in [0, 1] by padding endpoints if stops don't reach 0 / 1.
     let mut full: Vec<GradientStop> = Vec::with_capacity(stops.len() + 2);
     if stops[0].offset > 1e-9 {
         full.push(GradientStop {
@@ -673,7 +319,6 @@ pub fn map_conic_stops_to_wl(
         });
     }
 
-    // Each interval [s0, s1] maps linearly to a CCW interval [th_lo, th_hi] with colors (c_lo, c_hi).
     struct ArcPiece {
         lo: f64,
         hi: f64,
@@ -688,7 +333,6 @@ pub fn map_conic_stops_to_wl(
         if hi - lo <= 1e-12 {
             return;
         }
-        // Shift into ranges intersecting [0, TAU].
         let shift = (-lo / TAU).ceil() as i64 - 1;
         for k in shift..=shift + 2 {
             let off = (k as f64) * TAU;
@@ -721,7 +365,6 @@ pub fn map_conic_stops_to_wl(
             continue;
         }
         if clockwise_wl {
-            // s increases => theta decreases: [start - b*TAU, start - a*TAU], color goes b -> a.
             let lo = start - b.offset * TAU;
             let hi = start - a.offset * TAU;
             push_wrapped(&mut pieces, lo, hi, b.color, a.color);
@@ -771,7 +414,6 @@ pub fn eval_radial_2circle(
     let vx = z[0] - q[0];
     let vy = z[1] - q[1];
 
-    // Degenerate concentric case (fastest exact formula).
     if dx.abs() <= 1e-12 && dy.abs() <= 1e-12 {
         if dr.abs() <= 1e-12 {
             return Some(0.0);
@@ -797,11 +439,9 @@ pub fn eval_radial_2circle(
 
     let disc = b * b - a * c;
     if disc < 0.0 {
-        // Point lies outside the cone formed by the two circles.
         return None;
     }
     let sqrt_d = disc.sqrt();
-    // Try larger root first (standard PDF/SVG convention for overlapping circles).
     let t1 = (b + sqrt_d) / a;
     let t2 = (b - sqrt_d) / a;
     let (hi, lo) = if t1 >= t2 { (t1, t2) } else { (t2, t1) };
@@ -819,16 +459,15 @@ pub fn eval_radial_2circle(
 
 /// Rasterize an arbitrary [`GradientPaint`] (such as an off-center focal radial
 /// gradient, a rotated/skewed radial gradient, or a skewed conic gradient) over
-/// `ctrl_bounds` into an RGBA byte buffer `(width, height, top_down_rgba_bytes)`
-/// suitable for Wolfram's `Texture[Image[..., "Byte", ColorSpace -> "RGB"]]`.
-///
-/// Smooth gradients are band-limited and GPU-bilinear-interpolated by Wolfram's
-/// `Texture`, so `max_dim = 96` produces seamless high-DPI rendering in ~0.2 ms.
+/// `ctrl_bounds` into a flat top-down RGBA byte buffer
+/// `(width, height, rgba_bytes)` of length `width * height * 4`, suitable for
+/// zero-copy WXF `NumericArray` transfer into Wolfram's
+/// `Texture[Image[NumericArray[...], "Byte", ColorSpace -> "RGB"]]`.
 pub fn rasterize_gradient_texture(
     gradient: &GradientPaint,
     ctrl_bounds: [[f64; 2]; 2],
     max_dim: usize,
-) -> Option<(usize, usize, Vec<[u8; 4]>)> {
+) -> Option<(usize, usize, Vec<u8>)> {
     let [[x0, x1], [y0, y1]] = ctrl_bounds;
     let cw = (x1 - x0).abs();
     let ch = (y1 - y0).abs();
@@ -844,7 +483,7 @@ pub fn rasterize_gradient_texture(
         (w, max_dim)
     };
 
-    let mut pixels = vec![[0u8; 4]; w * h];
+    let mut pixels = vec![0u8; w * h * 4];
     match gradient {
         GradientPaint::Radial {
             local_to_page,
@@ -862,7 +501,6 @@ pub fn rasterize_gradient_texture(
             }
             let page_to_local = aff.inverse();
             for iy in 0..h {
-                // Image row 0 is top (y1), row h-1 is bottom (y0).
                 let py = y1 - ((iy as f64 + 0.5) / h as f64) * ch;
                 for ix in 0..w {
                     let px = x0 + ((ix as f64 + 0.5) / w as f64) * cw;
@@ -883,7 +521,8 @@ pub fn rasterize_gradient_texture(
                             a: 0.0,
                         },
                     };
-                    pixels[iy * w + ix] = rgba.to_u8_rgba();
+                    let off = (iy * w + ix) * 4;
+                    pixels[off..off + 4].copy_from_slice(&rgba.to_u8_rgba());
                 }
             }
         }
@@ -910,7 +549,9 @@ pub fn rasterize_gradient_texture(
                     let dy = (loc.y - center[1]) * ch_loc;
                     let sample_angle = dy.atan2(dx);
                     let t = (std::f64::consts::PI + sample_angle - angle).rem_euclid(TAU) / TAU;
-                    pixels[iy * w + ix] = sample_stops(stops, t, GradientSpread::Pad).to_u8_rgba();
+                    let off = (iy * w + ix) * 4;
+                    pixels[off..off + 4]
+                        .copy_from_slice(&sample_stops(stops, t, GradientSpread::Pad).to_u8_rgba());
                 }
             }
         }
@@ -925,83 +566,15 @@ pub fn rasterize_gradient_texture(
                 for ix in 0..w {
                     let px = x0 + ((ix as f64 + 0.5) / w as f64) * cw;
                     let s = (px - origin[0]) * grad[0] + (py - origin[1]) * grad[1];
-                    pixels[iy * w + ix] = sample_stops(stops, s, *spread).to_u8_rgba();
+                    let off = (iy * w + ix) * 4;
+                    pixels[off..off + 4]
+                        .copy_from_slice(&sample_stops(stops, s, *spread).to_u8_rgba());
                 }
             }
         }
     }
 
     Some((w, h, pixels))
-}
-
-/// Compute all tile instance page translations `[tx, ty]` whose tile cells
-/// intersect `ctrl_bounds`.
-///
-/// Returns `None` if `grid_to_page` is singular or if the required tile count
-/// exceeds `max_tiles` (in which case callers can fall back to `PatternFilling`).
-pub fn tile_grid_translations(
-    tiling: &TilingPaint,
-    ctrl_bounds: [[f64; 2]; 2],
-    max_tiles: usize,
-) -> Option<Vec<[f64; 2]>> {
-    let step_x = tiling.step[0];
-    let step_y = tiling.step[1];
-    if step_x.abs() <= 1e-9 || step_y.abs() <= 1e-9 {
-        return None;
-    }
-
-    let aff = Affine::new(tiling.grid_to_page);
-    let det = aff.determinant();
-    if !det.is_finite() || det.abs() <= 1e-18 {
-        return None;
-    }
-    let inv = aff.inverse();
-
-    let [[x0, x1], [y0, y1]] = ctrl_bounds;
-    let corners = [
-        Point::new(x0, y0),
-        Point::new(x1, y0),
-        Point::new(x1, y1),
-        Point::new(x0, y1),
-    ];
-
-    let mut gx_min = f64::INFINITY;
-    let mut gx_max = f64::NEG_INFINITY;
-    let mut gy_min = f64::INFINITY;
-    let mut gy_max = f64::NEG_INFINITY;
-    for c in corners {
-        let g = inv * c;
-        gx_min = gx_min.min(g.x);
-        gx_max = gx_max.max(g.x);
-        gy_min = gy_min.min(g.y);
-        gy_max = gy_max.max(g.y);
-    }
-
-    // Account for tile content extending from [0..tile_size] and offset [ox, oy].
-    let ox = tiling.offset[0];
-    let oy = tiling.offset[1];
-    let i_min = ((gx_min - ox - tiling.tile_size[0].abs()) / step_x).floor() as i64;
-    let i_max = ((gx_max - ox + tiling.tile_size[0].abs()) / step_x).ceil() as i64;
-    let j_min = ((gy_min - oy - tiling.tile_size[1].abs()) / step_y).floor() as i64;
-    let j_max = ((gy_max - oy + tiling.tile_size[1].abs()) / step_y).ceil() as i64;
-
-    let nx = (i_max - i_min + 1).max(0) as usize;
-    let ny = (j_max - j_min + 1).max(0) as usize;
-    let total = nx.checked_mul(ny)?;
-    if total == 0 || total > max_tiles {
-        return None;
-    }
-
-    let mut out = Vec::with_capacity(total);
-    for j in j_min..=j_max {
-        let gy = oy + (j as f64) * step_y;
-        for i in i_min..=i_max {
-            let gx = ox + (i as f64) * step_x;
-            let p = aff * Point::new(gx, gy);
-            out.push([p.x, p.y]);
-        }
-    }
-    Some(out)
 }
 
 #[cfg(test)]
@@ -1028,7 +601,6 @@ mod tests {
             GradientStop { offset: 0.0, color: red() },
             GradientStop { offset: 1.0, color: blue() },
         ];
-        // Gradient spans [-0.5, 1.5] in WL space -> visible [0, 1] covers s in [0.25, 0.75].
         let proj = project_linear_stops_to_unit(&stops, -0.5, 2.0, GradientSpread::Pad);
         assert_eq!(proj.stops.len(), 2);
         assert!((proj.stops[0].offset - 0.0).abs() < 1e-9);
@@ -1059,66 +631,35 @@ mod tests {
 
     #[test]
     fn radial_2circle_matches_concentric_and_off_center_focal() {
-        // Concentric: center (0.5, 0.5), r = 0.5, focal = center, fr = 0.
-        let t_mid = eval_radial_2circle([0.75, 0.5], [0.5, 0.5], 0.5, [0.5, 0.5], 0.0, GradientSpread::Pad).unwrap();
+        let t_mid = eval_radial_2circle(
+            [0.75, 0.5],
+            [0.5, 0.5],
+            0.5,
+            [0.5, 0.5],
+            0.0,
+            GradientSpread::Pad,
+        )
+        .unwrap();
         assert!((t_mid - 0.5).abs() < 1e-9);
-        // Off-center focal at (0.25, 0.5), end circle center (0.5, 0.5), r = 0.5:
-        // at z = focal, t == 0; at z = (1.0, 0.5) (on end circle), t == 1.
-        let t0 = eval_radial_2circle([0.25, 0.5], [0.5, 0.5], 0.5, [0.25, 0.5], 0.0, GradientSpread::Pad).unwrap();
-        let t1 = eval_radial_2circle([1.0, 0.5], [0.5, 0.5], 0.5, [0.25, 0.5], 0.0, GradientSpread::Pad).unwrap();
+        let t0 = eval_radial_2circle(
+            [0.25, 0.5],
+            [0.5, 0.5],
+            0.5,
+            [0.25, 0.5],
+            0.0,
+            GradientSpread::Pad,
+        )
+        .unwrap();
+        let t1 = eval_radial_2circle(
+            [1.0, 0.5],
+            [0.5, 0.5],
+            0.5,
+            [0.25, 0.5],
+            0.0,
+            GradientSpread::Pad,
+        )
+        .unwrap();
         assert!(t0.abs() < 1e-9, "t0={t0}");
         assert!((t1 - 1.0).abs() < 1e-9, "t1={t1}");
-    }
-
-    #[test]
-    fn detects_axis_aligned_and_oriented_rectangles() {
-        use crate::extract::Segment;
-        let rect = vec![Subpath {
-            start: [10.0, 20.0],
-            segments: vec![
-                Segment::Line([110.0, 20.0]),
-                Segment::Line([110.0, 60.0]),
-                Segment::Line([10.0, 60.0]),
-                Segment::Line([10.0, 20.0]),
-            ],
-            closed: true,
-        }];
-        assert_eq!(subpaths_axis_aligned_rect(&rect), Some([[10.0, 110.0], [20.0, 60.0]]));
-
-        // 30-degree rotated 50x20 rectangle
-        let ang = 30.0_f64.to_radians();
-        let (c, s) = (ang.cos(), ang.sin());
-        let p0 = [5.0, 8.0];
-        let p1 = [p0[0] + 50.0 * c, p0[1] + 50.0 * s];
-        let p2 = [p1[0] - 20.0 * s, p1[1] + 20.0 * c];
-        let p3 = [p0[0] - 20.0 * s, p0[1] + 20.0 * c];
-        let rot = vec![Subpath {
-            start: p0,
-            segments: vec![Segment::Line(p1), Segment::Line(p2), Segment::Line(p3)],
-            closed: true,
-        }];
-        assert_eq!(subpaths_axis_aligned_rect(&rot), None);
-        let orect = subpaths_oriented_rect(&rot).expect("rotated rect");
-        assert!((orect.width - 50.0).abs() < 1e-6);
-        assert!((orect.height - 20.0).abs() < 1e-6);
-        assert!((orect.dir[0] - c).abs() < 1e-6 && (orect.dir[1] - s).abs() < 1e-6);
-
-        // Holed rect (2 subpaths) must be rejected.
-        let holed = vec![rect[0].clone(), rect[0].clone()];
-        assert_eq!(subpaths_axis_aligned_rect(&holed), None);
-        assert_eq!(subpaths_oriented_rect(&holed), None);
-
-        // Curved subpath must be rejected.
-        let curved = vec![Subpath {
-            start: [0.0, 0.0],
-            segments: vec![
-                Segment::Cubic([10.0, 0.0], [20.0, 10.0], [20.0, 20.0]),
-                Segment::Line([0.0, 20.0]),
-                Segment::Line([0.0, 0.0]),
-            ],
-            closed: true,
-        }];
-        assert_eq!(subpaths_axis_aligned_rect(&curved), None);
-        assert_eq!(subpaths_oriented_rect(&curved), None);
     }
 }

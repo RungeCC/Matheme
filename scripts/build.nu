@@ -41,7 +41,7 @@ def main [
     cp --recursive ($ROOT | path join "AutoCompletionData") $paclet_dir
     cp ($ROOT | path join "target" "release" "matheme.dll") ($lib_dir | path join "matheme.dll")
 
-    for old in (glob "output/Matheme-*.paclet") {
+    for old in (glob "output/*Matheme-*.paclet") {
         rm --force $old
     }
 

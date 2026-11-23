@@ -8,7 +8,7 @@
 *)
 
 PacletDirectoryLoad[FileNameJoin[{Directory[], "output", "Matheme"}]];
-Needs["Matheme`"];
+Needs["Runge`Matheme`"];
 
 MathemeWarmup["Fonts" -> True, "Packages" -> False, "PackageIndex" -> False];
 

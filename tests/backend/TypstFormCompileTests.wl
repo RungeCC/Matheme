@@ -4,7 +4,7 @@
    built matheme.dll and a working WSTP link.  Pure string-conversion tests
    live in ../wolfram/TypstFormTests.wl. *)
 
-BeginPackage["Matheme`TypstFormCompileTests`", {"Matheme`"}];
+BeginPackage["Runge`Matheme`TypstFormCompileTests`", {"Runge`Matheme`"}];
 
 RunMathemeTypstFormCompileTests::usage = "RunMathemeTypstFormCompileTests[] verifies that TypstForm output compiles to Graphics without PUA leakage.";
 
@@ -79,10 +79,10 @@ RunMathemeTypstFormCompileTests[] := Module[{tests, results, passed, total},
       Module[{vals, src, res},
         vals = DeleteDuplicates@Select[
           StringTrim /@ Join[
-            Values[Matheme`Private`TypstForm`$typstDefaultCharMap],
-            Values[Matheme`Private`TypstForm`$typstDoubleStruckShorthands],
-            Values[Matheme`Private`TypstForm`$typstScriptStyleLetters],
-            Values[Matheme`Private`TypstForm`$typstDefaultOperatorMap]
+            Values[Runge`Matheme`Private`TypstForm`$typstDefaultCharMap],
+            Values[Runge`Matheme`Private`TypstForm`$typstDoubleStruckShorthands],
+            Values[Runge`Matheme`Private`TypstForm`$typstScriptStyleLetters],
+            Values[Runge`Matheme`Private`TypstForm`$typstDefaultOperatorMap]
           ],
           # =!= "" &
         ];

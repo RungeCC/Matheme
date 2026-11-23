@@ -4,7 +4,7 @@
    built matheme.dll.  Wolfram-only conversion tests live in
    ../wolfram/TypstFormTests.wl; visual equivalence in ./VisualTests.wl. *)
 
-BeginPackage["Matheme`Tests`", {"Matheme`"}];
+BeginPackage["Runge`Matheme`Tests`", {"Runge`Matheme`"}];
 
 RunMathemeRenderTests::usage = "RunMathemeRenderTests[] executes the end-to-end Matheme rendering and sizing consistency test suite.";
 
@@ -144,18 +144,36 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       TestID -> "ToGraphics-Native-NonZero-Star"
     ],
     VerificationTest[
-      Module[{res},
-        res = Quiet[
-          MathemeToGraphics[
-            "#rect(width: 20pt, height: 10pt, fill: gradient.linear(red, blue))",
-            "TypstTemplate" -> "Text"
-          ],
-          {MathemeDiagnostic::warning}
+      Module[{res, g},
+        res = MathemeToGraphics[
+          "#rect(width: 20pt, height: 10pt, fill: gradient.linear(red, blue))",
+          "TypstTemplate" -> "Text"
         ];
-        Length[Select[Lookup[res, "Diagnostics", {}], #["Severity"] === "Warning" &]] >= 1
+        g = First[res["Graphics"]];
+        Head[g] === Graphics &&
+          Length[Cases[g, _LinearGradientFilling, Infinity]] >= 1 &&
+          Length[Select[Lookup[res, "Diagnostics", {}], #["Severity"] === "Warning" &]] === 0
       ],
       True,
-      TestID -> "ToGraphics-Native-Gradient-Warning"
+      TestID -> "ToGraphics-Native-Gradient-Linear"
+    ],
+    VerificationTest[
+      Module[{res, g, rasters, na},
+        res = MathemeToGraphics[
+          "#image(bytes((255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 128)), format: (encoding: \"rgba8\", width: 2, height: 2), width: 20pt, height: 20pt)",
+          "TypstTemplate" -> "Text"
+        ];
+        g = First[res["Graphics"]];
+        rasters = Cases[g, r_Raster :> r, Infinity];
+        na = If[Length[rasters] >= 1, rasters[[1, 1]], None];
+        Head[g] === Graphics &&
+          Length[rasters] >= 1 &&
+          NumericArrayQ[na] &&
+          Dimensions[na] === {2, 2, 4} &&
+          FreeQ[g, ImportByteArray]
+      ],
+      True,
+      TestID -> "ToGraphics-Native-Raster-NumericArray"
     ],
     VerificationTest[
       Module[{res = MathemeToGraphics[TypstForm[HoldForm[Integrate[Exp[-Global`x^2], {Global`x, 0, Infinity}]]]]},

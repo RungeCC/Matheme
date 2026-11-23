@@ -1,10 +1,10 @@
 (* ::Package:: *)
 (* Correctness and customization suite for the Wolfram-only conversion layer:
    MathemeToTypst / BoxesToTypst / TypstForm.  No matheme.dll or WSTP call is
-   made here -- loading Get["Matheme`"] is enough.  Tests that compile Typst
+   made here -- loading Get["Runge`Matheme`"] is enough.  Tests that compile Typst
    or render Graphics live in ../backend/TypstFormCompileTests.wl. *)
 
-BeginPackage["Matheme`TypstFormTests`", {"Matheme`"}];
+BeginPackage["Runge`Matheme`TypstFormTests`", {"Runge`Matheme`"}];
 
 RunMathemeTypstFormTests::usage = "RunMathemeTypstFormTests[] executes the TypstForm correctness and customization test suite (Wolfram-only, no backend).";
 

@@ -12,20 +12,20 @@ In a notebook FrontEnd, option names, settings keys, and query/cache filter keys
 
 - Wolfram 15.0 on Windows x86-64 (the tested target)
 - The `Wolfram/ErrorTools` paclet (shipped with Wolfram 15)
-- A built paclet: `nu scripts/build.nu` (Rust MSVC toolchain, Nushell, and the WSTP DeveloperKit) produces `output/Matheme/` and `output/Matheme-0.1.0.paclet`
+- A built paclet: `nu scripts/build.nu` (Rust MSVC toolchain, Nushell, and the WSTP DeveloperKit) produces `output/Matheme/` and `output/Runge__Matheme-0.1.0.paclet`
 
 ## Install and load
 
 ```wolfram
-PacletInstall["/absolute/path/to/matheme/output/Matheme-0.1.0.paclet"];
-Get["Matheme`"];
+PacletInstall["/absolute/path/to/matheme/output/Runge__Matheme-0.1.0.paclet"];
+Get["Runge`Matheme`"];
 ```
 
 During development, load the assembled directory directly instead:
 
 ```wolfram
 PacletDirectoryLoad["/absolute/path/to/matheme/output/Matheme"];
-Get["Matheme`"];
+Get["Runge`Matheme`"];
 ```
 
 The library function is loaded lazily on the first call.

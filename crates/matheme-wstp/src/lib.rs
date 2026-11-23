@@ -11,7 +11,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use matheme_wl::{Expr, Symbol};
+use matheme_wl::{normal, Expr, Symbol};
 use wolfram_expr::Symbol as RawSymbol;
 pub use wstp::Link;
 
@@ -445,7 +445,7 @@ impl<'a> WstpLink<'a> {
 
     /// Send `EvaluatePacket[Exit[]]` and flush, returning any transport error.
     pub fn send_exit(&mut self) -> Result<(), WstpError> {
-        let exit = eval_packet_expr(&Expr::normal(&protocol::EXIT, Vec::<Expr>::new()));
+        let exit = eval_packet_expr(&normal!(&protocol::EXIT));
         self.put_expr(&exit)?;
         self.flush()
     }
@@ -466,11 +466,11 @@ pub fn resolve_unqualified_symbol(name: &str) -> RawSymbol {
 }
 
 fn eval_packet_expr(expr: &Expr) -> Expr {
-    Expr::normal(&protocol::EVALUATE_PACKET, [expr.clone()])
+    normal!(&protocol::EVALUATE_PACKET, expr.clone())
 }
 
 fn to_expression_expr(wl_code: &str) -> Expr {
-    Expr::normal(&protocol::TO_EXPRESSION, [Expr::string(wl_code)])
+    normal!(&protocol::TO_EXPRESSION, wl_code)
 }
 
 #[derive(Debug, PartialEq, Eq)]

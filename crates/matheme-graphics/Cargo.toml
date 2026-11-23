@@ -11,6 +11,7 @@ wl = ["dep:matheme-wl"]
 
 [dependencies]
 matheme-wl = { path = "../matheme-wl", optional = true }
+image = { version = "0.25", default-features = false }
 typst = "=0.15.1"
 typst-layout = "=0.15.1"
 typst-svg = "=0.15.1"

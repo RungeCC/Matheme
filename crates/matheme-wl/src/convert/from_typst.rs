@@ -13,10 +13,10 @@ use typst::foundations::{
 use typst::layout::{Angle, Length, Ratio, Rel};
 use typst::visualize::Color;
 
-use crate::assoc;
 use crate::entry::Rule;
 use crate::expr::Expr;
 use crate::symbol::Symbol;
+use crate::{assoc, list, normal};
 
 const MAX_DEPTH: usize = 64;
 
@@ -188,7 +188,7 @@ fn version_expr(ver: &Version) -> Expr {
 }
 
 fn quantity(magnitude: f64, unit: &str) -> Expr {
-    Expr::normal(&Symbol::QUANTITY, [Expr::from(magnitude), Expr::string(unit)])
+    normal!(&Symbol::QUANTITY, magnitude, unit)
 }
 
 fn length_expr(len: Length) -> Expr {
@@ -236,32 +236,32 @@ fn color_expr(color: &Color) -> Expr {
     let b = f64::from(rgb.blue);
     let a = f64::from(rgb.alpha);
     if (a - 1.0).abs() <= 1e-6 {
-        Expr::normal(&Symbol::RGB_COLOR, [r, g, b])
+        normal!(&Symbol::RGB_COLOR, r, g, b)
     } else {
-        Expr::normal(&Symbol::RGB_COLOR, [r, g, b, a])
+        normal!(&Symbol::RGB_COLOR, r, g, b, a)
     }
 }
 
 fn datetime_expr(dt: Datetime) -> Expr {
     match (dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second()) {
-        (Some(y), Some(m), Some(d), Some(h), Some(min), Some(s)) => Expr::normal(
+        (Some(y), Some(m), Some(d), Some(h), Some(min), Some(s)) => normal!(
             &Symbol::DATE_OBJECT,
-            [Expr::list([
+            list![
                 i64::from(y),
                 i64::from(m),
                 i64::from(d),
                 i64::from(h),
                 i64::from(min),
                 i64::from(s),
-            ])],
+            ],
         ),
-        (Some(y), Some(m), Some(d), _, _, _) => Expr::normal(
+        (Some(y), Some(m), Some(d), _, _, _) => normal!(
             &Symbol::DATE_OBJECT,
-            [Expr::list([i64::from(y), i64::from(m), i64::from(d)])],
+            list![i64::from(y), i64::from(m), i64::from(d)],
         ),
-        (_, _, _, Some(h), Some(min), Some(s)) => Expr::normal(
+        (_, _, _, Some(h), Some(min), Some(s)) => normal!(
             &Symbol::TIME_OBJECT,
-            [Expr::list([i64::from(h), i64::from(min), i64::from(s)])],
+            list![i64::from(h), i64::from(min), i64::from(s)],
         ),
         _ => assoc! {
             "Type" -> "Datetime",
