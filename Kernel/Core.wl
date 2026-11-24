@@ -45,25 +45,27 @@ $library = With[{found = Quiet[FindLibrary["matheme"]]},
   ]
 ];
 
-(* LibraryFunctionLoad with LinkObject creates an extra LinkObject that keeps
-   the DLL open. One exported function means one link to manage; load lazily
-   so MathemeClose can release it and later calls reload the library. *)
+(* One exported LinkObject LibraryFunction handles all actions. Load lazily so
+   MathemeClose can unload the shared library and later calls reload it. *)
 $call = Null;
-$links = {};
 
-loadFunctions[] := Module[{before, fn},
+loadFunctions[] := Module[{fn},
   If[Head[$call] === LibraryFunction,
     True,
-    before = Links[];
     fn = LibraryFunctionLoad[$library, "matheme_call", LinkObject, LinkObject];
     If[Head[fn] === LibraryFunction,
       $call = fn;
-      $links = Complement[Links[], before];
       True,
       False
     ]
   ]
 ];
+
+makeCallFailure[template_String, params_Association : <||>] :=
+  CreateFailure[MathemeCallError, <|
+    "MessageTemplate" -> template,
+    "MessageParameters" -> params
+  |>];
 
 raiseCallError[template_String, params_Association : <||>] := With[{t = MathemeCallError},
   Raise[t, <|
@@ -188,39 +190,13 @@ callWithRules[action_String, _String, arg_Association] :=
 callWithRules[action_String, _String, opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
   callFunction[action, Association[opts]];
 callWithRules[_String, displayName_String, other_] :=
-  Handle[_Failure] @ raiseCallError[
+  makeCallFailure[
     "`Name` expects an Association or rules; got `Type`.",
     <|"Name" -> displayName, "Type" -> Head[other]|>
   ];
 
-MathemeClose[] := Module[
-  {before = Links[], unloaded = 0, links = $links, released = <||>,
-   dllUnloaded = False},
-  If[Head[$call] === LibraryFunction,
-    released = callFunction["close"];
-    If[!AssociationQ[released], released = <||>];
-    (* LibraryFunctionUnload already drops the last module reference on
-       Wolfram 15, so a later LibraryUnload would report "cannot be unloaded"
-       even though the DLL was released. Pin one extra reference here (after
-       the close call so an Abort[] during close cannot leak it) so the final
-       LibraryUnload has a real mapping to release and returns Null. *)
-    CheckAbort[
-      LibraryLoad[$library];
-      Quiet[LibraryFunctionUnload[$call]];
-      unloaded = 1;
-      (* LibraryFunctionUnload normally closes the link already; the explicit
-         close keeps the frontend's own LinkObject reference from lingering. *)
-      Scan[Quiet[LinkClose[#]] &, links];
-      $call = Null;
-      $links = {};
-      dllUnloaded = TrueQ[Quiet@LibraryUnload[$library] =!= $Failed],
-      Quiet[LibraryUnload[$library]];
-      Abort[]
-    ];
-  ];
-  Join[released, <|
-    "Unloaded" -> unloaded,
-    "LinksClosed" -> Length[Complement[before, Links[]]],
-    "LibraryUnloaded" -> dllUnloaded
-  |>]
+MathemeClose[] := If[Head[$call] === LibraryFunction,
+  Quiet[callFunction["close"]];
+  Quiet[LibraryFunctionUnload[$call]];
+  $call = Null;
 ];

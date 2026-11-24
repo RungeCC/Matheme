@@ -341,9 +341,9 @@ SetMatheme[] := With[{res = callFunction["settings"]},
 ];
 SetMatheme[opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
   callFunction["setSettings", Association[Flatten[{opts}]]];
-SetMatheme[other__] := Handle[_Failure] @
+SetMatheme[other__] :=
   With[{bad = SelectFirst[{other}, !MatchQ[#, _Rule | _RuleDelayed] &, First[{other}]]},
-    raiseCallError[
+    makeCallFailure[
       "SetMatheme expects rules (e.g. SetMatheme[\"SystemFonts\" -> False]); got `Type`.",
       <|"Type" -> Head[bad]|>
     ]
@@ -358,8 +358,8 @@ ClearMathemeCache[] := callFunction["clearCache", <|"Targets" -> All|>];
 ClearMathemeCache[All | "All"] := callFunction["clearCache", <|"Targets" -> All|>];
 ClearMathemeCache[target_String] := callFunction["clearCache", <|"Targets" -> {target}|>];
 ClearMathemeCache[targets : {___String}] := callFunction["clearCache", <|"Targets" -> targets|>];
-ClearMathemeCache[other_] := Handle[_Failure] @
-  raiseCallError[
+ClearMathemeCache[other_] :=
+  makeCallFailure[
     "ClearMathemeCache expects \"Fonts\", \"Packages\", \"Memoization\", All, or a list of targets; got `Type`.",
     <|"Type" -> Head[other]|>
   ];
