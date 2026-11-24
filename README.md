@@ -55,7 +55,7 @@ MathemeToGraphics[TypstForm[HoldForm[Integrate[Sin[x]/x, {x, 0, Infinity}]]]]
 | `MathemeToGraphics[source, opts]` | Compile and return vector `Graphics` pages (vector formats only). |
 | `TypstForm[expr, opts]`, `MathemeToTypst[expr, opts]`, `BoxesToTypst[boxes, opts]` | Convert Wolfram expressions or boxes into Typst math strings. |
 | `TypstRaw[str]`, `MakeTypst[expr]` | Extension hooks for literal Typst fragments and per-type conversions. |
-| `MathemeSettings[]`, `MathemeSetSettings[patch]`, `MathemeResetSettings[]` | Read and change configuration. |
+| `SetMatheme[rules...]`, `ResetMatheme[]` | Read (`SetMatheme[]`), update, and reset process-wide compiler settings. |
 | `MathemeQueryFonts[filters]`, `MathemeQueryPackages[filters]` | Inspect cached font and package metadata. |
 | `MathemeWarmup[opts]`, `MathemeReloadFonts[]`, `MathemeReloadPackages[]`, `ClearMathemeCache[targets]` | Initialize and manage caches. |
 | `MathemeVersion[]`, `MathemeClose[]` | Version metadata; release the loaded DLL. |
@@ -69,7 +69,7 @@ All option names are strings. `MathemeToGraphics` shares the same options, with 
 | `"Inputs"` | `<\|\|>` | Values injected as Typst `sys.inputs` (strings, numbers, booleans, lists, associations, `ByteArray`). |
 | `"BasePath"` | `Directory[]` | Root for relative `#include` / `#image` paths. |
 | `"AllowDownloads"` | `False` | Allow missing Universe packages to be downloaded for this call. |
-| `"TypstTemplate"` | `None` | A key of `$TypstTemplates`, or a template/function applied to the source. |
+| `"TypstTemplate"` | `None` | A built-in template name (`"Equation"`, `"InlineEquation"`, `"Text"`, `"MiTeXEquation"`, `"MiTeXInlineEquation"`, `"MiTeXText"`), or a template/function applied to the source. |
 | `"Format"` | `"PDF"` | `"PDF"`, `"SVG"` (per-page strings), `"HTML"`, or `"Graphics"` (alias `"Vector"`). |
 | `"Pages"` | `All` | Page filter (integer, list, `Span`, or `"1,3-5"`) for paged formats. |
 | `"PDFStandard"` | `Automatic` | PDF version or PDF/A standard. |
@@ -103,7 +103,7 @@ Each entry in `Diagnostics` includes `"Severity"` (`"Error"`, `"Warning"`, or `"
 
 ## Templates and TypstForm
 
-`$TypstTemplates` provides `Equation`, `InlineEquation`, `Text`, `MiTeXEquation`, `MiTeXInlineEquation`, and `MiTeXText`:
+Built-in `"TypstTemplate"` presets are `"Equation"`, `"InlineEquation"`, `"Text"`, `"MiTeXEquation"`, `"MiTeXInlineEquation"`, and `"MiTeXText"`:
 
 ```wolfram
 MathemeCompile["x^2 + y^2 = z^2", "TypstTemplate" -> "Equation"]
@@ -115,13 +115,14 @@ MathemeCompile["E = mc^2", "TypstTemplate" -> StringTemplate["$``$"]]
 ## Settings and caches
 
 ```wolfram
-MathemeSetSettings[<|"SystemFonts" -> False, "FontPaths" -> {"D:/fonts"}|>];
+SetMatheme[]                                              (* inspect current settings *)
+SetMatheme["SystemFonts" -> False, "FontPaths" -> {"D:/fonts"}];
 MathemeQueryFonts[<|"Family" -> "libertinus"|>];
 MathemeQueryPackages[<|"Name" -> "cetz"|>];
 ClearMathemeCache["Fonts"];
 ```
 
-Settings keys are `FontPaths`, `SystemFonts`, `EmbeddedFonts`, `PackagePath`, `PackageCache`, `Proxy`, and `Downloads`; `Null` resets a single field and `MathemeResetSettings[]` resets all. Query filters include `Family`, `Source`, `Resident`, `Character`, `Name`, `Namespace`, `Version`, `Origin`, `Offset`, `MaxResults`, `AllowDownloads`, and `Refresh`. `MathemeWarmup[]` initializes the caches before the first compile; `MathemeClose[]` releases the DLL, so call it before rebuilding the library in a running kernel.
+Settings keys are `FontPaths`, `SystemFonts`, `EmbeddedFonts`, `PackagePath`, `PackageCache`, `Proxy`, and `Downloads`; `Null` resets a single field and `ResetMatheme[]` resets all. Query filters include `Family`, `Source`, `Resident`, `Character`, `Name`, `Namespace`, `Version`, `Origin`, `Offset`, `MaxResults`, `AllowDownloads`, and `Refresh`. `MathemeWarmup[]` initializes the caches before the first compile; `MathemeClose[]` releases the DLL, so call it before rebuilding the library in a running kernel.
 
 ## License
 

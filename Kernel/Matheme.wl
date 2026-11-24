@@ -1,3 +1,5 @@
+(* ::Package:: *)
+
 (* The failure representation follows the convention in
    Wolfram/ErrorTools: private code raises Failure objects, public functions
    catch them and return them normally. *)
@@ -20,9 +22,8 @@ BoxesToTypst::usage = "BoxesToTypst[boxes, opts] converts a Wolfram Language Box
 TypstRaw::usage = "TypstRaw[str] embeds a literal Typst math fragment verbatim inside expressions converted by TypstForm or MathemeToTypst.";
 MakeTypst::usage = "MakeTypst[expr] (or MakeTypst[expr, conv]) is an extensible UpValue formatting hook checked by TypstForm and MathemeToTypst before boxing expr.";
 MathemeVersion::usage = "MathemeVersion[] returns version metadata for Matheme, Typst, LibraryLink, and WSTP.";
-MathemeSettings::usage = "MathemeSettings[] returns the active compiler settings.";
-MathemeSetSettings::usage = "MathemeSetSettings[patch] updates settings (Null resets a field) and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
-MathemeResetSettings::usage = "MathemeResetSettings[] restores user settings to defaults and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
+SetMatheme::usage = "SetMatheme[] returns the active compiler settings Association. SetMatheme[key -> val, ...] updates process-wide settings (Null resets a field) and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
+ResetMatheme::usage = "ResetMatheme[] restores user settings to defaults and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
 MathemeReloadFonts::usage = "MathemeReloadFonts[] rescans configured font sources and returns face counts.";
 MathemeReloadPackages::usage = "MathemeReloadPackages[] rebuilds the package loader and clears the cached Universe index.";
 MathemeWarmup::usage = "MathemeWarmup[opts] eagerly initializes \"Fonts\", \"Packages\", and \"PackageIndex\" caches.";
@@ -39,7 +40,14 @@ MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal w
 TypstForm::unspt = "TypstForm of `1` is not supported.";
 TypstForm::unkchar = "Unmapped Wolfram private-use character `1` (`2`) encountered in TypstForm; falling back to text literal.";
 
-$TypstTemplates::usage = "$TypstTemplates is a protected Association of Typst source templates (pass a key to \"TypstTemplate\").";
+Begin["`Private`"];
+
+(* Core WSTP bridge, library lifecycle, diagnostics, and MathemeClose. *)
+Get[FileNameJoin[{DirectoryName[$InputFileName], "Core.wl"}]];
+
+(* ------------------------------------------------------------------------ *)
+(* Templates                                                                *)
+(* ------------------------------------------------------------------------ *)
 
 makeMiTeXTemplate[fnName_String] := TemplateObject[{
     "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n",
@@ -58,193 +66,6 @@ $TypstTemplates = <|
   "MiTeXInlineEquation" -> makeMiTeXTemplate["mi"],
   "MiTeXText" -> makeMiTeXTemplate["mitext"]
 |>;
-Protect[$TypstTemplates];
-
-Begin["`Private`"];
-
-(* Register the four failure tags once, when the package is loaded. *)
-Scan[CreateErrorType[#, {}] &,
-  {MathemeLibraryError, MathemeCallError, MathemeCompileError, MathemeInternalError}];
-
-$errorTags = <|
-  "Library" -> MathemeLibraryError,
-  "Call" -> MathemeCallError,
-  "Compile" -> MathemeCompileError,
-  "Internal" -> MathemeInternalError
-|>;
-
-$displayNames = <|
-  "compile" -> "MathemeCompile",
-  "version" -> "MathemeVersion",
-  "settings" -> "MathemeSettings",
-  "setSettings" -> "MathemeSetSettings",
-  "resetSettings" -> "MathemeResetSettings",
-  "warmup" -> "MathemeWarmup",
-  "reloadFonts" -> "MathemeReloadFonts",
-  "reloadPackages" -> "MathemeReloadPackages",
-  "queryFonts" -> "MathemeQueryFonts",
-  "queryPackages" -> "MathemeQueryPackages",
-  "clearCache" -> "ClearMathemeCache",
-  "close" -> "MathemeClose"
-|>;
-
-MathemeDiagnostic::warning = "Matheme `1`: `2`";
-
-$libraryFileName = Switch[$OperatingSystem,
-  "Windows", "matheme.dll",
-  "MacOSX", "matheme.dylib",
-  _, "matheme.so"
-];
-
-$library = Module[{found = Quiet[FindLibrary["matheme"]]},
-  If[TrueQ[found =!= $Failed],
-    found,
-    FileNameJoin[{DirectoryName[DirectoryName[$Input]], "LibraryResources",
-      $SystemID, $libraryFileName}]
-  ]
-];
-
-(* LibraryFunctionLoad with LinkObject creates an extra LinkObject that keeps
-   the DLL open. One exported function means one link to manage; load lazily
-   so MathemeClose can release it and later calls reload the library. *)
-$call = Null;
-$links = {};
-
-loadFunctions[] := Module[{before, fn},
-  If[Head[$call] === LibraryFunction,
-    True,
-    before = Links[];
-    fn = LibraryFunctionLoad[$library, "matheme_call", LinkObject, LinkObject];
-    If[Head[fn] === LibraryFunction,
-      $call = fn;
-      $links = Complement[Links[], before];
-      True,
-      False
-    ]
-  ]
-];
-
-raiseCallError[template_String, params_Association : <||>] := With[{t = MathemeCallError},
-  Raise[t, <|
-    "MessageTemplate" -> template,
-    "MessageParameters" -> params
-  |>]
-];
-
-diagnosticText[diag_Association] := Module[
-  {loc = Lookup[diag, "Location", None], message = Lookup[diag, "Message", ""]},
-  If[AssociationQ[loc],
-    StringRiffle[
-      {Lookup[loc, "File", "?"], ToString[Lookup[loc, "Line", 0]],
-       ToString[Lookup[loc, "Column", 0]]}, ":"] <> ": " <> message,
-    message]
-];
-
-(* Warnings are issued as Messages; hints stay in Diagnostics / FormattedCell,
-   and errors are carried by the Failure object. *)
-issueDiagnostics[name_, diagnostics_] := Scan[
-  Function[diag,
-    If[AssociationQ[diag] && Lookup[diag, "Severity", None] === "Warning",
-      Message[MathemeDiagnostic::warning, Lookup[$displayNames, name, name],
-        diagnosticText[diag]]]
-  ],
-  diagnostics
-];
-
-(* Mathematica's FrontEnd uses narrow math glyphs for Unicode box-drawing
-   characters even in monospace Code cells, misaligning snippet borders and
-   caret markers. Normalize diagnostic borders to ASCII and wrap non-empty
-   reports in a Code-styled Cell so Notebook alignment stays exact. *)
-normalizeDiagnosticBorders[text_String] := Module[{lines},
-  lines = StringSplit[text, "\n", All];
-  lines = Map[
-    Function[line,
-      With[{step = StringReplace[line, {
-        StartOfString ~~ ws : WhitespaceCharacter ... ~~ "\:250c\:2500" :> ws <> "-->",
-        StartOfString ~~ ws : (WhitespaceCharacter ... ~~ (DigitCharacter ... ~~ WhitespaceCharacter ...)) ~~ "\:2502" :> ws <> "|",
-        StartOfString ~~ ws : WhitespaceCharacter ... ~~ "\:00b7" :> ws <> "."
-      }]},
-        If[StringMatchQ[step, WhitespaceCharacter ... ~~ "|" ~~ ("\:256d" | "\:2570" | "\:2500" | "^" | "-" | "'" | WhitespaceCharacter) ...],
-          StringReplace[step, {"\:256d" -> "/", "\:2570" -> "\\", "\:2500" -> "-"}],
-          step
-        ]
-      ]
-    ],
-    lines
-  ];
-  StringTrim[StringRiffle[lines, "\n"]]
-];
-
-formatDiagnosticCell[""] := "";
-formatDiagnosticCell[text_String] := Module[{formatted = normalizeDiagnosticBorders[text]},
-  If[formatted === "",
-    "",
-    DisplayForm[Cell[formatted, "Code",
-      CellFrame -> 0.5,
-      CellFrameColor -> GrayLevel[0.5, 0.25],
-      CellFrameMargins -> {{10, 10}, {8, 8}}
-    ]]
-  ]
-];
-formatDiagnosticCell[other_] := other;
-
-failureDetails[name_, result_] := Module[{report = Lookup[result, "DiagnosticReport", None], base},
-  base = <|
-    "MessageTemplate" -> "Matheme `Operation` failed: `Detail`",
-    "MessageParameters" -> <|
-      "Operation" -> Lookup[$displayNames, name, name],
-      "Detail" -> Lookup[result, "Message", "unknown error"]
-    |>,
-    "Message" -> Lookup[result, "Message", "unknown error"],
-    "Operation" -> Lookup[$displayNames, name, name],
-    "ErrorKind" -> Lookup[result, "ErrorKind", "Library"],
-    "Diagnostics" -> Lookup[result, "Diagnostics", {}]
-  |>;
-  If[StringQ[report] && StringTrim[report] =!= "",
-    Append[base, "FormattedCell" -> formatDiagnosticCell[report]],
-    base
-  ]
-];
-
-callUnchecked[name_String, arguments_Association] := Module[{result, tag, report, dropped},
-  If[!loadFunctions[],
-    With[{t = MathemeLibraryError},
-      Raise[t, <|
-        "MessageTemplate" -> "Could not load the matheme library: `Library`.",
-        "MessageParameters" -> <|"Library" -> $library|>
-      |>]]
-  ];
-  result = $call[<|"Action" -> name, "Arguments" -> arguments|>];
-  If[!AssociationQ[result],
-    With[{t = MathemeLibraryError},
-      Raise[t, <|
-        "MessageTemplate" -> "The matheme library returned an unexpected result for `Operation`.",
-        "MessageParameters" -> <|"Operation" -> Lookup[$displayNames, name, name]|>,
-        "Result" -> result
-      |>]]
-  ];
-  issueDiagnostics[name, Lookup[result, "Diagnostics", {}]];
-  If[Lookup[result, "Status", "Error"] =!= "Success",
-    tag = Lookup[$errorTags, Lookup[result, "ErrorKind", "Library"], MathemeLibraryError];
-    With[{t = tag, details = failureDetails[name, result]}, Raise[t, details]]
-  ];
-  report = Lookup[result, "DiagnosticReport", None];
-  dropped = KeyDrop[result, {"Status", "DiagnosticReport"}];
-  If[StringQ[report] && StringTrim[report] =!= "",
-    Append[dropped, "FormattedCell" -> formatDiagnosticCell[report]],
-    dropped
-  ]
-];
-
-(* Every public call goes through the same pipeline: success returns the
-   association without its internal Status field, failure returns a Failure. *)
-callFunction[name_String] := callFunction[name, <||>];
-callFunction[name_String, arguments_Association] :=
-  Handle[callUnchecked[name, arguments], _Failure];
-
-(* ------------------------------------------------------------------------ *)
-(* Templates                                                                *)
-(* ------------------------------------------------------------------------ *)
 
 raiseUnknownTemplate[name_] := raiseCallError[
   "Unknown \"TypstTemplate\" `Name`. Available keys: `Keys`.",
@@ -264,8 +85,11 @@ applyTemplate[template_StringTemplate, source_String] := TemplateApply[template,
 applyTemplate[template_TemplateObject, source_String] := TemplateApply[template, source];
 applyTemplate[template_Function, source_String] := template[source];
 applyTemplate[other_, _String] := raiseCallError[
-  "\"TypstTemplate\" must be None, a key of $TypstTemplates, or a template; got `Type`.",
-  <|"Type" -> Head[other]|>
+  "\"TypstTemplate\" must be None, a built-in template name (`Keys`), or a template; got `Type`.",
+  <|
+    "Keys" -> StringRiffle[Keys[$TypstTemplates], ", "],
+    "Type" -> Head[other]
+  |>
 ];
 
 (* ------------------------------------------------------------------------ *)
@@ -343,7 +167,9 @@ MathemeCompile[source_String, opts : OptionsPattern[]] :=
   Handle[compileChecked[source, opts], _Failure];
 MathemeCompile[TypstForm[expr_, tOpts : OptionsPattern[]], opts : OptionsPattern[]] :=
   Module[{src = Runge`Matheme`Private`TypstForm`typstFormToString[expr, tOpts], flatOpts = Flatten[{opts}], merged},
-    merged = If[KeyExistsQ[Association[flatOpts], "TypstTemplate"],
+    merged = If[
+      KeyExistsQ[Association[flatOpts], "TypstTemplate"] ||
+        OptionValue[MathemeCompile, "TypstTemplate"] =!= None,
       flatOpts,
       Append[flatOpts, "TypstTemplate" -> "Equation"]
     ];
@@ -484,15 +310,21 @@ Options[MathemeToGraphics] = {
 
 MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
   Handle[
-    Module[{flatOpts = Flatten[{opts}], optAssoc, fmt, merged},
-      optAssoc = Association[flatOpts];
-      fmt = Lookup[optAssoc, "Format", OptionValue[MathemeToGraphics, "Format"]];
+    Module[{flatOpts = Flatten[{opts}], explicitAssoc, defaultsAssoc, effectiveAssoc, fmt},
+      explicitAssoc = Association[flatOpts];
+      defaultsAssoc = Association[Options[MathemeToGraphics]];
+      effectiveAssoc = Join[defaultsAssoc, explicitAssoc];
+      fmt = Lookup[effectiveAssoc, "Format", "Graphics"];
       validateGraphicsFormat[fmt];
-      merged = If[KeyExistsQ[optAssoc, "Format"],
-        flatOpts,
-        Append[flatOpts, "Format" -> fmt]
+      (* For TypstForm inputs, preserve MathemeCompile's automatic "Equation"
+         default unless the caller or SetOptions[MathemeToGraphics, ...]
+         explicitly configured a non-None "TypstTemplate". *)
+      If[Head[source] === TypstForm &&
+          !KeyExistsQ[explicitAssoc, "TypstTemplate"] &&
+          Lookup[defaultsAssoc, "TypstTemplate", None] === None,
+        effectiveAssoc = KeyDrop[effectiveAssoc, "TypstTemplate"]
       ];
-      toGraphics[MathemeCompile[source, Sequence @@ merged]]
+      toGraphics[MathemeCompile[source, Sequence @@ Normal[effectiveAssoc]]]
     ],
     _Failure
   ];
@@ -501,23 +333,27 @@ MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
 (* State, queries, and cache lifecycle                                      *)
 (* ------------------------------------------------------------------------ *)
 
-callWithRules[action_String, _String, arg_Association] :=
-  callFunction[action, arg];
-callWithRules[action_String, _String, opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
-  callFunction[action, Association[opts]];
-callWithRules[_String, displayName_String, other_] := Handle[
-  raiseCallError[
-    "`Name` expects an Association or rules; got `Type`.",
-    <|"Name" -> displayName, "Type" -> Head[other]|>
+MathemeVersion[] := callFunction["version"];
+
+SetMatheme[] := Module[{res = callFunction["settings"]},
+  If[AssociationQ[res] && KeyExistsQ[res, "Settings"],
+    res["Settings"],
+    res
+  ]
+];
+SetMatheme[opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
+  callFunction["setSettings", Association[Flatten[{opts}]]];
+SetMatheme[other__] := Handle[
+  Module[{bad = SelectFirst[{other}, !MatchQ[#, _Rule | _RuleDelayed] &, First[{other}]]},
+    raiseCallError[
+      "SetMatheme expects rules (e.g. SetMatheme[\"SystemFonts\" -> False]); got `Type`.",
+      <|"Type" -> Head[bad]|>
+    ]
   ],
   _Failure
 ];
 
-MathemeVersion[] := callFunction["version"];
-
-MathemeSettings[] := callFunction["settings"];
-MathemeSetSettings[arg__] := callWithRules["setSettings", "MathemeSetSettings", arg];
-MathemeResetSettings[] := callFunction["resetSettings"];
+ResetMatheme[] := callFunction["resetSettings"];
 
 MathemeReloadFonts[] := callFunction["reloadFonts"];
 MathemeReloadPackages[] := callFunction["reloadPackages"];
@@ -547,38 +383,6 @@ MathemeWarmup[OptionsPattern[]] := callFunction["warmup", <|
   "PackageIndex" -> OptionValue["PackageIndex"]
 |>];
 
-MathemeClose[] := Module[
-  {before = Links[], unloaded = 0, links = $links, released = <||>,
-   dllUnloaded = False},
-  If[Head[$call] === LibraryFunction,
-    released = callFunction["close"];
-    If[!AssociationQ[released], released = <||>];
-    (* LibraryFunctionUnload already drops the last module reference on
-       Wolfram 15, so a later LibraryUnload would report "cannot be unloaded"
-       even though the DLL was released. Pin one extra reference here (after
-       the close call so an Abort[] during close cannot leak it) so the final
-       LibraryUnload has a real mapping to release and returns Null. *)
-    CheckAbort[
-      LibraryLoad[$library];
-      Quiet[LibraryFunctionUnload[$call]];
-      unloaded = 1;
-      (* LibraryFunctionUnload normally closes the link already; the explicit
-         close keeps the frontend's own LinkObject reference from lingering. *)
-      Scan[Quiet[LinkClose[#]] &, links];
-      $call = Null;
-      $links = {};
-      dllUnloaded = TrueQ[Quiet@LibraryUnload[$library] =!= $Failed],
-      Quiet[LibraryUnload[$library]];
-      Abort[]
-    ];
-  ];
-  Join[released, <|
-    "Unloaded" -> unloaded,
-    "LinksClosed" -> Length[Complement[before, Links[]]],
-    "LibraryUnloaded" -> dllUnloaded
-  |>]
-];
-
 (* ------------------------------------------------------------------------ *)
 (* Package conventions                                                      *)
 (* ------------------------------------------------------------------------ *)
@@ -590,10 +394,10 @@ Scan[
 SyntaxInformation[TypstRaw] = {"ArgumentsPattern" -> {_}};
 SyntaxInformation[MakeTypst] = {"ArgumentsPattern" -> {_, _.}};
 SyntaxInformation[MathemeWarmup] = {"ArgumentsPattern" -> {OptionsPattern[]}};
-SyntaxInformation[MathemeSetSettings] = {"ArgumentsPattern" -> {___}};
+SyntaxInformation[SetMatheme] = {"ArgumentsPattern" -> {OptionsPattern[]}};
 Scan[
   Function[f, SyntaxInformation[f] = {"ArgumentsPattern" -> {}}],
-  {MathemeVersion, MathemeSettings, MathemeResetSettings, MathemeReloadFonts,
+  {MathemeVersion, ResetMatheme, MathemeReloadFonts,
    MathemeReloadPackages, MathemeClose}
 ];
 Scan[
@@ -610,8 +414,7 @@ Scan[
   SetAttributes[#, {Protected, ReadProtected}] &,
   {MathemeCompile, MathemeToGraphics, TypstForm, MathemeToTypst, BoxesToTypst,
    TypstRaw, MakeTypst,
-   MathemeVersion, MathemeSettings,
-   MathemeSetSettings, MathemeResetSettings, MathemeReloadFonts,
+   MathemeVersion, SetMatheme, ResetMatheme, MathemeReloadFonts,
    MathemeReloadPackages, MathemeWarmup, MathemeQueryFonts,
    MathemeQueryPackages, ClearMathemeCache, MathemeClose}
 ];

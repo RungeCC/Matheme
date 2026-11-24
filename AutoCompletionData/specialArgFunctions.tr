@@ -60,12 +60,12 @@
 
   (* opts : OptionsPattern[] only *)
   "MathemeWarmup" -> {{"Fonts", "Packages", "PackageIndex"}},
-
-  (* one Association / rule argument, completed from its keys *)
-  "MathemeSetSettings" -> {
+  "SetMatheme" -> {
     {"FontPaths", "SystemFonts", "EmbeddedFonts", "PackagePath",
      "PackageCache", "Proxy", "Downloads"}
   },
+
+  (* one Association / rule argument, completed from its keys *)
   "MathemeQueryFonts" -> {
     {"Family", "Source", "Resident", "Character", "Offset", "MaxResults"}
   },

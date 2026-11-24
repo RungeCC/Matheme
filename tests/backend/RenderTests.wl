@@ -263,6 +263,46 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       ],
       True,
       TestID -> "Compile-HTML-Rejects-Pages-Option"
+    ],
+    VerificationTest[
+      Module[{initial, updated, after, reset, badAssoc},
+        initial = SetMatheme[];
+        updated = SetMatheme["Downloads" -> True];
+        after = SetMatheme[];
+        badAssoc = SetMatheme[<|"Downloads" -> False|>];
+        reset = ResetMatheme[];
+        AssociationQ[initial] && KeyExistsQ[initial, "FontPaths"] && !KeyExistsQ[initial, "Settings"] &&
+          AssociationQ[updated] && KeyExistsQ[updated, "Changed"] && updated["Settings", "Downloads"] === True &&
+          after["Downloads"] === True &&
+          FailureQ[badAssoc] && badAssoc[[1]] === MathemeCallError &&
+          AssociationQ[reset] && reset["Settings", "Downloads"] === False
+      ],
+      True,
+      TestID -> "SetMatheme-Read-Update-RejectAssoc-Reset"
+    ],
+    VerificationTest[
+      Module[{orig = Options[MathemeToGraphics, "TypstTemplate"], res1, res2},
+        SetOptions[MathemeToGraphics, "TypstTemplate" -> "Equation"];
+        res1 = MathemeToGraphics["x^2"];
+        res2 = MathemeToGraphics[TypstForm[Global`x^2]];
+        SetOptions[MathemeToGraphics, orig];
+        !FailureQ[res1] && Head[First[res1["Graphics"]]] === Graphics &&
+          !FailureQ[res2] && Head[First[res2["Graphics"]]] === Graphics
+      ],
+      True,
+      TestID -> "ToGraphics-Honors-SetOptions-Defaults"
+    ],
+    VerificationTest[
+      Module[{pub = Names["Runge`Matheme`*"]},
+        MemberQ[pub, "SetMatheme"] && MemberQ[pub, "ResetMatheme"] &&
+          !MemberQ[pub, "MathemeSettings"] &&
+          !MemberQ[pub, "MathemeSetSettings"] &&
+          !MemberQ[pub, "MathemeResetSettings"] &&
+          !MemberQ[pub, "$TypstTemplates"] &&
+          !MemberQ[pub, "makeMiTeXTemplate"]
+      ],
+      True,
+      TestID -> "Package-Public-Symbols-Clean"
     ]
   };
 
