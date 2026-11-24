@@ -61,7 +61,7 @@ stripOuterQuotes[s_String] :=
 
 (* Parse Wolfram box number strings cleanly without ToExpression:
    "2.5`*^-6", "1.23`*^15", "3.14`5.", "3.14`5.*^-2", "3.14`" *)
-formatWolframNumberString[str_String] := Module[{m, mant, exp},
+formatWolframNumberString[str_String] := Block[{m, mant, exp},
   (* Mantissa with precision mark and scientific exponent *)
   m = StringCases[str,
     StartOfString ~~ mant : (("-" | "+" | "") ~~ DigitCharacter .. ~~ ("." ~~ DigitCharacter ...) | "." ~~ DigitCharacter ..) ~~

@@ -164,7 +164,7 @@ compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
 (* Template and option validation also raise through ErrorTools, so the public
    entry handles pre-call and library failures in one Handle scope. *)
 MathemeCompile[source_String, opts : OptionsPattern[]] :=
-  Handle[compileChecked[source, opts], _Failure];
+  Handle[_Failure] @ compileChecked[source, opts];
 MathemeCompile[TypstForm[expr_, tOpts : OptionsPattern[]], opts : OptionsPattern[]] :=
   Module[{src = Runge`Matheme`Private`TypstForm`typstFormToString[expr, tOpts], flatOpts = Flatten[{opts}], merged},
     merged = If[
@@ -309,7 +309,7 @@ Options[MathemeToGraphics] = {
 };
 
 MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
-  Handle[
+  Handle[_Failure] @
     Module[{flatOpts = Flatten[{opts}], explicitAssoc, defaultsAssoc, effectiveAssoc, fmt},
       explicitAssoc = Association[flatOpts];
       defaultsAssoc = Association[Options[MathemeToGraphics]];
@@ -325,9 +325,7 @@ MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
         effectiveAssoc = KeyDrop[effectiveAssoc, "TypstTemplate"]
       ];
       toGraphics[MathemeCompile[source, Sequence @@ Normal[effectiveAssoc]]]
-    ],
-    _Failure
-  ];
+    ];
 
 (* ------------------------------------------------------------------------ *)
 (* State, queries, and cache lifecycle                                      *)
@@ -335,7 +333,7 @@ MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
 
 MathemeVersion[] := callFunction["version"];
 
-SetMatheme[] := Module[{res = callFunction["settings"]},
+SetMatheme[] := With[{res = callFunction["settings"]},
   If[AssociationQ[res] && KeyExistsQ[res, "Settings"],
     res["Settings"],
     res
@@ -343,15 +341,13 @@ SetMatheme[] := Module[{res = callFunction["settings"]},
 ];
 SetMatheme[opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
   callFunction["setSettings", Association[Flatten[{opts}]]];
-SetMatheme[other__] := Handle[
-  Module[{bad = SelectFirst[{other}, !MatchQ[#, _Rule | _RuleDelayed] &, First[{other}]]},
+SetMatheme[other__] := Handle[_Failure] @
+  With[{bad = SelectFirst[{other}, !MatchQ[#, _Rule | _RuleDelayed] &, First[{other}]]},
     raiseCallError[
       "SetMatheme expects rules (e.g. SetMatheme[\"SystemFonts\" -> False]); got `Type`.",
       <|"Type" -> Head[bad]|>
     ]
-  ],
-  _Failure
-];
+  ];
 
 ResetMatheme[] := callFunction["resetSettings"];
 
@@ -362,13 +358,11 @@ ClearMathemeCache[] := callFunction["clearCache", <|"Targets" -> All|>];
 ClearMathemeCache[All | "All"] := callFunction["clearCache", <|"Targets" -> All|>];
 ClearMathemeCache[target_String] := callFunction["clearCache", <|"Targets" -> {target}|>];
 ClearMathemeCache[targets : {___String}] := callFunction["clearCache", <|"Targets" -> targets|>];
-ClearMathemeCache[other_] := Handle[
+ClearMathemeCache[other_] := Handle[_Failure] @
   raiseCallError[
     "ClearMathemeCache expects \"Fonts\", \"Packages\", \"Memoization\", All, or a list of targets; got `Type`.",
     <|"Type" -> Head[other]|>
-  ],
-  _Failure
-];
+  ];
 
 MathemeQueryFonts[] := callFunction["queryFonts"];
 MathemeQueryFonts[arg__] := callWithRules["queryFonts", "MathemeQueryFonts", arg];

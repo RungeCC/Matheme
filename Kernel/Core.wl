@@ -37,7 +37,7 @@ $libraryFileName = Switch[$OperatingSystem,
   _, "matheme.so"
 ];
 
-$library = Module[{found = Quiet[FindLibrary["matheme"]]},
+$library = With[{found = Quiet[FindLibrary["matheme"]]},
   If[TrueQ[found =!= $Failed],
     found,
     FileNameJoin[{DirectoryName[$InputFileName, 2], "LibraryResources",
@@ -72,7 +72,7 @@ raiseCallError[template_String, params_Association : <||>] := With[{t = MathemeC
   |>]
 ];
 
-diagnosticText[diag_Association] := Module[
+diagnosticText[diag_Association] := With[
   {loc = Lookup[diag, "Location", None], message = Lookup[diag, "Message", ""]},
   If[AssociationQ[loc],
     StringRiffle[
@@ -117,7 +117,7 @@ normalizeDiagnosticBorders[text_String] := Module[{lines},
 ];
 
 formatDiagnosticCell[""] := "";
-formatDiagnosticCell[text_String] := Module[{formatted = normalizeDiagnosticBorders[text]},
+formatDiagnosticCell[text_String] := With[{formatted = normalizeDiagnosticBorders[text]},
   If[formatted === "",
     "",
     DisplayForm[Cell[formatted, "Code",
@@ -181,19 +181,17 @@ callUnchecked[name_String, arguments_Association] := Module[{result, tag, report
    association without its internal Status field, failure returns a Failure. *)
 callFunction[name_String] := callFunction[name, <||>];
 callFunction[name_String, arguments_Association] :=
-  Handle[callUnchecked[name, arguments], _Failure];
+  Handle[_Failure] @ callUnchecked[name, arguments];
 
 callWithRules[action_String, _String, arg_Association] :=
   callFunction[action, arg];
 callWithRules[action_String, _String, opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
   callFunction[action, Association[opts]];
-callWithRules[_String, displayName_String, other_] := Handle[
-  raiseCallError[
+callWithRules[_String, displayName_String, other_] :=
+  Handle[_Failure] @ raiseCallError[
     "`Name` expects an Association or rules; got `Type`.",
     <|"Name" -> displayName, "Type" -> Head[other]|>
-  ],
-  _Failure
-];
+  ];
 
 MathemeClose[] := Module[
   {before = Links[], unloaded = 0, links = $links, released = <||>,
