@@ -40,6 +40,8 @@ MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal w
 TypstForm::unspt = "TypstForm of `1` is not supported.";
 TypstForm::unkchar = "Unmapped Wolfram private-use character `1` (`2`) encountered in TypstForm; falling back to text literal.";
 
+$TypstTemplates::usage = "Builtins typst templates";
+
 Begin["`Private`"];
 
 (* Core WSTP bridge, library lifecycle, diagnostics, and MathemeClose. *)
