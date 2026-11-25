@@ -4,6 +4,7 @@
 # Scripts: LF for cross-platform tooling consistency.
 *.nu text eol=lf
 *.sh text eol=lf
+/.githooks/pre-commit text eol=lf
 
 # Source and config files: LF for cross-platform tooling consistency.
 *.rs  text eol=lf
