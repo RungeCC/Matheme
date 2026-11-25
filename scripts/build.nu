@@ -65,6 +65,14 @@ def main [
     }
     ^($ROOT | path join "target" "release" $generator)
 
+    # FrontEnd completions are generated from the WL sources (Core.wl
+    # $displayNames, the generated ArgumentTypes.wl, and WL option defaults).
+    if (which wolframscript | is-empty) {
+        print --stderr "wolframscript is required to generate specialArgFunctions.tr."
+        exit 1
+    }
+    ^wolframscript -file ($ROOT | path join "scripts" "generate-completions.wl")
+
     let paclet_dir = ($ROOT | path join "output" "Matheme")
     let lib_dir = ($paclet_dir | path join "LibraryResources" $platform.system_id)
 

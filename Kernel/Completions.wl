@@ -2,8 +2,9 @@
 
 (* Immediate-load FrontEnd completions.
 
-   The single source of truth is AutoCompletionData/specialArgFunctions.tr,
-   declared through the {"AutoCompletionData", Root -> "AutoCompletionData"}
+   AutoCompletionData/specialArgFunctions.tr is generated from Kernel/Core.wl
+   ($displayNames) and the generated argument types by scripts/generate-completions.wl
+   and declared through the {"AutoCompletionData", Root -> "AutoCompletionData"}
    paclet extension.  PacletManager adds that root to the FrontEnd's
    PrivatePaths -> "AutoCompletionData", and the FrontEnd merges the file
    into its specialArgFunctions table (the same mechanism used by the

@@ -43,7 +43,7 @@ wl_actions! {
 }
 
 /// Generate the argument type table that Wolfram uses before loading LibraryLink.
-#[cfg(any(test, feature = "option-schema"))]
+#[cfg(feature = "option-schema")]
 pub fn wolfram_argument_types() -> String {
     use std::fmt::Write;
 
@@ -69,20 +69,6 @@ pub fn wolfram_argument_types() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn option_schema_is_current() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Kernel/ArgumentTypes.wl");
-        let generated = std::fs::read_to_string(path).expect(
-            "run cargo run -p matheme --features option-schema --bin matheme-option-schema",
-        );
-        assert_eq!(
-            generated,
-            wolfram_argument_types(),
-            "run cargo run -p matheme --features option-schema --bin matheme-option-schema"
-        );
-    }
 
     #[test]
     fn unknown_action_returns_library_failure() {

@@ -5,6 +5,7 @@
 /output/
 *.paclet
 /Kernel/ArgumentTypes.wl
+/AutoCompletionData/specialArgFunctions.tr
 
 # Local scratch space: probe scripts, logs, WSTP SDK alias (see scripts/setup-wstp.nu)
 /.tmp/
