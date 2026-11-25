@@ -1,13 +1,15 @@
 (* ::Package:: *)
 
-(* Generate AutoCompletionData/specialArgFunctions.tr for the Wolfram FrontEnd.
+(* Generate specialArgFunctions.tr directly into the assembled paclet at
+   output/Matheme/AutoCompletionData/ for the Wolfram FrontEnd.
 
    Run from the workspace root by scripts/build.nu, after cargo has built the
-   library and regenerated Kernel/ArgumentTypes.wl.  No Wolfram source is
-   parsed and no function or option name is duplicated here: the public
-   function list comes from the loaded package, option names from Options[f]
-   (Wolfram-defined) or the generated $argumentTypes table (Rust endpoints),
-   and the positional-enumeration exception from Kernel/CompletionData.wl. *)
+   library, regenerated Kernel/ArgumentTypes.wl, and created output/Matheme.
+   No Wolfram source is parsed and no function or option name is duplicated
+   here: the public function list comes from the loaded package, option names
+   from Options[f] (Wolfram-defined) or the generated $argumentTypes table
+   (Rust endpoints), and the positional-enumeration exception from
+   Kernel/CompletionData.wl. *)
 
 root = Directory[];
 fail[msg_] := (Print["generate-completions: ", msg]; Quit[1]);
@@ -15,7 +17,8 @@ fail[msg_] := (Print["generate-completions: ", msg]; Quit[1]);
 typesFile = FileNameJoin[{root, "Kernel", "ArgumentTypes.wl"}];
 dataFile = FileNameJoin[{root, "Kernel", "CompletionData.wl"}];
 packageFile = FileNameJoin[{root, "Kernel", "Matheme.wl"}];
-outFile = FileNameJoin[{root, "AutoCompletionData", "specialArgFunctions.tr"}];
+outFile = FileNameJoin[{root, "output", "Matheme", "AutoCompletionData",
+  "specialArgFunctions.tr"}];
 
 types = Block[{$argumentTypes}, Quiet[Check[Get[typesFile], $Failed]]; $argumentTypes];
 If[!AssociationQ[types], fail["missing or invalid " <> typesFile]];

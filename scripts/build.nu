@@ -63,14 +63,6 @@ def main [
         ^cargo run --quiet --release -p matheme --bin matheme-option-schema
     }
 
-    # FrontEnd completions come from the loaded package, the generated
-    # ArgumentTypes.wl, and the WL-only positional data in CompletionData.wl.
-    if (which wolframscript | is-empty) {
-        print --stderr "wolframscript is required to generate specialArgFunctions.tr."
-        exit 1
-    }
-    ^wolframscript -file ($ROOT | path join "scripts" "generate-completions.wl")
-
     let paclet_dir = ($ROOT | path join "output" "Matheme")
     let lib_dir = ($paclet_dir | path join "LibraryResources" $platform.system_id)
 
@@ -78,6 +70,15 @@ def main [
         rm --recursive --force $paclet_dir
     }
     mkdir $lib_dir
+
+    # FrontEnd completions are written straight into the assembled paclet.
+    # They come from the loaded package, the generated ArgumentTypes.wl, and
+    # the WL-only positional data in CompletionData.wl.
+    if (which wolframscript | is-empty) {
+        print --stderr "wolframscript is required to generate specialArgFunctions.tr."
+        exit 1
+    }
+    ^wolframscript -file ($ROOT | path join "scripts" "generate-completions.wl")
 
     cp ($ROOT | path join "PacletInfo.m") ($paclet_dir | path join "PacletInfo.m")
     for file in ["LICENSE", "NOTICE"] {
@@ -88,9 +89,6 @@ def main [
     cp --recursive ($ROOT | path join "third-party") $paclet_dir
     # Copy Kernel/ including subdirectories such as Kernel/TypstForm/.
     cp --recursive ($ROOT | path join "Kernel") $paclet_dir
-    # FrontEnd completion data (specialArgFunctions.tr); declared by the
-    # AutoCompletionData extension in PacletInfo.m.
-    cp --recursive ($ROOT | path join "AutoCompletionData") $paclet_dir
     cp ($ROOT | path join "target" "release" $platform.cargo_lib) ($lib_dir | path join $platform.wl_lib)
 
     for old in (glob "output/*Matheme-*.paclet") {
