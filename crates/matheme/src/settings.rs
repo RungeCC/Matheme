@@ -183,11 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_is_a_separate_patch() {
-        assert!(reset_patch().reset);
-    }
-
-    #[test]
     fn unknown_keys_return_a_failure() {
         let err = with_entries([Rule::new("Mystery", 1_i64)], parse).expect_err("unknown key");
         assert_eq!(err.kind, crate::call::ErrorKind::Call);

@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use matheme_wl::Expr;
 
-use crate::{DEFAULT_HANDSHAKE_MAX_PACKETS, EvalOutput, Link, WstpError, WstpLink};
+use crate::link::DEFAULT_HANDSHAKE_MAX_PACKETS;
+use crate::{EvalOutput, Link, WstpError, WstpLink};
 
 /// Error returned by [`KernelSession`] operations.
 pub type KernelError = WstpError;
@@ -58,7 +59,6 @@ impl ExitPolicy {
 /// A live WSTP session attached to a `WolframKernel` process.
 pub struct KernelSession {
     link: Link,
-    target: SessionTarget,
     exit_policy: ExitPolicy,
     /// When `true` (owned launched kernels), the kernel's top-level `$Context`
     /// is isolated to ``"Runge`Matheme`WSTP`"`` with ``$ContextPath = {"System`"}`` so
@@ -164,7 +164,6 @@ impl KernelSession {
         let (link, exit_policy, isolate_wire_context) = Self::open_target(&target)?;
         Ok(Self {
             link,
-            target,
             exit_policy,
             isolate_wire_context,
             poisoned: false,
@@ -177,57 +176,23 @@ impl KernelSession {
         let (link, exit_policy, isolate_wire_context) = Self::open_target(&target)?;
         Ok(Self {
             link,
-            target,
             exit_policy,
             isolate_wire_context,
             poisoned: false,
         })
     }
 
-    /// Re-establish a poisoned or broken WSTP session against the original target.
-    pub fn reconnect(&mut self) -> Result<(), KernelError> {
-        self.send_exit();
-        let (link, exit_policy, isolate_wire_context) = Self::open_target(&self.target)?;
-        self.link = link;
-        self.exit_policy = exit_policy;
-        self.isolate_wire_context = isolate_wire_context;
-        self.poisoned = false;
-        Ok(())
-    }
-
-    /// Whether the underlying WSTP link is poisoned and needs [`Self::reconnect`].
-    pub fn is_poisoned(&self) -> bool {
-        self.poisoned
-    }
-
     /// Borrow a [`WstpLink`] wrapper over the underlying link.
-    pub fn wstp(&mut self) -> WstpLink<'_> {
+    fn wstp(&mut self) -> WstpLink<'_> {
         WstpLink::new(&mut self.link)
-    }
-
-    /// Evaluate a Wolfram Language [`Expr`] over WSTP.
-    pub fn eval_expr(&mut self, expr: &Expr) -> Result<EvalOutput, KernelError> {
-        if self.poisoned {
-            return Err(WstpError::Poisoned(
-                "previous WSTP failure left the kernel link desynchronized; call reconnect() before retrying".into(),
-            ));
-        }
-        match self.wstp().eval_expr(expr) {
-            Ok(out) => Ok(out),
-            Err(err) => {
-                if err.is_fatal_to_link() {
-                    self.poisoned = true;
-                }
-                Err(err)
-            }
-        }
     }
 
     /// Evaluate a Wolfram Language code string via ``System`ToExpression[code]``.
     pub fn eval_code(&mut self, wl_code: &str) -> Result<EvalOutput, KernelError> {
         if self.poisoned {
             return Err(WstpError::Poisoned(
-                "previous WSTP failure left the kernel link desynchronized; call reconnect() before retrying".into(),
+                "previous WSTP failure left the kernel link desynchronized; open a new session"
+                    .into(),
             ));
         }
         let result = if self.isolate_wire_context {
@@ -263,7 +228,7 @@ impl KernelSession {
         let _ = self.wstp().send_exit();
     }
 
-    /// Ask an owned kernel to exit cleanly before closing the link.
+    /// Ask an owned kernel to exit cleanly before dropping the session.
     ///
     /// For sessions created via [`Self::connect`], this only closes the link
     /// without terminating the external kernel.

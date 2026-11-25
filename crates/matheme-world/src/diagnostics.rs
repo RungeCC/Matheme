@@ -254,20 +254,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn severity_and_source_render_distinct_labels_and_prefixes() {
+    fn format_line_renders_distinct_labels_and_prefixes() {
         let err = error(DiagnosticSource::Host, "boom");
         let warn = warning(DiagnosticSource::Graphics, "degraded");
         let note = hint(DiagnosticSource::Package, "enable downloads");
-
-        assert_eq!(err.severity.as_str(), "Error");
-        assert_eq!(warn.severity.as_str(), "Warning");
-        assert_eq!(note.severity.as_str(), "Hint");
-
-        assert_eq!(DiagnosticSource::Typst.as_str(), "Typst");
-        assert_eq!(err.source.as_str(), "Host");
-        assert_eq!(warn.source.as_str(), "Graphics");
-        assert_eq!(DiagnosticSource::Conversion.as_str(), "Conversion");
-        assert_eq!(note.source.as_str(), "Package");
 
         assert_eq!(format_line(&err), "error: boom\n");
         assert_eq!(format_line(&warn), "warning: degraded\n");

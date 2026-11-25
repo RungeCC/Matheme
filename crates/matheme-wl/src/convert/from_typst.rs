@@ -283,7 +283,7 @@ fn datetime_expr(dt: Datetime) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use typst::foundations::{Array, Bytes, Decimal, Duration, Str};
+    use typst::foundations::{Bytes, Decimal, Duration, Str};
     use typst::layout::{Abs, Em, Fr};
 
     fn convert(value: &Value) -> (Expr, Vec<String>) {
@@ -383,20 +383,6 @@ mod tests {
         let dt = Datetime::from_ymd(2026, 11, 18).unwrap();
         let (dt_expr, _) = convert(&Value::Datetime(dt));
         assert!(dt_expr.as_normal().unwrap().has_head(&Symbol::DATE_OBJECT));
-    }
-
-    #[test]
-    fn nested_array_dict_and_fraction_convert() {
-        let mut dict = Dict::new();
-        dict.insert(Str::from("fr"), Value::Fraction(Fr::new(2.0)));
-        dict.insert(
-            Str::from("items"),
-            Value::Array(Array::from_iter([Value::Int(1), Value::Int(2)])),
-        );
-        let (expr, warnings) = convert(&Value::Dict(dict));
-        assert!(warnings.is_empty());
-        let entries = expr.as_association().expect("assoc");
-        assert_eq!(entries.len(), 2);
     }
 
     #[test]

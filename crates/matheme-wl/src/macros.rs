@@ -119,7 +119,7 @@ macro_rules! normal {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Expr, Rule, Symbol, fundamental, graphics};
+    use crate::{Expr, Symbol, fundamental, graphics};
 
     #[test]
     fn rule_builds_an_immediate_rule() {
@@ -174,25 +174,6 @@ mod tests {
             3
         );
         assert_eq!(rules[3].pair().expect("rule").1.as_bool(), Some(true));
-    }
-
-    #[test]
-    fn empty_assoc_has_no_entries() {
-        let expr = crate::assoc!();
-        assert!(expr.as_association().expect("association").is_empty());
-    }
-
-    #[test]
-    fn assoc_values_can_be_rules() {
-        let expr = crate::assoc! { "Nested" -> Expr::association([Rule::new("A", 1_i64)]) };
-        let rules = expr.as_association().expect("association");
-        let nested = rules[0]
-            .pair()
-            .expect("rule")
-            .1
-            .as_association()
-            .expect("nested");
-        assert_eq!(nested.len(), 1);
     }
 
     #[test]

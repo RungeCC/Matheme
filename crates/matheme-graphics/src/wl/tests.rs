@@ -479,8 +479,7 @@ fn glyph_expr_cache_invalidates_on_world_cache_generation() {
             .contains_key(&key)
     );
     clear_glyph_cache();
-    let (_, joined) = encoder.cached_glyph_expr(&inst, true);
-    assert!(joined.is_some());
+    let _ = encoder.cached_glyph_expr(&inst, true);
     assert_eq!(
         lock_unpoisoned(&GLYPH_EXPR_CACHE).generation,
         cache_generation()

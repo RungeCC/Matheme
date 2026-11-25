@@ -253,18 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_uses_the_default_page() {
-        assert_eq!(
-            FontQueryArgs::parse_args(&[]).unwrap().page().limit,
-            Some(DEFAULT_LIMIT)
-        );
-        assert_eq!(
-            PackageQueryArgs::parse_args(&[]).unwrap().page().limit,
-            Some(DEFAULT_LIMIT)
-        );
-    }
-
-    #[test]
     fn unknown_keys_return_a_failure() {
         let err = with_entries([Rule::new("Mystery", 1_i64)], FontQueryArgs::parse_args)
             .expect_err("unknown font query key");

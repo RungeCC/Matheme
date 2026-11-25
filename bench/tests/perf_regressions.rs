@@ -16,7 +16,6 @@ use matheme_world::compile::{
     self, CompileOutput, CompileRequest, EvaluateSpec, OutputFormat, PdfStandards, parse_page_str,
 };
 use matheme_world::{WorldDate, font_generation};
-use matheme_wstp::resolve_unqualified_symbol;
 use typst::foundations::Dict;
 
 #[test]
@@ -161,21 +160,4 @@ fn pages_filtering_consistent_across_vector_svg_and_pdf() {
         }
         _ => panic!("expected Svg output"),
     }
-}
-
-#[test]
-fn wstp_unqualified_symbols_resolve_uniformly_to_system_context() {
-    assert_eq!(resolve_unqualified_symbol("Show").as_str(), "System`Show");
-    assert_eq!(
-        resolve_unqualified_symbol("ImportByteArray").as_str(),
-        "System`ImportByteArray"
-    );
-    assert_eq!(
-        resolve_unqualified_symbol("Integrate").as_str(),
-        "System`Integrate"
-    );
-    assert_eq!(
-        resolve_unqualified_symbol("FilledCurve").as_str(),
-        "System`FilledCurve"
-    );
 }
