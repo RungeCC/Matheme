@@ -275,17 +275,17 @@ pub fn discover_kernels(explicit: Option<&Path>) -> Vec<KernelCandidate> {
     }
 
     for var in ["MATHEME_WOLFRAM_KERNEL", "WOLFRAM_KERNEL"] {
-        if let Some(val) = std::env::var_os(var) {
-            if !val.is_empty() {
-                candidates.push(candidate_from_path(PathBuf::from(val), var));
-            }
+        if let Some(val) = std::env::var_os(var)
+            && !val.is_empty()
+        {
+            candidates.push(candidate_from_path(PathBuf::from(val), var));
         }
     }
 
-    if let Ok(default_app) = WolframApp::try_default() {
-        if let Some(c) = candidate_from_app(&default_app, "wolfram-app-discovery (default)") {
-            candidates.push(c);
-        }
+    if let Ok(default_app) = WolframApp::try_default()
+        && let Some(c) = candidate_from_app(&default_app, "wolfram-app-discovery (default)")
+    {
+        candidates.push(c);
     }
 
     for app in wolfram_app_discovery::discover() {

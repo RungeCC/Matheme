@@ -216,10 +216,10 @@ impl OutlineBuilder for BezOutlineBuilder {
 fn outline_glyph_unit(font: &FontInstance, key: UnitGlyphKey) -> CachedUnitGlyph {
     {
         let mut guard = lock_unpoisoned(&UNIT_GLYPH_CACHE);
-        if guard.font_gen == key.font_gen {
-            if let Some(cached) = guard.entries.get(&key) {
-                return cached.clone();
-            }
+        if guard.font_gen == key.font_gen
+            && let Some(cached) = guard.entries.get(&key)
+        {
+            return cached.clone();
         }
     }
 

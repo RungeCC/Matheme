@@ -253,19 +253,19 @@ pub(super) fn stroke_directives(s: &StrokeStyle, plot_width: f64) -> Vec<Expr> {
     };
     out.push(join_expr);
 
-    if let Some((ref pattern, phase)) = s.dash {
-        if !pattern.is_empty() {
-            let lengths = Expr::list(pattern.iter().map(|len| *len / plot_width));
-            if phase.abs() <= 1e-9 && s.cap == LineCapStyle::Butt {
-                out.push(normal!(&graphics::DASHING, lengths));
-            } else {
-                out.push(normal!(
-                    &graphics::DASHING,
-                    lengths,
-                    phase / plot_width,
-                    cap_name,
-                ));
-            }
+    if let Some((ref pattern, phase)) = s.dash
+        && !pattern.is_empty()
+    {
+        let lengths = Expr::list(pattern.iter().map(|len| *len / plot_width));
+        if phase.abs() <= 1e-9 && s.cap == LineCapStyle::Butt {
+            out.push(normal!(&graphics::DASHING, lengths));
+        } else {
+            out.push(normal!(
+                &graphics::DASHING,
+                lengths,
+                phase / plot_width,
+                cap_name,
+            ));
         }
     }
     out

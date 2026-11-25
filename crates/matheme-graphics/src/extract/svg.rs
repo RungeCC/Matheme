@@ -165,36 +165,33 @@ impl Extractor {
             return;
         }
 
-        if let Some(clip) = group.clip_path() {
-            if let Some(region) = usvg_clip_region(clip, canvas_to_page, &mut self.warnings) {
-                let [[x0, x1], [y0, y1]] = region.bounds();
-                let clip_rect = Rect::new(x0, y0, x1, y1);
-                let mut child_primitives = Vec::new();
-                let mut child_bbox = BoundsTracker::empty();
-                self.extract_usvg_children(
-                    group.children(),
-                    canvas_to_page,
-                    opacity,
-                    &mut child_bbox,
-                    &mut child_primitives,
-                );
-                if let Some(cb) = child_bbox.rect {
-                    let visible = cb.intersect(clip_rect);
-                    if visible.width() > 0.0 && visible.height() > 0.0 {
-                        bbox.include_rect(visible);
-                    }
+        if let Some(clip) = group.clip_path()
+            && let Some(region) = usvg_clip_region(clip, canvas_to_page, &mut self.warnings)
+        {
+            let [[x0, x1], [y0, y1]] = region.bounds();
+            let clip_rect = Rect::new(x0, y0, x1, y1);
+            let mut child_primitives = Vec::new();
+            let mut child_bbox = BoundsTracker::empty();
+            self.extract_usvg_children(
+                group.children(),
+                canvas_to_page,
+                opacity,
+                &mut child_bbox,
+                &mut child_primitives,
+            );
+            if let Some(cb) = child_bbox.rect {
+                let visible = cb.intersect(clip_rect);
+                if visible.width() > 0.0 && visible.height() > 0.0 {
+                    bbox.include_rect(visible);
                 }
-                if !child_primitives.is_empty()
-                    && clip_rect.width() > 0.0
-                    && clip_rect.height() > 0.0
-                {
-                    primitives.push(VectorPrimitive::Clip {
-                        region,
-                        children: child_primitives,
-                    });
-                }
-                return;
             }
+            if !child_primitives.is_empty() && clip_rect.width() > 0.0 && clip_rect.height() > 0.0 {
+                primitives.push(VectorPrimitive::Clip {
+                    region,
+                    children: child_primitives,
+                });
+            }
+            return;
         }
 
         self.extract_usvg_children(group.children(), canvas_to_page, opacity, bbox, primitives);

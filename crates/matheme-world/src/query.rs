@@ -153,10 +153,10 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
 
 impl FontFilter {
     fn matches_fields(&self, family: &str, origin: FontOrigin, resident: bool) -> bool {
-        if let Some(needle) = &self.family {
-            if !contains_case_insensitive(family, needle) {
-                return false;
-            }
+        if let Some(needle) = &self.family
+            && !contains_case_insensitive(family, needle)
+        {
+            return false;
         }
         if self.origin.is_some_and(|expected| expected != origin) {
             return false;
@@ -184,25 +184,25 @@ pub struct PackageFilter {
 
 impl PackageFilter {
     fn matches(&self, entry: &packages::PackageEntry) -> bool {
-        if let Some(name) = &self.name {
-            if !contains_case_insensitive(&entry.name, name) {
-                return false;
-            }
+        if let Some(name) = &self.name
+            && !contains_case_insensitive(&entry.name, name)
+        {
+            return false;
         }
-        if let Some(namespace) = &self.namespace {
-            if !entry.namespace.eq_ignore_ascii_case(namespace) {
-                return false;
-            }
+        if let Some(namespace) = &self.namespace
+            && !entry.namespace.eq_ignore_ascii_case(namespace)
+        {
+            return false;
         }
-        if let Some(origin) = self.origin {
-            if !origin.matches(entry.origin) {
-                return false;
-            }
+        if let Some(origin) = self.origin
+            && !origin.matches(entry.origin)
+        {
+            return false;
         }
-        if let Some(version) = &self.version {
-            if entry.version != *version {
-                return false;
-            }
+        if let Some(version) = &self.version
+            && entry.version != *version
+        {
+            return false;
         }
         true
     }

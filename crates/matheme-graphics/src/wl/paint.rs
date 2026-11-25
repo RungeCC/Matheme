@@ -76,21 +76,20 @@ impl WlEncoder {
                 // Pure-vector fast path for rectangular tiling fills: emit an
                 // exact clipped `Inset[Graphics[...]]` instead of a rasterized
                 // `Texture[Graphics[...]]`.
-                if let PaintStyle::Tiling(tiling) = paint {
-                    if let Some(inset_fill) =
+                if let PaintStyle::Tiling(tiling) = paint
+                    && let Some(inset_fill) =
                         self.tiling_rect_inset_expr(tiling, all_subpaths, ctrl_bounds)
-                    {
-                        return match stroke {
-                            None => Some(inset_fill),
-                            Some(stroke_style) => {
-                                let mut stroke_group = stroke_directives(stroke_style, plot_width);
-                                for sp in &valid_paths {
-                                    stroke_group.push(self.build_joined_curve_expr(sp));
-                                }
-                                Some(list![inset_fill, Expr::list(stroke_group)])
+                {
+                    return match stroke {
+                        None => Some(inset_fill),
+                        Some(stroke_style) => {
+                            let mut stroke_group = stroke_directives(stroke_style, plot_width);
+                            for sp in &valid_paths {
+                                stroke_group.push(self.build_joined_curve_expr(sp));
                             }
-                        };
-                    }
+                            Some(list![inset_fill, Expr::list(stroke_group)])
+                        }
+                    };
                 }
 
                 let (fill_dir, is_texture) = self.paint_fill_directive(paint, ctrl_bounds)?;
@@ -169,52 +168,50 @@ impl WlEncoder {
             ));
         }
 
-        if !primitives_contain_non_solid_paint(&tiling.primitives) {
-            if let Some(orect) = subpaths_oriented_rect(all_subpaths) {
-                let translations = tile_grid_translations(tiling, ctrl_bounds, MAX_VECTOR_TILES)?;
-                let mut tile_exprs = Vec::with_capacity(tiling.primitives.len());
-                let mut inner_has_texture = false;
-                for prim in &tiling.primitives {
-                    if let Some(e) =
-                        self.primitive_to_expr(prim, orect.width, &mut inner_has_texture)
-                    {
-                        tile_exprs.push(e);
-                    }
+        if !primitives_contain_non_solid_paint(&tiling.primitives)
+            && let Some(orect) = subpaths_oriented_rect(all_subpaths)
+        {
+            let translations = tile_grid_translations(tiling, ctrl_bounds, MAX_VECTOR_TILES)?;
+            let mut tile_exprs = Vec::with_capacity(tiling.primitives.len());
+            let mut inner_has_texture = false;
+            for prim in &tiling.primitives {
+                if let Some(e) = self.primitive_to_expr(prim, orect.width, &mut inner_has_texture) {
+                    tile_exprs.push(e);
                 }
-                if tile_exprs.is_empty() || inner_has_texture {
-                    return None;
-                }
-                let instanced = instanced_expr(Expr::list(tile_exprs), &translations);
-                let [c, s] = orect.dir;
-                let [ox, oy] = orect.origin;
-                let inv_rot_mat = list![list![c, s], list![-s, c]];
-                let inv_trans = point_expr([-c * ox - s * oy, s * ox - c * oy]);
-                let local_tiles = normal!(
-                    &graphics::GEOMETRIC_TRANSFORMATION,
-                    instanced,
-                    list![inv_rot_mat, inv_trans],
-                );
-                let inner = normal!(
-                    &graphics::GRAPHICS,
-                    list![local_tiles],
-                    &graphics::PLOT_RANGE => list![
-                        list![0.0_f64, orect.width],
-                        list![0.0_f64, orect.height],
-                    ],
-                    &graphics::PLOT_RANGE_PADDING => &fundamental::NONE,
-                    &graphics::IMAGE_PADDING => &fundamental::NONE,
-                    &graphics::PLOT_RANGE_CLIPPING => true,
-                    &graphics::ASPECT_RATIO => &fundamental::FULL,
-                );
-                return Some(normal!(
-                    &graphics::INSET,
-                    inner,
-                    point_expr(orect.origin),
-                    self.origin_left_bottom.clone(),
-                    list![orect.width, orect.height],
-                    point_expr(orect.dir),
-                ));
             }
+            if tile_exprs.is_empty() || inner_has_texture {
+                return None;
+            }
+            let instanced = instanced_expr(Expr::list(tile_exprs), &translations);
+            let [c, s] = orect.dir;
+            let [ox, oy] = orect.origin;
+            let inv_rot_mat = list![list![c, s], list![-s, c]];
+            let inv_trans = point_expr([-c * ox - s * oy, s * ox - c * oy]);
+            let local_tiles = normal!(
+                &graphics::GEOMETRIC_TRANSFORMATION,
+                instanced,
+                list![inv_rot_mat, inv_trans],
+            );
+            let inner = normal!(
+                &graphics::GRAPHICS,
+                list![local_tiles],
+                &graphics::PLOT_RANGE => list![
+                    list![0.0_f64, orect.width],
+                    list![0.0_f64, orect.height],
+                ],
+                &graphics::PLOT_RANGE_PADDING => &fundamental::NONE,
+                &graphics::IMAGE_PADDING => &fundamental::NONE,
+                &graphics::PLOT_RANGE_CLIPPING => true,
+                &graphics::ASPECT_RATIO => &fundamental::FULL,
+            );
+            return Some(normal!(
+                &graphics::INSET,
+                inner,
+                point_expr(orect.origin),
+                self.origin_left_bottom.clone(),
+                list![orect.width, orect.height],
+                point_expr(orect.dir),
+            ));
         }
 
         None

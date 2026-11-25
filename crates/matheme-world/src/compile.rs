@@ -513,13 +513,10 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
                     let total_pages = document.pages().len();
                     let exported_pages = count_exported_pages(total_pages, pages);
                     if exported_pages == 0 {
-                        return Err(vec![
-                            typst::diag::error!(
-                                Span::detached(),
-                                "page selection matches no pages"
-                            )
-                            .into(),
-                        ]);
+                        return Err(vec![typst::diag::error!(
+                            Span::detached(),
+                            "page selection matches no pages"
+                        )]);
                     }
                     let opts = PdfOptions {
                         standards: pdf_standards,

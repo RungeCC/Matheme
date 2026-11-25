@@ -232,10 +232,11 @@ fn cmd_fonts(cmd: &FontsCmd) -> Result<(), String> {
 }
 
 fn cmd_packages(cli: &Cli, cmd: &PackagesCmd) -> Result<(), String> {
-    if cli.allow_downloads && !matheme_world::query::universe_cached() {
-        if let Err(err) = matheme_world::prefetch_universe_index() {
-            eprintln!("warning: failed to fetch Universe index: {err}");
-        }
+    if cli.allow_downloads
+        && !matheme_world::query::universe_cached()
+        && let Err(err) = matheme_world::prefetch_universe_index()
+    {
+        eprintln!("warning: failed to fetch Universe index: {err}");
     }
     let filter = PackageFilter {
         name: cmd.name.clone(),

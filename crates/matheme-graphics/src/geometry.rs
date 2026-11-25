@@ -597,14 +597,14 @@ pub(crate) fn bez_path_to_subpaths(path: &BezPath) -> Vec<Subpath> {
     for el in path.elements() {
         match *el {
             PathEl::MoveTo(p) => {
-                if let Some(start) = current_start.take() {
-                    if !segments.is_empty() {
-                        subpaths.push(Subpath {
-                            start: [start.x, start.y],
-                            segments: std::mem::take(&mut segments),
-                            closed: false,
-                        });
-                    }
+                if let Some(start) = current_start.take()
+                    && !segments.is_empty()
+                {
+                    subpaths.push(Subpath {
+                        start: [start.x, start.y],
+                        segments: std::mem::take(&mut segments),
+                        closed: false,
+                    });
                 }
                 current_start = Some(p);
                 current_pos = p;
@@ -651,14 +651,14 @@ pub(crate) fn bez_path_to_subpaths(path: &BezPath) -> Vec<Subpath> {
         }
     }
 
-    if let Some(start) = current_start {
-        if !segments.is_empty() {
-            subpaths.push(Subpath {
-                start: [start.x, start.y],
-                segments,
-                closed: false,
-            });
-        }
+    if let Some(start) = current_start
+        && !segments.is_empty()
+    {
+        subpaths.push(Subpath {
+            start: [start.x, start.y],
+            segments,
+            closed: false,
+        });
     }
 
     subpaths

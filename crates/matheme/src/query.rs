@@ -189,13 +189,14 @@ pub fn run_packages(query: PackageQueryArgs) -> Answer {
     if query.refresh {
         world::query::refresh_local();
     }
-    if query.allow_downloads && !world::query::universe_cached() {
-        if let Err(err) = world::prefetch_universe_index() {
-            outcome.warn(
-                DiagnosticSource::Package,
-                format!("failed to fetch Universe index: {err}"),
-            );
-        }
+    if query.allow_downloads
+        && !world::query::universe_cached()
+        && let Err(err) = world::prefetch_universe_index()
+    {
+        outcome.warn(
+            DiagnosticSource::Package,
+            format!("failed to fetch Universe index: {err}"),
+        );
     }
     let filter = query.filter();
     let page = query.page();

@@ -108,12 +108,12 @@ pub(crate) fn resolve_nonzero_subpaths(subpaths: &[Subpath]) -> WindingResolutio
     // O(1) zero-allocation fast path for a single closed linear triangle or quad.
     if closed_count == 1 {
         let sp = &subpaths[single_closed_idx];
-        if sp.segments.len() <= 4 && sp.segments.iter().all(|s| matches!(s, Segment::Line(_))) {
-            if let Some(simple) = check_small_linear_polygon_simple(sp) {
-                if simple {
-                    return WindingResolution::Unchanged;
-                }
-            }
+        if sp.segments.len() <= 4
+            && sp.segments.iter().all(|s| matches!(s, Segment::Line(_)))
+            && let Some(simple) = check_small_linear_polygon_simple(sp)
+            && simple
+        {
+            return WindingResolution::Unchanged;
         }
     }
 

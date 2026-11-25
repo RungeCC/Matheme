@@ -501,20 +501,20 @@ impl Extractor {
                         end: [end_pt.x, end_pt.y],
                         stroke,
                     });
-                } else if let Some((stroke_style, stroke_paint)) = painted_stroke {
-                    if stroke_style.thickness > 0.0 {
-                        bbox.include_rect(line_stroke_bbox(start_pt, end_pt, &stroke_style));
-                        let mut line_bez = BezPath::new();
-                        line_bez.move_to(start_pt);
-                        line_bez.line_to(end_pt);
-                        push_painted_stroke(
-                            primitives,
-                            &line_bez,
-                            &stroke_style,
-                            stroke_paint,
-                            &mut self.warnings,
-                        );
-                    }
+                } else if let Some((stroke_style, stroke_paint)) = painted_stroke
+                    && stroke_style.thickness > 0.0
+                {
+                    bbox.include_rect(line_stroke_bbox(start_pt, end_pt, &stroke_style));
+                    let mut line_bez = BezPath::new();
+                    line_bez.move_to(start_pt);
+                    line_bez.line_to(end_pt);
+                    push_painted_stroke(
+                        primitives,
+                        &line_bez,
+                        &stroke_style,
+                        stroke_paint,
+                        &mut self.warnings,
+                    );
                 }
             }
             Geometry::Rect(size) => {
