@@ -7,13 +7,13 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use matheme_wl::{from_typst, rule, to_typst, Entry, Expr, Rule, Symbol};
+use matheme_wl::{Expr, Rule, Symbol, from_typst, rule, to_typst};
 use matheme_world::compile::{
     self, CompileFailure, CompileOutput, CompileRequest, EvaluateSpec, EvaluatedValues, Feature,
     OutputFormat, PageRange, PageRanges, PagedCompileRequest, PdfStandards, Timestamp,
 };
 use matheme_world::{datetime_from_unix, WorldDate};
-use typst::foundations::Dict;
+use typst::foundations::Value;
 
 use crate::args::{self, AssocExpr, FromArgs, FromExpr};
 use crate::call::{Answer, Failure, Outcome};
@@ -54,6 +54,11 @@ impl From<OutputFormat> for CompileFormat {
 }
 
 impl FromExpr for CompileFormat {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        String::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         args::named(expr, Self::parse, "output format")
     }
@@ -78,7 +83,7 @@ fn parse_page_item(expr: &Expr) -> Result<PageRange, String> {
         } else {
             Some(NonZeroUsize::from_expr(&elements[1])?)
         };
-        return Ok(Some(lo)..=hi);
+        return checked_page_range(Some(lo), hi);
     }
     if let Some(pair) = expr.as_list() {
         if pair.len() != 2 {
@@ -97,12 +102,27 @@ fn parse_page_item(expr: &Expr) -> Result<PageRange, String> {
         if lo.is_none() && hi.is_none() {
             return Err("Pages range cannot be unbounded on both ends".into());
         }
-        return Ok(lo..=hi);
+        return checked_page_range(lo, hi);
     }
     Err("Pages entry must be an Integer, {start, end}, or Span".into())
 }
 
+fn checked_page_range(
+    lo: Option<NonZeroUsize>,
+    hi: Option<NonZeroUsize>,
+) -> Result<PageRange, String> {
+    if lo.zip(hi).is_some_and(|(start, end)| start > end) {
+        return Err("Pages range start must be at most its end".into());
+    }
+    Ok(lo..=hi)
+}
+
 impl FromExpr for PagesInput {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        "All | Automatic | _Integer | _String | _Span | _List".into()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::ALL) || expr.is_symbol(&Symbol::AUTOMATIC) {
             return Ok(Self(None));
@@ -118,6 +138,9 @@ impl FromExpr for PagesInput {
             return Ok(Self(Some(PageRanges::new(vec![parse_page_item(expr)?]))));
         }
         if let Some(items) = expr.as_list() {
+            if items.is_empty() {
+                return Err("Pages list must not be empty".into());
+            }
             let ranges = items
                 .iter()
                 .map(parse_page_item)
@@ -129,12 +152,21 @@ impl FromExpr for PagesInput {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct PdfStandardsInput(pub PdfStandards);
+pub struct PdfStandardsInput {
+    standards: PdfStandards,
+    specified: bool,
+    requires_tags: bool,
+}
 
 impl FromExpr for PdfStandardsInput {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        format!("Automatic | None | _String | {}", Vec::<String>::wl_pattern())
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::AUTOMATIC) || expr.is_symbol(&Symbol::NONE) {
-            return Ok(Self(PdfStandards::default()));
+            return Ok(Self::default());
         }
         let names = if let Some(s) = expr.as_str() {
             vec![s.to_owned()]
@@ -145,7 +177,15 @@ impl FromExpr for PdfStandardsInput {
         } else {
             return Err("must be Automatic, a standard String, or a List of Strings".into());
         };
-        compile::parse_pdf_standards(&names).map(Self)
+        let parsed = names
+            .iter()
+            .map(|name| compile::parse_pdf_standard(name))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            standards: compile::validate_pdf_standards(&parsed)?,
+            specified: !names.is_empty(),
+            requires_tags: compile::pdf_standards_require_tags(&parsed),
+        })
     }
 }
 
@@ -164,6 +204,11 @@ pub struct TimestampInput {
 }
 
 impl FromExpr for TimestampInput {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        "Automatic | None | Null | _Integer | _Association".into()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::AUTOMATIC) {
             return Ok(Self {
@@ -201,7 +246,13 @@ impl FromExpr for TimestampInput {
                 None => Timestamp::new_utc(dt),
             };
             return Ok(Self {
-                world_date: WorldDate::Fixed(parsed.unix),
+                world_date: match offset_mins {
+                    Some(offset_minutes) => WorldDate::FixedLocal {
+                        unix_seconds: parsed.unix,
+                        offset_minutes,
+                    },
+                    None => WorldDate::Fixed(parsed.unix),
+                },
                 pdf_timestamp: Some(ts),
             });
         }
@@ -216,6 +267,11 @@ impl FromExpr for TimestampInput {
 pub struct FeaturesInput(pub Vec<Feature>);
 
 impl FromExpr for FeaturesInput {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        Vec::<String>::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         let names = Vec::<String>::from_expr(expr)
             .map_err(|_| "must be a List of feature strings".to_owned())?;
@@ -227,6 +283,11 @@ impl FromExpr for FeaturesInput {
 pub struct EvaluateInput(pub Option<EvaluateSpec>);
 
 impl FromExpr for EvaluateInput {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        format!("None | Null | _String | _Association | {}", Vec::<String>::wl_pattern())
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::NONE) || expr.is_symbol(&Symbol::NULL) {
             return Ok(Self(None));
@@ -284,27 +345,6 @@ wl_args! {
 // Execution
 // ---------------------------------------------------------------------------
 
-/// Convert user-supplied Typst inputs. Unlike the link's own arguments, these
-/// values come from the document, so unsupported values are reported as
-/// warnings instead of failing the whole call.
-fn read_inputs(entries: &[Entry<'_>], inputs: &mut Dict, warnings: &mut Vec<String>) {
-    for entry in entries {
-        let (key, value) = match entry.pair() {
-            Ok(pair) => pair,
-            Err(reason) => {
-                warnings.push(reason);
-                continue;
-            }
-        };
-        let Some(name) = key.as_str() else {
-            warnings.push(format!("Inputs key {key} is not a String; skipped"));
-            continue;
-        };
-        let converted = to_typst(value, warnings);
-        inputs.insert(typst::foundations::Str::from(name), converted);
-    }
-}
-
 fn evaluated_to_expr(values: &EvaluatedValues, warnings: &mut Vec<String>) -> Expr {
     match values {
         EvaluatedValues::Single(val) => from_typst(val, warnings),
@@ -351,15 +391,30 @@ pub fn run(input: CompileArgs) -> Answer {
     if input.format == CompileFormat::Html && input.pages.0.is_some() {
         return Failure::call("\"Pages\" filtering is not supported for HTML output.").into();
     }
-
-    let mut inputs = Dict::new();
-    let mut input_warnings = Vec::new();
-    if let Some(input_entries) = input.inputs.0.as_association() {
-        read_inputs(&input_entries, &mut inputs, &mut input_warnings);
+    if input.format == CompileFormat::Pdf && input.pages.0.is_some() && input.pdf_tagged {
+        return Failure::call("PDF page filtering requires \"PDFTags\" -> False.").into();
     }
+    if input.format != CompileFormat::Pdf && (input.pdf_standards.specified || !input.pdf_tagged) {
+        return Failure::call("\"PDFStandard\" and \"PDFTags\" apply only to PDF output.").into();
+    }
+    if input.pdf_standards.requires_tags && !input.pdf_tagged {
+        return Failure::call("The selected PDF standard requires \"PDFTags\" -> True.").into();
+    }
+
+    let mut input_warnings = Vec::new();
+    let Value::Dict(inputs) = to_typst(&input.inputs.0, &mut input_warnings) else {
+        return Failure::internal("Inputs association did not convert to a Typst dictionary")
+            .into();
+    };
     let extra_diagnostics = input_warnings
         .into_iter()
-        .map(|msg| diagnostics::warning(DiagnosticSource::Conversion, msg))
+        .map(|msg| {
+            let separator = if msg.starts_with('[') { "" } else { ": " };
+            diagnostics::warning(
+                DiagnosticSource::Conversion,
+                format!("Inputs{separator}{msg}"),
+            )
+        })
         .collect();
 
     if input.format == CompileFormat::Graphics {
@@ -412,7 +467,7 @@ pub fn run(input: CompileArgs) -> Answer {
         allow_downloads: input.allow_downloads,
         format,
         pages: input.pages.0,
-        pdf_standards: input.pdf_standards.0,
+        pdf_standards: input.pdf_standards.standards,
         pdf_tagged: input.pdf_tagged,
         pdf_timestamp: input.timestamp.pdf_timestamp,
         world_date: input.timestamp.world_date,

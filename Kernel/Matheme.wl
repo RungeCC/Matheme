@@ -44,6 +44,7 @@ Begin["`Private`"];
 
 (* Core WSTP bridge, library lifecycle, diagnostics, and MathemeClose. *)
 Get[FileNameJoin[{DirectoryName[$InputFileName], "Core.wl"}]];
+Get[FileNameJoin[{DirectoryName[$InputFileName], "ArgumentTypes.wl"}]];
 
 (* ------------------------------------------------------------------------ *)
 (* Templates                                                                *)
@@ -96,38 +97,21 @@ applyTemplate[other_, _String] := raiseCallError[
 (* Compilation                                                              *)
 (* ------------------------------------------------------------------------ *)
 
-normalizeTimestamp[Automatic] := Automatic;
-normalizeTimestamp[None | Null] := None;
-normalizeTimestamp[ts_Integer] := ts;
-normalizeTimestamp[assoc_Association] := assoc;
 normalizeTimestamp[dt_DateObject] := Module[{unix, tz},
   unix = Quiet[UnixTime[dt]];
   If[!IntegerQ[unix],
     raiseCallError["Invalid DateObject for \"CreationTimestamp\"."]
   ];
   tz = Quiet[DateValue[dt, "TimeZone"]];
-  If[NumericQ[tz],
-    <|"Unix" -> unix, "OffsetMinutes" -> Round[60 * tz]|>,
-    unix
-  ]
+  If[NumericQ[tz], <|"Unix" -> unix, "OffsetMinutes" -> Round[60 * tz]|>, unix]
 ];
-normalizeTimestamp[other_] := raiseCallError[
-  "\"CreationTimestamp\" must be Automatic, None, a DateObject, or a Unix Integer; got `Type`.",
-  <|"Type" -> Head[other]|>
-];
+normalizeTimestamp[value_] := value;
 
-normalizeFeatures[list_List] := list;
-normalizeFeatures[single_String] := {single};
-normalizeFeatures[other_] := raiseCallError[
-  "\"Features\" must be a String or List of Strings; got `Type`.",
-  <|"Type" -> Head[other]|>
-];
-
-Options[MathemeCompile] = {
+$compileOptionDefaults = {
   "Inputs" -> <||>,
   "BasePath" -> Automatic,
   "AllowDownloads" -> False,
-  "TypstTemplate" -> None,
+  "TypstTemplate" -> Automatic,
   "Format" -> "PDF",
   "Pages" -> All,
   "PDFStandard" -> Automatic,
@@ -136,45 +120,58 @@ Options[MathemeCompile] = {
   "Features" -> {},
   "Evaluate" -> None
 };
-Options[compileChecked] = Options[MathemeCompile];
+Options[MathemeCompile] = $compileOptionDefaults;
+Options[MathemeToGraphics] = $compileOptionDefaults /. ("Format" -> "PDF") -> ("Format" -> "Graphics");
+$compileOptionNames = Append[DeleteCases[Keys[$argumentTypes["compile"]], "Source"], "TypstTemplate"];
 
-compileChecked[source_String, OptionsPattern[]] := Module[{rendered},
-  rendered = applyTemplate[OptionValue["TypstTemplate"], source];
-  If[!StringQ[rendered],
-    raiseCallError[
-      "\"TypstTemplate\" must produce a String; got `Type`.",
-      <|"Type" -> Head[rendered]|>
-    ]
+validateOutputOptions[args_Association, api_Symbol] := Module[
+  {format = ToLowerCase[args["Format"]], filtered = !MatchQ[args["Pages"], All | Automatic]},
+  If[api === MathemeToGraphics && format === "html",
+    raiseCallError["MathemeToGraphics requires a vector output format."]
   ];
-  callUnchecked["compile", <|
-    "Source" -> rendered,
-    "Inputs" -> OptionValue["Inputs"],
-    "BasePath" -> If[OptionValue["BasePath"] === Automatic, Directory[], OptionValue["BasePath"]],
-    "AllowDownloads" -> OptionValue["AllowDownloads"],
-    "Format" -> OptionValue["Format"],
-    "Pages" -> OptionValue["Pages"],
-    "PDFStandard" -> OptionValue["PDFStandard"],
-    "PDFTags" -> OptionValue["PDFTags"],
-    "CreationTimestamp" -> normalizeTimestamp[OptionValue["CreationTimestamp"]],
-    "Features" -> normalizeFeatures[OptionValue["Features"]],
-    "Evaluate" -> OptionValue["Evaluate"]
-  |>]
+  If[format === "html" && filtered,
+    raiseCallError["\"Pages\" filtering is not supported for HTML output."]
+  ];
+  If[format === "pdf" && filtered && args["PDFTags"],
+    raiseCallError["PDF page filtering requires \"PDFTags\" -> False."]
+  ];
+  If[format =!= "pdf" &&
+      (!MatchQ[args["PDFStandard"], Automatic | None | {}] || !args["PDFTags"]),
+    raiseCallError["\"PDFStandard\" and \"PDFTags\" apply only to PDF output."]
+  ]
 ];
 
-(* Template and option validation also raise through ErrorTools, so the public
-   entry handles pre-call and library failures in one Handle scope. *)
-MathemeCompile[source_String, opts : OptionsPattern[]] :=
-  Handle[_Failure] @ compileChecked[source, opts];
-MathemeCompile[TypstForm[expr_, tOpts : OptionsPattern[]], opts : OptionsPattern[]] :=
-  Module[{src = Runge`Matheme`Private`TypstForm`typstFormToString[expr, tOpts], flatOpts = Flatten[{opts}], merged},
-    merged = If[
-      KeyExistsQ[Association[flatOpts], "TypstTemplate"] ||
-        OptionValue[MathemeCompile, "TypstTemplate"] =!= None,
-      flatOpts,
-      Append[flatOpts, "TypstTemplate" -> "Equation"]
-    ];
-    MathemeCompile[src, Sequence @@ merged]
-  ];
+compileSource[source_String] := source;
+compileSource[TypstForm[expr_, opts___]] := Module[{rules, names},
+  {rules, names} = checkOptionRules[{opts}, First /@ Options[TypstForm]];
+  names = DeleteDuplicates[names];
+  If[names === {},
+    Runge`Matheme`Private`TypstForm`typstFormToString[expr],
+    Runge`Matheme`Private`TypstForm`typstFormToString[
+      expr, Sequence @@ Thread[names -> OptionValue[TypstForm, rules, names]]]
+  ]
+];
+
+compileChecked[api_Symbol, source_, raw_List] := Module[
+  {rules, args, template, rendered},
+  rules = First[checkOptionRules[raw, $compileOptionNames]];
+  args = AssociationThread[$compileOptionNames, OptionValue[api, rules, $compileOptionNames]];
+  AssociateTo[args, {
+    "BasePath" -> Replace[args["BasePath"], Automatic :> Directory[]],
+    "CreationTimestamp" -> normalizeTimestamp[args["CreationTimestamp"]],
+    "Features" -> Replace[args["Features"], name_String :> {name}]
+  }];
+  checkArgumentTypes["compile", KeyDrop[args, "TypstTemplate"]];
+  validateOutputOptions[args, api];
+  template = Replace[args["TypstTemplate"],
+    Automatic :> If[Head[source] === TypstForm, "Equation", None]];
+  rendered = applyTemplate[template, compileSource[source]];
+  If[!StringQ[rendered], raiseCallError["\"TypstTemplate\" must produce a string."]];
+  callUnchecked["compile", Append[KeyDrop[args, "TypstTemplate"], "Source" -> rendered]]
+];
+
+MathemeCompile[source : (_String | _TypstForm), opts___] :=
+  Handle[_Failure] @ compileChecked[MathemeCompile, source, {opts}];
 
 (* Wolfram's SVG importer converts width/height from pt to px (4/3) when
    computing PlotRange while keeping path coordinates in viewBox user units.
@@ -257,15 +254,6 @@ uncropGraphics[g_Graphics] := Module[
 ];
 uncropGraphics[other_] := other;
 
-validateGraphicsFormat[fmt_] := If[
-  StringQ[fmt] && MemberQ[{"graphics", "vector", "svg", "pdf"}, ToLowerCase[fmt]],
-  fmt,
-  raiseCallError[
-    "MathemeToGraphics only supports vector formats \"Graphics\", \"SVG\", or \"PDF\"; got `Format`.",
-    <|"Format" -> fmt|>
-  ]
-];
-
 toGraphics[result_] := Module[{pdf, svg, graphics, info},
   If[FailureQ[result] || !AssociationQ[result],
     result,
@@ -294,38 +282,8 @@ toGraphics[result_] := Module[{pdf, svg, graphics, info},
   ]
 ];
 
-Options[MathemeToGraphics] = {
-  "Inputs" -> <||>,
-  "BasePath" -> Automatic,
-  "AllowDownloads" -> False,
-  "TypstTemplate" -> None,
-  "Format" -> "Graphics",
-  "Pages" -> All,
-  "PDFStandard" -> Automatic,
-  "PDFTags" -> True,
-  "CreationTimestamp" -> Automatic,
-  "Features" -> {},
-  "Evaluate" -> None
-};
-
-MathemeToGraphics[source : (_String | _TypstForm), opts : OptionsPattern[]] :=
-  Handle[_Failure] @
-    Module[{flatOpts = Flatten[{opts}], explicitAssoc, defaultsAssoc, effectiveAssoc, fmt},
-      explicitAssoc = Association[flatOpts];
-      defaultsAssoc = Association[Options[MathemeToGraphics]];
-      effectiveAssoc = Join[defaultsAssoc, explicitAssoc];
-      fmt = Lookup[effectiveAssoc, "Format", "Graphics"];
-      validateGraphicsFormat[fmt];
-      (* For TypstForm inputs, preserve MathemeCompile's automatic "Equation"
-         default unless the caller or SetOptions[MathemeToGraphics, ...]
-         explicitly configured a non-None "TypstTemplate". *)
-      If[Head[source] === TypstForm &&
-          !KeyExistsQ[explicitAssoc, "TypstTemplate"] &&
-          Lookup[defaultsAssoc, "TypstTemplate", None] === None,
-        effectiveAssoc = KeyDrop[effectiveAssoc, "TypstTemplate"]
-      ];
-      toGraphics[MathemeCompile[source, Sequence @@ Normal[effectiveAssoc]]]
-    ];
+MathemeToGraphics[source : (_String | _TypstForm), opts___] :=
+  Handle[_Failure] @ toGraphics[compileChecked[MathemeToGraphics, source, {opts}]];
 
 (* ------------------------------------------------------------------------ *)
 (* State, queries, and cache lifecycle                                      *)
@@ -339,43 +297,34 @@ SetMatheme[] := With[{res = callFunction["settings"]},
     res
   ]
 ];
-SetMatheme[opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
-  callFunction["setSettings", Association[Flatten[{opts}]]];
-SetMatheme[other__] :=
-  With[{bad = SelectFirst[{other}, !MatchQ[#, _Rule | _RuleDelayed] &, First[{other}]]},
-    makeCallFailure[
-      "SetMatheme expects rules (e.g. SetMatheme[\"SystemFonts\" -> False]); got `Type`.",
-      <|"Type" -> Head[bad]|>
-    ]
-  ];
+SetMatheme[opts__] := checkedArgumentRules["setSettings", {opts}];
 
 ResetMatheme[] := callFunction["resetSettings"];
 
 MathemeReloadFonts[] := callFunction["reloadFonts"];
 MathemeReloadPackages[] := callFunction["reloadPackages"];
 
-ClearMathemeCache[] := callFunction["clearCache", <|"Targets" -> All|>];
-ClearMathemeCache[All | "All"] := callFunction["clearCache", <|"Targets" -> All|>];
-ClearMathemeCache[target_String] := callFunction["clearCache", <|"Targets" -> {target}|>];
-ClearMathemeCache[targets : {___String}] := callFunction["clearCache", <|"Targets" -> targets|>];
-ClearMathemeCache[other_] :=
-  makeCallFailure[
-    "ClearMathemeCache expects \"Fonts\", \"Packages\", \"Memoization\", All, or a list of targets; got `Type`.",
-    <|"Type" -> Head[other]|>
-  ];
+ClearMathemeCache[] := ClearMathemeCache[All];
+ClearMathemeCache["All"] := ClearMathemeCache[All];
+ClearMathemeCache[All] := checkedArgumentRules["clearCache", {"Targets" -> All}];
+ClearMathemeCache[target_String] := ClearMathemeCache[{target}];
+ClearMathemeCache[targets_] := checkedArgumentRules["clearCache", {"Targets" -> targets}];
+ClearMathemeCache[other__] := makeCallFailure["ClearMathemeCache expects at most one argument."];
 
-MathemeQueryFonts[] := callFunction["queryFonts"];
-MathemeQueryFonts[arg__] := callWithRules["queryFonts", "MathemeQueryFonts", arg];
+MathemeQueryFonts[filters_Association] := checkedArgumentRules["queryFonts", Normal[filters]];
+MathemeQueryFonts[arg___] := checkedArgumentRules["queryFonts", {arg}];
 
-MathemeQueryPackages[] := callFunction["queryPackages"];
-MathemeQueryPackages[arg__] := callWithRules["queryPackages", "MathemeQueryPackages", arg];
+MathemeQueryPackages[filters_Association] := checkedArgumentRules["queryPackages", Normal[filters]];
+MathemeQueryPackages[arg___] := checkedArgumentRules["queryPackages", {arg}];
 
 Options[MathemeWarmup] = {"Fonts" -> True, "Packages" -> True, "PackageIndex" -> True};
-MathemeWarmup[OptionsPattern[]] := callFunction["warmup", <|
-  "Fonts" -> OptionValue["Fonts"],
-  "Packages" -> OptionValue["Packages"],
-  "PackageIndex" -> OptionValue["PackageIndex"]
-|>];
+MathemeWarmup[opts___] := Handle[_Failure] @ Module[
+  {rules, args, names = Keys[$argumentTypes["warmup"]]},
+  rules = First[checkOptionRules[{opts}, names]];
+  args = AssociationThread[names, OptionValue[MathemeWarmup, rules, names]];
+  checkArgumentTypes["warmup", args];
+  callUnchecked["warmup", args]
+];
 
 (* ------------------------------------------------------------------------ *)
 (* Package conventions                                                      *)

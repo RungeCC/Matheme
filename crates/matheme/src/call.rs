@@ -185,9 +185,15 @@ fn read_action<A>(
     link: &mut Link,
     parse_action: impl FnOnce(&str, &[Entry<'_>]) -> Result<A, Failure>,
 ) -> Result<A, Failure> {
-    let expr = WstpLink::new(link)
-        .read_expr()
-        .map_err(|err| library_error(format!("failed to read WSTP call: {err}")))?;
+    let expr = WstpLink::new(link).read_expr().map_err(|err| {
+        link.clear_error();
+        if let Err(skip) = link.new_packet() {
+            return library_error(format!(
+                "failed to read WSTP call: {err}; recovery failed: {skip}"
+            ));
+        }
+        library_error(format!("failed to read WSTP call: {err}"))
+    })?;
 
     // A LinkObject function always delivers its WL arguments as a List; the
     // package passes exactly one expression, the Action/Arguments envelope.
@@ -318,8 +324,10 @@ pub fn serve(link: &mut Link) {
         Answer::Failure(Failure::internal(panic_message(payload, "matheme_call")))
     });
 
-    // Never panic across the FFI boundary if the WSTP link itself failed.
-    let _ = WstpLink::new(link).put_expr(&render(answer));
+    if let Err(err) = WstpLink::new(link).put_expr(&render(answer)) {
+        // The export wrapper catches unwinds and handles a failed WSTP write.
+        panic::resume_unwind(Box::new(format!("failed to write WSTP response: {err}")));
+    }
 }
 
 /// Parse an association test fixture and feed its entries into `f`.

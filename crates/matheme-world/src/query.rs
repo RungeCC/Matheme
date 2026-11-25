@@ -10,6 +10,7 @@
 
 use std::str::FromStr;
 
+use serde::Deserialize;
 use typst::text::{FontFlags, FontInfo, FontStyle};
 
 use crate::fonts;
@@ -19,7 +20,8 @@ pub use crate::packages::{PackageEntry, PackageOrigin, UniverseMetadata};
 
 /// Where a registered face came from. Also the priority order in which the
 /// sources are added to the font book.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FontOrigin {
     Custom,
     Host,
@@ -31,17 +33,7 @@ impl FromStr for FontOrigin {
     type Err = String;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        if name.eq_ignore_ascii_case("custom") {
-            Ok(Self::Custom)
-        } else if name.eq_ignore_ascii_case("host") {
-            Ok(Self::Host)
-        } else if name.eq_ignore_ascii_case("embedded") {
-            Ok(Self::Embedded)
-        } else if name.eq_ignore_ascii_case("system") {
-            Ok(Self::System)
-        } else {
-            Err(format!("unknown font source: {name:?}"))
-        }
+        crate::deserialize_name(name).ok_or_else(|| format!("unknown font source: {name:?}"))
     }
 }
 
@@ -62,7 +54,8 @@ impl FontOrigin {
 
 /// Restrict package results to one storage location. `Local` covers both the
 /// data and the cache directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PackageOriginFilter {
     Local,
     Data,
@@ -74,17 +67,7 @@ impl FromStr for PackageOriginFilter {
     type Err = String;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        if name.eq_ignore_ascii_case("local") {
-            Ok(Self::Local)
-        } else if name.eq_ignore_ascii_case("data") {
-            Ok(Self::Data)
-        } else if name.eq_ignore_ascii_case("cache") {
-            Ok(Self::Cache)
-        } else if name.eq_ignore_ascii_case("universe") {
-            Ok(Self::Universe)
-        } else {
-            Err(format!("unknown package origin: {name:?}"))
-        }
+        crate::deserialize_name(name).ok_or_else(|| format!("unknown package origin: {name:?}"))
     }
 }
 

@@ -9,6 +9,8 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use serde::Deserialize;
+use serde::de::IntoDeserializer;
 use typst::comemo::Track;
 use typst::diag::{SourceDiagnostic, SourceResult};
 use typst::engine::{Route, Sink, Traced};
@@ -33,7 +35,8 @@ use crate::world::{MathemeWorld, WorldDate};
 /// stays bounded in long-running sessions.
 pub const COMEMO_MAX_AGE: usize = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     #[default]
     Pdf,
@@ -45,15 +48,7 @@ impl FromStr for OutputFormat {
     type Err = String;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        if name.eq_ignore_ascii_case("pdf") {
-            Ok(Self::Pdf)
-        } else if name.eq_ignore_ascii_case("svg") {
-            Ok(Self::Svg)
-        } else if name.eq_ignore_ascii_case("html") {
-            Ok(Self::Html)
-        } else {
-            Err(format!("unknown output format: {name:?}"))
-        }
+        crate::deserialize_name(name).ok_or_else(|| format!("unknown output format: {name:?}"))
     }
 }
 
@@ -66,6 +61,14 @@ impl OutputFormat {
         match self {
             Self::Pdf | Self::Svg => Target::Paged,
             Self::Html => Target::Html,
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Pdf => "pdf",
+            Self::Svg => "svg",
+            Self::Html => "html",
         }
     }
 }
@@ -238,6 +241,9 @@ pub fn parse_page_str(spec: &str) -> Result<PageRanges, String> {
             if lo.is_none() && hi.is_none() {
                 return Err("page range '-' cannot have both ends empty".into());
             }
+            if lo.zip(hi).is_some_and(|(start, end)| start > end) {
+                return Err(format!("page range starts after its end: {part:?}"));
+            }
             lo..=hi
         } else {
             let page = part
@@ -250,60 +256,40 @@ pub fn parse_page_str(spec: &str) -> Result<PageRanges, String> {
     Ok(PageRanges::new(ranges))
 }
 
-pub fn parse_pdf_standard(name: &str) -> Option<PdfStandard> {
-    match name.to_ascii_lowercase().as_str() {
-        "1.4" => Some(PdfStandard::V_1_4),
-        "1.5" => Some(PdfStandard::V_1_5),
-        "1.6" => Some(PdfStandard::V_1_6),
-        "1.7" => Some(PdfStandard::V_1_7),
-        "2.0" => Some(PdfStandard::V_2_0),
-        "a-1b" => Some(PdfStandard::A_1b),
-        "a-1a" => Some(PdfStandard::A_1a),
-        "a-2b" => Some(PdfStandard::A_2b),
-        "a-2u" => Some(PdfStandard::A_2u),
-        "a-2a" => Some(PdfStandard::A_2a),
-        "a-3b" => Some(PdfStandard::A_3b),
-        "a-3u" => Some(PdfStandard::A_3u),
-        "a-3a" => Some(PdfStandard::A_3a),
-        "a-4" => Some(PdfStandard::A_4),
-        "a-4f" => Some(PdfStandard::A_4f),
-        "a-4e" => Some(PdfStandard::A_4e),
-        "ua-1" => Some(PdfStandard::Ua_1),
-        _ => None,
-    }
+pub fn parse_pdf_standard(name: &str) -> Result<PdfStandard, String> {
+    crate::deserialize_name(name).ok_or_else(|| format!("unknown PDFStandard: {name:?}"))
 }
 
-pub fn parse_pdf_standards(names: &[String]) -> Result<PdfStandards, String> {
-    let mut parsed = Vec::with_capacity(names.len());
-    for name in names {
-        let std = parse_pdf_standard(name)
-            .ok_or_else(|| format!("unknown PDFStandard: {name:?}"))?;
-        parsed.push(std);
-    }
-    PdfStandards::new(&parsed)
+pub fn validate_pdf_standards(standards: &[PdfStandard]) -> Result<PdfStandards, String> {
+    PdfStandards::new(standards)
         .map_err(|err| format!("invalid PDFStandard combination: {}", err.message()))
 }
 
-pub fn parse_feature(name: &str) -> Option<Feature> {
-    if name.eq_ignore_ascii_case("html") {
-        Some(Feature::Html)
-    } else if name.eq_ignore_ascii_case("bundle") {
-        Some(Feature::Bundle)
-    } else if name.eq_ignore_ascii_case("a11y-extras") || name.eq_ignore_ascii_case("a11yextras") {
-        Some(Feature::A11yExtras)
-    } else {
-        None
-    }
+pub fn pdf_standards_require_tags(standards: &[PdfStandard]) -> bool {
+    standards.iter().any(|standard| {
+        matches!(
+            standard,
+            PdfStandard::A_1a | PdfStandard::A_2a | PdfStandard::A_3a | PdfStandard::Ua_1
+        )
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "Feature", rename_all = "kebab-case")]
+enum FeatureName {
+    Html,
+    Bundle,
+    #[serde(alias = "a11yextras")]
+    A11yExtras,
+}
+
+pub fn parse_feature(name: &str) -> Result<Feature, String> {
+    FeatureName::deserialize(name.to_ascii_lowercase().as_str().into_deserializer())
+        .map_err(|_: serde::de::value::Error| format!("unknown Typst feature: {name:?}"))
 }
 
 pub fn parse_features(names: &[String]) -> Result<Vec<Feature>, String> {
-    let mut selected = Vec::with_capacity(names.len());
-    for name in names {
-        let feature = parse_feature(name)
-            .ok_or_else(|| format!("unknown Typst feature: {name:?}"))?;
-        selected.push(feature);
-    }
-    Ok(selected)
+    names.iter().map(|name| parse_feature(name)).collect()
 }
 
 /// Build Typst's [`Features`] bitset, automatically enabling [`Feature::Html`]
@@ -515,6 +501,17 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
 
             let success = compile_paged_with(paged_req, |document, pages| match format {
                 OutputFormat::Pdf => {
+                    let total_pages = document.pages().len();
+                    let exported_pages = count_exported_pages(total_pages, pages);
+                    if exported_pages == 0 {
+                        return Err(vec![
+                            typst::diag::error!(
+                                Span::detached(),
+                                "page selection matches no pages"
+                            )
+                            .into(),
+                        ]);
+                    }
                     let opts = PdfOptions {
                         standards: pdf_standards,
                         tagged: pdf_tagged,
@@ -524,8 +521,6 @@ pub fn compile(request: CompileRequest) -> Result<CompileSuccess, CompileFailure
                     };
                     let bytes = pdf(document, &opts)
                         .map_err(|errs| errs.into_iter().collect::<Vec<_>>())?;
-                    let total_pages = document.pages().len();
-                    let exported_pages = count_exported_pages(total_pages, pages);
                     Ok((
                         CompileOutput::Pdf {
                             bytes,
@@ -618,10 +613,11 @@ fn eval_one(
     module_scope: typst::foundations::Scope,
     introspector: &dyn Introspector,
     context: &Context,
-    code: &str,
+    source: (Span, &str),
     typst_diags: &mut Vec<SourceDiagnostic>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Value, ()> {
+    let (span, code) = source;
     let mut sink = Sink::new();
     let res: SourceResult<Value> = typst_eval::eval_string(
         (world as &dyn World).track(),
@@ -630,7 +626,7 @@ fn eval_one(
         introspector.track(),
         context.track(),
         code,
-        SpanMode::Uniform(Span::detached()),
+        SpanMode::Uniform(span),
         SyntaxMode::Code,
         module_scope,
     );
@@ -700,6 +696,8 @@ fn evaluate_spec(
     let styles = base.chain(&target_style);
     let context = Context::new(None, Some(styles));
     let mut owned_scope = Some(module.scope().clone());
+    // Give code expressions the same project-relative path base as the main source.
+    let main_span = main_source.root().span();
 
     match spec {
         EvaluateSpec::Single(code) => eval_one(
@@ -707,7 +705,7 @@ fn evaluate_spec(
             owned_scope.take().unwrap(),
             introspector,
             &context,
-            code,
+            (main_span, code),
             typst_diags,
             diagnostics,
         )
@@ -726,7 +724,7 @@ fn evaluate_spec(
                     scope,
                     introspector,
                     &context,
-                    code,
+                    (main_span, code),
                     typst_diags,
                     diagnostics,
                 )?);
@@ -747,7 +745,7 @@ fn evaluate_spec(
                     scope,
                     introspector,
                     &context,
-                    code,
+                    (main_span, code),
                     typst_diags,
                     diagnostics,
                 )?;

@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use matheme_world::compile::{self, Feature, OutputFormat, PageRanges, PdfStandard};
+use matheme_world::query::{FontOrigin, PackageOriginFilter};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -77,13 +79,6 @@ pub enum Command {
     Version,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum FormatArg {
-    Pdf,
-    Svg,
-    Html,
-}
-
 #[derive(Debug, Args)]
 pub struct CompileCmd {
     /// Input `.typ` file path, or `-` to read Typst source from stdin.
@@ -92,9 +87,9 @@ pub struct CompileCmd {
     /// Output file path (defaults to `<input>.<ext>`; `-` writes to stdout).
     pub output: Option<PathBuf>,
 
-    /// Output format (inferred from output extension if omitted; defaults to pdf).
-    #[arg(short = 'f', long, value_enum)]
-    pub format: Option<FormatArg>,
+    /// Output format: pdf, svg, or html (inferred from extension if omitted).
+    #[arg(short = 'f', long)]
+    pub format: Option<OutputFormat>,
 
     /// Project root directory for relative `#include` / `#image` paths.
     #[arg(long, value_name = "DIR")]
@@ -114,12 +109,12 @@ pub struct CompileCmd {
     pub wl_prelude: Option<String>,
 
     /// Page ranges to export (e.g. `1,3-5`).
-    #[arg(long, value_name = "RANGES")]
-    pub pages: Option<String>,
+    #[arg(long, value_name = "RANGES", value_parser = compile::parse_page_str)]
+    pub pages: Option<PageRanges>,
 
     /// PDF standard(s) to enforce (repeatable, e.g. `a-2b`, `ua-1`).
-    #[arg(long = "pdf-standard", value_name = "STD")]
-    pub pdf_standards: Vec<String>,
+    #[arg(long = "pdf-standard", value_name = "STD", value_parser = compile::parse_pdf_standard)]
+    pub pdf_standards: Vec<PdfStandard>,
 
     /// Disable tagged PDF accessibility structure.
     #[arg(long)]
@@ -130,8 +125,8 @@ pub struct CompileCmd {
     pub creation_timestamp: Option<i64>,
 
     /// Experimental Typst features to enable (repeatable: `html`, `bundle`, `a11y-extras`).
-    #[arg(long = "features", value_name = "FEATURE")]
-    pub features: Vec<String>,
+    #[arg(long = "features", value_name = "FEATURE", value_parser = compile::parse_feature)]
+    pub features: Vec<Feature>,
 
     /// Evaluate Typst code expression(s) against the compiled document and print results.
     #[arg(long = "evaluate", value_name = "TYPST_CODE")]
@@ -161,31 +156,15 @@ pub struct EvalCmd {
     pub format: EvalFormat,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum FontSourceArg {
-    Custom,
-    Host,
-    Embedded,
-    System,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum PackageOriginArg {
-    Local,
-    Data,
-    Cache,
-    Universe,
-}
-
 #[derive(Debug, Args)]
 pub struct FontsCmd {
     /// Case-insensitive substring filter on font family name.
     #[arg(long)]
     pub family: Option<String>,
 
-    /// Filter by font source.
-    #[arg(long, value_enum)]
-    pub source: Option<FontSourceArg>,
+    /// Filter by font source: custom, host, embedded, or system.
+    #[arg(long)]
+    pub source: Option<FontOrigin>,
 
     /// Filter to faces whose coverage contains this single character.
     #[arg(long)]
@@ -214,9 +193,9 @@ pub struct PackagesCmd {
     #[arg(long)]
     pub namespace: Option<String>,
 
-    /// Filter by package origin.
-    #[arg(long, value_enum)]
-    pub origin: Option<PackageOriginArg>,
+    /// Filter by package origin: local, data, cache, or universe.
+    #[arg(long)]
+    pub origin: Option<PackageOriginFilter>,
 
     /// Filter by exact version string.
     #[arg(long)]
@@ -278,7 +257,7 @@ mod tests {
                 assert_eq!(cmd.inputs, vec![("title".into(), "Demo".into())]);
                 assert_eq!(cmd.wl_prelude.as_deref(), Some("a = 6;"));
                 assert_eq!(cmd.wl_inputs, vec![("val".into(), "a * 7".into())]);
-                assert_eq!(cmd.pages.as_deref(), Some("1,3-5"));
+                assert_eq!(compile::count_exported_pages(6, cmd.pages.as_ref()), 4);
                 assert_eq!(cmd.evaluate, vec!["sys.inputs.val".to_string()]);
             }
             other => panic!("expected compile command, got {other:?}"),
@@ -296,13 +275,31 @@ mod tests {
     }
 
     #[test]
-    fn parses_font_source_and_package_origin_value_enums() {
+    fn compile_options_deserialize_to_typst_types() {
+        let cli = Cli::try_parse_from([
+            "matheme", "compile", "doc.typ", "--format", "PDF",
+            "--pdf-standard", "A-2B", "--features", "A11yExtras",
+        ])
+        .expect("valid CLI options");
+        let Command::Compile(cmd) = cli.command else {
+            panic!("expected compile command");
+        };
+        assert_eq!(cmd.format, Some(OutputFormat::Pdf));
+        assert_eq!(cmd.pdf_standards, vec![PdfStandard::A_2b]);
+        assert_eq!(cmd.features, vec![Feature::A11yExtras]);
+        for (flag, value) in [("--pdf-standard", "bogus"), ("--features", "bogus"), ("--pages", "3-2")] {
+            assert!(Cli::try_parse_from(["matheme", "compile", "doc.typ", flag, value]).is_err());
+        }
+    }
+
+    #[test]
+    fn parses_font_source_and_package_origin() {
         let cli = Cli::try_parse_from(["matheme", "fonts", "--source", "embedded"])
             .expect("valid font source");
         assert!(matches!(
             cli.command,
             Command::Fonts(FontsCmd {
-                source: Some(FontSourceArg::Embedded),
+                source: Some(FontOrigin::Embedded),
                 ..
             })
         ));
@@ -313,7 +310,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Packages(PackagesCmd {
-                origin: Some(PackageOriginArg::Local),
+                origin: Some(PackageOriginFilter::Local),
                 ..
             })
         ));

@@ -11,9 +11,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use matheme_wl::{normal, Expr, Symbol};
-use wolfram_expr::Symbol as RawSymbol;
+use matheme_wl::{Expr, Symbol, normal};
+use wolfram_expr::{BigInteger, BigReal, Expr as RawExpr, Symbol as RawSymbol};
 pub use wstp::Link;
+use wstp::{TokenType, sys};
 
 pub use kernel::{KernelError, KernelSession};
 
@@ -32,6 +33,64 @@ pub const DEFAULT_RESYNC_TIMEOUT: Duration = Duration::from_millis(250);
 /// Function type used by [`WstpLink`] to qualify unqualified symbol names read
 /// over WSTP.
 pub type SymbolResolver = fn(&str) -> RawSymbol;
+
+fn raw_number_type(link: &Link) -> i32 {
+    // SAFETY: The borrowed Link keeps the handle alive. WSGetRawType peeks at
+    // the current token without taking ownership of the link.
+    unsafe { sys::WSGetRawType(link.raw_link()) }
+}
+
+fn read_expr(
+    link: &mut Link,
+    resolve_symbol: SymbolResolver,
+    depth: usize,
+) -> Result<RawExpr, WstpError> {
+    if depth == 256 {
+        return Err(WstpError::protocol("WSTP expression nested too deeply"));
+    }
+    Ok(match link.get_type()? {
+        TokenType::Integer => {
+            // Numeric text also represents integers outside the native range.
+            let raw_type = raw_number_type(link);
+            if raw_type == i32::from(sys::WSTKINT) {
+                let text = link.get_number_as_string()?;
+                match text.parse::<i64>() {
+                    Ok(value) => RawExpr::from(value),
+                    Err(_) => RawExpr::from(BigInteger(text)),
+                }
+            } else {
+                RawExpr::from(link.get_i64()?)
+            }
+        }
+        TokenType::Real => {
+            let raw_type = raw_number_type(link);
+            if raw_type == i32::from(sys::WSTKREAL) {
+                RawExpr::from(BigReal(link.get_number_as_string()?))
+            } else {
+                let value = link.get_f64()?;
+                if !value.is_finite() {
+                    return Err(WstpError::protocol("non-finite WSTP real"));
+                }
+                RawExpr::from(value)
+            }
+        }
+        TokenType::String => RawExpr::string(link.get_string_ref()?.as_str()),
+        TokenType::Symbol => {
+            let name = link.get_symbol_ref()?;
+            let name = name.as_str();
+            RawExpr::symbol(RawSymbol::try_new(name).unwrap_or_else(|| resolve_symbol(name)))
+        }
+        TokenType::Function => {
+            let arity = link.get_arg_count()?;
+            let head = read_expr(link, resolve_symbol, depth + 1)?;
+            let mut arguments = Vec::with_capacity(arity.min(4096));
+            for _ in 0..arity {
+                arguments.push(read_expr(link, resolve_symbol, depth + 1)?);
+            }
+            RawExpr::normal(head, arguments)
+        }
+    })
+}
 
 /// WSTP wire-protocol packet heads and kernel control symbols.
 pub mod protocol {
@@ -263,11 +322,7 @@ impl<'a> WstpLink<'a> {
     /// Read one expression from the link, resolving unqualified symbols via the
     /// configured [`SymbolResolver`].
     pub fn read_expr(&mut self) -> Result<Expr, WstpError> {
-        let resolver = self.resolver;
-        self.link
-            .get_expr_with_resolver(&mut |name: &str| Some(resolver(name)))
-            .map(Expr::from_raw)
-            .map_err(WstpError::from)
+        read_expr(self.link, self.resolver, 0).map(Expr::from_raw)
     }
 
     /// Write an [`Expr`] to the link.

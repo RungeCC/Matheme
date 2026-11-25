@@ -1,8 +1,8 @@
 [package]
 name = "matheme-graphics"
-version = "0.1.0"
-edition = "2021"
-publish = false
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
 license.workspace = true
 
 [features]
@@ -10,14 +10,14 @@ default = ["wl"]
 wl = ["dep:matheme-wl"]
 
 [dependencies]
-matheme-wl = { path = "../matheme-wl", optional = true }
-image = { version = "0.25", default-features = false }
-typst = "=0.15.1"
-typst-layout = "=0.15.1"
-typst-svg = "=0.15.1"
-ttf-parser = "0.25"
-kurbo = "0.13"
-usvg = "0.47"
+matheme-wl = { workspace = true, optional = true }
+image.workspace = true
+typst.workspace = true
+typst-layout.workspace = true
+typst-svg.workspace = true
+ttf-parser.workspace = true
+kurbo.workspace = true
+usvg.workspace = true
 
 [dev-dependencies]
-matheme-world = { path = "../matheme-world" }
+matheme-world.workspace = true

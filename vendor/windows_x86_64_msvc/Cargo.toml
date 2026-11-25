@@ -1,0 +1,16 @@
+[package]
+name = "windows_x86_64_msvc"
+version = "0.32.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Build script that supplies the corrected import lib for windows 0.32"
+publish = false
+
+# The build script copies the upstream-fixed `windows.lib` from 0.42.2.
+# Declaring it as a build-dependency guarantees Cargo has fetched it before
+# `build.rs` runs. 0.32.0 and 0.42.2 are semver-incompatible, so the
+# workspace's `[patch.crates-io]` does not redirect this dependency.
+# Build-dependency cfgs are evaluated against the host, so on other OSes
+# Cargo neither builds nor even fetches 0.42.2.
+[target.'cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))'.build-dependencies]
+fixed_windows_lib = { package = "windows_x86_64_msvc", version = "0.42.2" }

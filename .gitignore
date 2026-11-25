@@ -4,6 +4,7 @@
 # Assembled paclet directory and packaged .paclet archive
 /output/
 *.paclet
+/Kernel/ArgumentTypes.wl
 
 # Local scratch space: probe scripts, logs, WSTP SDK alias (see scripts/setup-wstp.nu)
 /.tmp/

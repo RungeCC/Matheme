@@ -66,19 +66,23 @@ All option names are strings. `MathemeToGraphics` shares the same options, with 
 
 | Option | Default | Meaning |
 | ------ | ------- | ------- |
-| `"Inputs"` | `<\|\|>` | Values injected as Typst `sys.inputs` (strings, numbers, booleans, lists, associations, `ByteArray`). |
+| `"Inputs"` | `<\|\|>` | Values injected as Typst `sys.inputs` (strings, signed 64-bit integers, machine reals, booleans, lists, associations, `ByteArray`). |
 | `"BasePath"` | `Directory[]` | Root for relative `#include` / `#image` paths. |
 | `"AllowDownloads"` | `False` | Allow missing Universe packages to be downloaded for this call. |
-| `"TypstTemplate"` | `None` | A built-in template name (`"Equation"`, `"InlineEquation"`, `"Text"`, `"MiTeXEquation"`, `"MiTeXInlineEquation"`, `"MiTeXText"`), or a template/function applied to the source. |
+| `"TypstTemplate"` | `Automatic` | Uses `"Equation"` for `TypstForm` and leaves string input as supplied. Use `None` to disable templating, or provide a built-in name, template, or function. |
 | `"Format"` | `"PDF"` | `"PDF"`, `"SVG"` (per-page strings), `"HTML"`, or `"Graphics"` (alias `"Vector"`). |
-| `"Pages"` | `All` | Page filter (integer, list, `Span`, or `"1,3-5"`) for paged formats. |
-| `"PDFStandard"` | `Automatic` | PDF version or PDF/A standard. |
+| `"Pages"` | `All` | Page filter (integer, list, `Span`, or `"1,3-5"`) for paged formats. PDF filtering requires `"PDFTags" -> False` and must select at least one page. |
+| `"PDFStandard"` | `Automatic` | PDF version, archival standard, accessibility standard, or a compatible list of these. |
 | `"PDFTags"` | `True` | Emit tagged PDF accessibility structure. |
-| `"CreationTimestamp"` | `Automatic` | `None`, a `DateObject`, or a Unix timestamp. |
+| `"CreationTimestamp"` | `Automatic` | `None`, a `DateObject`, or a Unix timestamp. A fixed local offset also sets the default offset for Typst's `datetime.today()`. |
 | `"Features"` | `{}` | Experimental Typst features: `"html"`, `"bundle"`, `"a11y-extras"`. |
-| `"Evaluate"` | `None` | Typst expression evaluated against the document, returned under `"Evaluated"`. |
+| `"Evaluate"` | `None` | Typst code evaluated with the main module's scope, project-relative paths, library styles, and queries over the full document. Results appear under `"Evaluated"`. |
 
 Downloads are off by default: use `"AllowDownloads" -> True` per call or `"Downloads" -> True` in the settings. Paged exports report `"Pages"` and `"TotalPages"`; results also carry `Diagnostics` and `FormattedCell` when there are diagnostics.
+
+Call options use Wolfram's `OptionValue` precedence and honor `SetOptions` on the public function. Wolfram checks option names, basic types, and format-level conflicts before loading the library. Rust validates ranges, accepted values, and exporter-specific constraints. Rational and arbitrary-precision real inputs are converted to machine precision with a conversion warning. Integers outside Typst's range become `none` with a warning.
+
+When Rust argument types change, regenerate `Kernel/ArgumentTypes.wl` with `cargo run -p matheme --features option-schema --bin matheme-option-schema`. The Rust tests check that the generated file is current.
 
 ## Results and errors
 

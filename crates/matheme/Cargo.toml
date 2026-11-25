@@ -1,18 +1,25 @@
 [package]
 name = "matheme"
-version = "0.1.0"
-edition = "2021"
-publish = false
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
 license.workspace = true
 
 [lib]
 name = "matheme"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+option-schema = []
+
+[[bin]]
+name = "matheme-option-schema"
+required-features = ["option-schema"]
 
 [dependencies]
-matheme-graphics = { path = "../matheme-graphics" }
-matheme-world = { path = "../matheme-world" }
-matheme-wl = { path = "../matheme-wl" }
-matheme-wstp = { path = "../matheme-wstp" }
-wolfram-library-link = "=0.6.1"
-typst = "=0.15.1"
+matheme-graphics.workspace = true
+matheme-world.workspace = true
+matheme-wl.workspace = true
+matheme-wstp.workspace = true
+wolfram-library-link.workspace = true
+typst.workspace = true

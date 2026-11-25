@@ -4,19 +4,21 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use typst::diag::{FileError, FileResult};
+use typst::diag::{FileError, FileResult, PackageError};
 use typst::foundations::Bytes;
+use typst::syntax::package::PackageSpec;
 use typst::syntax::{FileId, VirtualRoot};
 use typst_kit::files::{FileLoader, FsRoot};
 use typst_kit::packages::SystemPackages;
 
-use crate::packages::package_runtime;
+use crate::packages::{DownloadBinding, RequestDownloads, active_downloads, package_runtime};
 
 pub struct MathemeLoader {
     pub main: FileId,
     pub main_bytes: Vec<u8>,
     pub project: FsRoot,
     pub packages: Arc<SystemPackages>,
+    download_policy: Option<Arc<RequestDownloads>>,
 }
 
 impl MathemeLoader {
@@ -26,7 +28,13 @@ impl MathemeLoader {
             main_bytes: source_text.into_bytes(),
             project: FsRoot::new(base_path),
             packages: Arc::clone(&package_runtime().packages),
+            download_policy: active_downloads(),
         }
+    }
+
+    fn package_root(&self, spec: &PackageSpec) -> Result<FsRoot, PackageError> {
+        let _binding = self.download_policy.clone().map(DownloadBinding::new);
+        self.packages.obtain(spec)
     }
 
     /// Resolve a file ID to a disk path, for human-readable diagnostic names.
@@ -38,8 +46,7 @@ impl MathemeLoader {
         match id.root() {
             VirtualRoot::Project => self.project.resolve(id.vpath()).ok(),
             VirtualRoot::Package(spec) => self
-                .packages
-                .obtain(spec)
+                .package_root(spec)
                 .ok()
                 .and_then(|root| root.resolve(id.vpath()).ok()),
         }
@@ -54,7 +61,7 @@ impl FileLoader for MathemeLoader {
         match id.root() {
             VirtualRoot::Project => self.project.load(id.vpath()),
             VirtualRoot::Package(spec) => {
-                let root = self.packages.obtain(spec).map_err(FileError::Package)?;
+                let root = self.package_root(spec).map_err(FileError::Package)?;
                 root.load(id.vpath())
             }
         }

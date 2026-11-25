@@ -26,6 +26,12 @@ pub use settings::{
 };
 pub use world::{datetime_from_unix, MathemeWorld, WorldDate, MAIN_SOURCE_NAME};
 
+fn deserialize_name<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
+    use serde::de::value::{Error, StrDeserializer};
+
+    T::deserialize(StrDeserializer::<Error>::new(&name.to_ascii_lowercase())).ok()
+}
+
 /// Which process-wide caches to drop in [`clear_caches`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheSelection {

@@ -293,6 +293,94 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       TestID -> "ToGraphics-Honors-SetOptions-Defaults"
     ],
     VerificationTest[
+      Module[{calls = 0, failures},
+        Block[{Runge`Matheme`Private`loadFunctions = Function[Null, calls++; False]},
+          failures = {
+            MathemeCompile["hello", "PDFTagz" -> False],
+            MathemeCompile["hello", "PDFTags" -> 0],
+            MathemeCompile["hello", "Pages" -> 2],
+            MathemeCompile["hello", "Format" -> "HTML", "Pages" -> 2],
+            MathemeCompile["hello", "PDFStandard" -> {42}],
+            MathemeCompile["hello", "Format" -> "SVG", "PDFStandard" -> "1.4"],
+            MathemeToGraphics["hello", "Format" -> "HTML"],
+            MathemeWarmup["PackageIndxe" -> False],
+            MathemeQueryPackages[<|"Ofset" -> 1|>],
+            SetMatheme["Proxy" -> False]
+          }
+        ];
+        calls === 0 && AllTrue[failures, MatchQ[#, Failure[MathemeCallError, _Association]] &]
+      ],
+      True,
+      TestID -> "Invalid-Options-Never-Load-Library"
+    ],
+    VerificationTest[
+      Module[{orig = Options[MathemeCompile, "Format"], seen = 0, default, explicit},
+        SetOptions[MathemeCompile, "Format" -> "SVG"];
+        default = MathemeCompile["hello", "BasePath" :> (seen++; Directory[])];
+        explicit = MathemeCompile["hello", "Format" -> "PDF", "Format" -> "SVG"];
+        SetOptions[MathemeCompile, orig];
+        seen === 1 && AssociationQ[default] && KeyExistsQ[default, "SVG"] &&
+          AssociationQ[explicit] && KeyExistsQ[explicit, "PDF"]
+      ],
+      True,
+      TestID -> "Compile-Resolves-Dynamic-Defaults-And-First-Explicit-Rule"
+    ],
+    VerificationTest[
+      Module[{orig = Options[MathemeCompile, "TypstTemplate"], implicit, disabled},
+        Block[{Runge`Matheme`Private`loadFunctions = Function[Null, True],
+            Runge`Matheme`Private`$call = Function[arg,
+              <|"Status" -> "Success", "Source" -> arg["Arguments", "Source"]|>]},
+          implicit = MathemeCompile[TypstForm[Global`x^2]]["Source"];
+          SetOptions[MathemeCompile, "TypstTemplate" -> None];
+          disabled = MathemeCompile[TypstForm[Global`x^2]]["Source"];
+          SetOptions[MathemeCompile, orig];
+        ];
+        StringStartsQ[implicit, "#set page("] && StringQ[disabled] && !StringStartsQ[disabled, "#set page("]
+      ],
+      True,
+      TestID -> "SetOptions-None-Disables-Automatic-TypstForm-Template"
+    ],
+    VerificationTest[
+      Module[{res, messages},
+        res = Quiet[MathemeCompile["hello", "Format" -> "SVG",
+          "Inputs" -> <|"numbers" -> {2^80, N[Pi, 40], 1/3}|>,
+          "Evaluate" -> "sys.inputs.numbers"], MathemeDiagnostic::warning];
+        messages = Lookup[res["Diagnostics"], "Message", {}];
+        AssociationQ[res] && res["Evaluated"] === {Null, N[Pi], N[1/3]} &&
+          Length[messages] === 3 && AllTrue[messages, StringContainsQ[#, "Inputs[\"numbers\"]"] &] &&
+          AssociationQ[MathemeVersion[]]
+      ],
+      True,
+      TestID -> "WSTP-Preserves-Numeric-Kinds-And-Remains-Usable"
+    ],
+    VerificationTest[
+      Module[{dir = CreateDirectory[], file, res},
+        file = FileNameJoin[{dir, "main.typ"}];
+        Export[file, "#let marker = \"disk\"", "Text"];
+        res = MathemeCompile["#import \"main.typ\": marker", "Format" -> "SVG", "BasePath" -> dir,
+          "Evaluate" -> {"marker", "{ import \"main.typ\": marker; marker }"}];
+        DeleteFile[file];
+        DeleteDirectory[dir];
+        AssociationQ[res] && res["Evaluated"] === {"disk", "disk"}
+      ],
+      True,
+      TestID -> "Virtual-Main-File-And-Evaluate-Preserve-Project-Imports"
+    ],
+    VerificationTest[
+      Module[{res = MathemeCompile["hello", "PDFTags" -> False, "Pages" -> 2]},
+        FailureQ[res] && StringContainsQ[res["Message"], "page selection matches no pages"]
+      ],
+      True,
+      TestID -> "PDF-Empty-Page-Selection-Fails"
+    ],
+    VerificationTest[
+      MathemeCompile["hello", "Format" -> "SVG",
+        "CreationTimestamp" -> <|"Unix" -> 0, "OffsetMinutes" -> -480|>,
+        "Evaluate" -> "datetime.today().display()"]["Evaluated"],
+      "1969-12-31 16:00:00",
+      TestID -> "Fixed-Timestamp-Offset-Reaches-Typst-World"
+    ],
+    VerificationTest[
       Module[{pub = Names["Runge`Matheme`*"]},
         MemberQ[pub, "SetMatheme"] && MemberQ[pub, "ResetMatheme"] &&
           !MemberQ[pub, "MathemeSettings"] &&

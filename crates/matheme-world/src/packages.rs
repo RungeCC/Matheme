@@ -10,9 +10,12 @@
 //! when typst downloads it). [`crate::query`] is a read-only view over them.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::io::{self, Cursor, Read};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde::Deserialize;
@@ -27,74 +30,56 @@ use crate::settings::{self, Settings};
 /// Upper bound when buffering `/preview/index.json` in memory (32 MiB).
 const MAX_UNIVERSE_INDEX_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Two independent switches: the configured policy and a reference-counted
-/// per-call opt-in, plus a flag recording whether a download was blocked.
-struct DownloadGate {
-    configured: AtomicBool,
-    call_depth: AtomicUsize,
+// Typst-kit shares one downloader and index across worlds. Its synchronous
+// package lookups bind the requesting world's policy to the calling thread.
+thread_local! {
+    static ACTIVE_DOWNLOADS: RefCell<Option<Arc<RequestDownloads>>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct RequestDownloads {
+    allowed: bool,
     blocked: AtomicBool,
 }
 
-impl DownloadGate {
-    fn new(configured: bool) -> Self {
+pub(crate) fn active_downloads() -> Option<Arc<RequestDownloads>> {
+    ACTIVE_DOWNLOADS.with(|active| active.borrow().clone())
+}
+
+pub(crate) struct DownloadBinding {
+    previous: Option<Arc<RequestDownloads>>,
+    thread_bound: PhantomData<Rc<()>>,
+}
+
+impl DownloadBinding {
+    pub(crate) fn new(policy: Arc<RequestDownloads>) -> Self {
         Self {
-            configured: AtomicBool::new(configured),
-            call_depth: AtomicUsize::new(0),
-            blocked: AtomicBool::new(false),
+            previous: ACTIVE_DOWNLOADS.with(|active| active.replace(Some(policy))),
+            thread_bound: PhantomData,
         }
-    }
-
-    fn allowed(&self) -> bool {
-        self.configured.load(Ordering::Acquire) || self.call_depth.load(Ordering::Acquire) > 0
-    }
-
-    fn set_configured(&self, allowed: bool) {
-        self.configured.store(allowed, Ordering::Release);
-    }
-
-    fn acquire_call(&self) {
-        self.call_depth.fetch_add(1, Ordering::AcqRel);
-    }
-
-    fn release_call(&self) {
-        let prev = self.call_depth.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(prev > 0, "DownloadGate::release_call underflow");
-    }
-
-    fn clear_blocked(&self) {
-        self.blocked.store(false, Ordering::Release);
-    }
-
-    fn mark_blocked(&self) {
-        self.blocked.store(true, Ordering::Release);
-    }
-
-    fn was_blocked(&self) -> bool {
-        self.blocked.load(Ordering::Acquire)
     }
 }
 
-/// RAII scope that activates a per-call download opt-in (when `allowed` is
-/// true) and tracks whether a package download was rejected while active.
+impl Drop for DownloadBinding {
+    fn drop(&mut self) {
+        ACTIVE_DOWNLOADS.with(|active| active.replace(self.previous.take()));
+    }
+}
+
+/// Per-request download permission and diagnostic state.
 pub struct CallDownloadScope {
-    gate: Arc<DownloadGate>,
-    allowed: bool,
+    policy: Arc<RequestDownloads>,
+    _binding: DownloadBinding,
 }
 
 impl CallDownloadScope {
-    /// Returns `true` if `GatedDownloader` rejected a download because
-    /// downloads were disabled during this call.
+    /// Whether this request was denied a package download.
     pub fn download_blocked(&self) -> bool {
-        self.gate.was_blocked()
+        self.policy.blocked.load(Ordering::Relaxed)
     }
 }
 
-impl Drop for CallDownloadScope {
-    fn drop(&mut self) {
-        if self.allowed {
-            self.gate.release_call();
-        }
-    }
+fn downloads_allowed(configured: &AtomicBool, policy: Option<&RequestDownloads>) -> bool {
+    configured.load(Ordering::Acquire) || policy.is_some_and(|policy| policy.allowed)
 }
 
 /// Where a package entry comes from.
@@ -321,9 +306,8 @@ impl MetadataCache {
 
 struct GatedDownloader {
     agent: ureq::Agent,
-    gate: Arc<DownloadGate>,
+    configured: Arc<AtomicBool>,
     metadata: Arc<MetadataCache>,
-    tls_error: Option<String>,
 }
 
 fn is_universe_index(url: &str) -> bool {
@@ -332,28 +316,27 @@ fn is_universe_index(url: &str) -> bool {
 
 impl Downloader for GatedDownloader {
     fn stream(&self, _key: &dyn Any, url: &str) -> io::Result<(Option<usize>, Box<dyn Read>)> {
-        if !self.gate.allowed() {
-            self.gate.mark_blocked();
+        let policy = active_downloads();
+        if !downloads_allowed(&self.configured, policy.as_deref()) {
+            if let Some(policy) = policy {
+                policy.blocked.store(true, Ordering::Relaxed);
+            }
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "package downloads are disabled",
             ));
         }
 
-        if let Some(err) = &self.tls_error {
-            if url.starts_with("https://") {
-                return Err(io::Error::other(err.clone()));
-            }
-        }
-
         let response = self.agent.get(url).call().map_err(|err| match err {
-            ureq::Error::Status(404, _) => io::Error::new(io::ErrorKind::NotFound, err),
+            ureq::Error::StatusCode(404) => io::Error::new(io::ErrorKind::NotFound, err),
             err => io::Error::other(err),
         })?;
         let size = response
-            .header("Content-Length")
+            .headers()
+            .get(ureq::http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse().ok());
-        let reader = response.into_reader();
+        let reader = response.into_body().into_reader();
 
         if is_universe_index(url) {
             // typst caches the index inside `UniversePackages`; buffer the very
@@ -377,7 +360,7 @@ impl Downloader for GatedDownloader {
         if url.ends_with(".tar.gz") {
             self.metadata.invalidate_local();
         }
-        Ok((size, reader))
+        Ok((size, Box::new(reader)))
     }
 }
 
@@ -386,32 +369,33 @@ impl Downloader for GatedDownloader {
 pub struct PackageRuntime {
     pub packages: Arc<SystemPackages>,
     pub metadata: Arc<MetadataCache>,
-    gate: Arc<DownloadGate>,
+    configured: Arc<AtomicBool>,
     proxy: Option<String>,
     proxy_error: Option<String>,
 }
 
 fn build(settings: &Settings) -> PackageRuntime {
-    let gate = Arc::new(DownloadGate::new(settings.downloads));
+    let configured = Arc::new(AtomicBool::new(settings.downloads));
 
-    let mut agent = ureq::AgentBuilder::new()
+    // Windows native-tls uses schannel; avoids pulling in openssl, which is
+    // unavailable in this registry index. ureq 3 selects the TLS provider
+    // through configuration rather than installing a connector explicitly.
+    let tls_config = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    let mut agent = ureq::config::Config::builder()
         .user_agent(concat!("matheme/", env!("CARGO_PKG_VERSION")))
-        // The process environment is not a configuration channel here: the
+        // ureq 3 reads proxies from the environment by default, but here the
         // proxy is either explicit in `Settings` or there is none.
-        .try_proxy_from_env(false);
+        .proxy(None)
+        .tls_config(tls_config);
     let mut proxy_error = None;
     if let Some(proxy) = &settings.proxy {
         match ureq::Proxy::new(proxy) {
-            Ok(parsed) => agent = agent.proxy(parsed),
+            Ok(parsed) => agent = agent.proxy(Some(parsed)),
             Err(err) => proxy_error = Some(format!("invalid proxy {proxy:?}: {err}")),
         }
-    }
-    // ureq's `native-tls` feature only adds an adapter; the connector must be
-    // installed explicitly (Windows then uses schannel, no extra DLL).
-    let mut tls_error = None;
-    match ureq::native_tls::TlsConnector::new() {
-        Ok(tls) => agent = agent.tls_connector(Arc::new(tls)),
-        Err(err) => tls_error = Some(format!("failed to initialize native TLS connector: {err}")),
     }
 
     let data = match &settings.package_data {
@@ -428,10 +412,9 @@ fn build(settings: &Settings) -> PackageRuntime {
         cache.as_ref().map(|p| p.path().to_owned()),
     ));
     let downloader = GatedDownloader {
-        agent: agent.build(),
-        gate: Arc::clone(&gate),
+        agent: ureq::Agent::new_with_config(agent.build()),
+        configured: Arc::clone(&configured),
         metadata: Arc::clone(&metadata),
-        tls_error,
     };
 
     PackageRuntime {
@@ -441,7 +424,7 @@ fn build(settings: &Settings) -> PackageRuntime {
             UniversePackages::new(downloader),
         )),
         metadata,
-        gate,
+        configured,
         proxy: settings.proxy.clone(),
         proxy_error,
     }
@@ -468,14 +451,14 @@ pub(crate) fn cached() -> Option<Arc<PackageRuntime>> {
 /// are permitted until the returned [`CallDownloadScope`] is dropped (including
 /// on early returns or panics), so a per-call opt-in never leaks to later calls.
 pub fn enter_call_downloads(allowed: bool) -> CallDownloadScope {
-    let runtime = package_runtime();
-    runtime.gate.clear_blocked();
-    if allowed {
-        runtime.gate.acquire_call();
-    }
-    CallDownloadScope {
-        gate: Arc::clone(&runtime.gate),
+    let policy = Arc::new(RequestDownloads {
         allowed,
+        blocked: AtomicBool::new(false),
+    });
+    let binding = DownloadBinding::new(Arc::clone(&policy));
+    CallDownloadScope {
+        policy,
+        _binding: binding,
     }
 }
 
@@ -484,7 +467,7 @@ pub(crate) fn set_configured_downloads(allowed: bool) -> bool {
     let Some(runtime) = cached() else {
         return false;
     };
-    runtime.gate.set_configured(allowed);
+    runtime.configured.store(allowed, Ordering::Release);
     true
 }
 
@@ -563,7 +546,7 @@ pub fn package_status() -> PackageStatus {
     PackageStatus {
         count: runtime.metadata.local().len(),
         downloads: settings::settings().downloads,
-        downloads_active: runtime.gate.allowed(),
+        downloads_active: downloads_allowed(&runtime.configured, active_downloads().as_deref()),
         data,
         cache,
         proxy: runtime.proxy.clone(),
@@ -617,35 +600,32 @@ mod tests {
 
     #[test]
     fn call_download_scope_resets_on_drop_and_tracks_blocked_downloads() {
-        let gate = Arc::new(DownloadGate::new(false));
-        assert!(!gate.allowed());
-
-        {
-            gate.acquire_call();
-            let _scope = CallDownloadScope {
-                gate: Arc::clone(&gate),
-                allowed: true,
-            };
-            assert!(gate.allowed());
-        }
-        assert!(!gate.allowed(), "per-call opt-in must reset on drop");
-
         let downloader = GatedDownloader {
-            agent: ureq::AgentBuilder::new().build(),
-            gate: Arc::clone(&gate),
+            agent: ureq::Agent::new_with_defaults(),
+            configured: Arc::new(AtomicBool::new(false)),
             metadata: Arc::new(MetadataCache::new(None, None)),
-            tls_error: None,
         };
-        let scope = CallDownloadScope {
-            gate: Arc::clone(&gate),
-            allowed: false,
-        };
-        assert!(!scope.download_blocked());
-        let err = downloader
-            .stream(&(), "https://packages.typst.org/preview/index.json")
-            .err()
-            .expect("downloads disabled should error");
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
-        assert!(scope.download_blocked());
+        let allowed = enter_call_downloads(true);
+        assert!(downloads_allowed(
+            &downloader.configured,
+            active_downloads().as_deref()
+        ));
+        std::thread::scope(|thread| {
+            thread
+                .spawn(|| {
+                    let denied = enter_call_downloads(false);
+                    let err = downloader
+                        .stream(&(), "https://packages.typst.org/preview/index.json")
+                        .err()
+                        .expect("downloads disabled should error");
+                    assert_eq!(err.kind(), io::ErrorKind::NotFound);
+                    assert!(denied.download_blocked());
+                })
+                .join()
+                .unwrap();
+        });
+        assert!(!allowed.download_blocked());
+        drop(allowed);
+        assert!(active_downloads().is_none());
     }
 }

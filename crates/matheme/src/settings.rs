@@ -10,7 +10,7 @@ use matheme_wl::{assoc, rule, Expr, Symbol};
 use matheme_world::settings::{Patch, Settings as WorldSettings, Update};
 use matheme_world::{self as world, FontCounts};
 
-use crate::args::{FromExpr, Resettable, SetOnly};
+use crate::args::{FromExpr, Resettable};
 use crate::call::{Answer, Outcome};
 use crate::wl_args;
 
@@ -25,6 +25,11 @@ impl Default for ProxyUpdate {
 }
 
 impl FromExpr for ProxyUpdate {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        Resettable::<String>::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::NULL) {
             return Ok(Self(Update::Reset));
@@ -44,12 +49,12 @@ wl_args! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SettingsPatchArgs {
         "FontPaths" => pub font_paths: Resettable<Vec<PathBuf>> = Resettable::default(),
-        "SystemFonts" => pub system_fonts: SetOnly<bool> = SetOnly::default(),
-        "EmbeddedFonts" => pub embedded_fonts: SetOnly<bool> = SetOnly::default(),
+        "SystemFonts" => pub system_fonts: Resettable<bool> = Resettable::default(),
+        "EmbeddedFonts" => pub embedded_fonts: Resettable<bool> = Resettable::default(),
         "PackagePath" => pub package_data: Resettable<PathBuf> = Resettable::default(),
         "PackageCache" => pub package_cache: Resettable<PathBuf> = Resettable::default(),
         "Proxy" => pub proxy: ProxyUpdate = ProxyUpdate::default(),
-        "Downloads" => pub downloads: SetOnly<bool> = SetOnly::default(),
+        "Downloads" => pub downloads: Resettable<bool> = Resettable::default(),
     }
 }
 
@@ -178,12 +183,14 @@ mod tests {
             [
                 Rule::new("Proxy", Expr::null()),
                 Rule::new("FontPaths", Expr::null()),
+                Rule::new("Downloads", Expr::null()),
             ],
             parse,
         )
         .expect("valid null reset");
         assert!(matches!(patch.proxy, Update::Reset));
         assert!(matches!(patch.font_paths, Update::Reset));
+        assert!(matches!(patch.downloads, Update::Reset));
         assert!(!patch.reset);
     }
 

@@ -22,12 +22,22 @@ use crate::wl_args;
 const DEFAULT_LIMIT: usize = 50;
 
 impl FromExpr for FontOrigin {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        String::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         args::named(expr, Self::parse, "font source")
     }
 }
 
 impl FromExpr for PackageOriginFilter {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        String::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         args::named(expr, Self::parse, "package origin")
     }

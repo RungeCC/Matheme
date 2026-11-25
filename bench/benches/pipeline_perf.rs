@@ -5,7 +5,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use matheme_bench::{compile_doc, doc_academic_multipage, doc_compile_evaluate};
 use matheme_graphics::{export_vector, pages_to_expr};
 use matheme_world::compile::{self, CompileRequest, EvaluateSpec, OutputFormat, PdfStandards};

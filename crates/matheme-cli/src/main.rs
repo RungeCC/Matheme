@@ -13,16 +13,13 @@ use clap::Parser;
 use matheme_world::compile::{
     self, CompileOutput, CompileRequest, EvaluateSpec, EvaluatedValues, OutputFormat, Timestamp,
 };
-use matheme_world::query::{FontFilter, FontOrigin, PackageFilter, PackageOriginFilter, Page};
+use matheme_world::query::{FontFilter, PackageFilter, Page};
 use matheme_world::settings::{Patch, Update};
 use matheme_world::{datetime_from_unix, WorldDate};
 use matheme_wstp::{EvalOutput, KernelSession};
 use typst::foundations::{Dict, Repr, Str, Value};
 
-use crate::cli::{
-    Cli, Command, CompileCmd, EvalCmd, EvalFormat, FontSourceArg, FontsCmd, FormatArg,
-    PackageOriginArg, PackagesCmd,
-};
+use crate::cli::{Cli, Command, CompileCmd, EvalCmd, EvalFormat, FontsCmd, PackagesCmd};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -207,15 +204,9 @@ fn cmd_eval(cli: &Cli, cmd: &EvalCmd) -> Result<(), String> {
 }
 
 fn cmd_fonts(cmd: &FontsCmd) -> Result<(), String> {
-    let origin = cmd.source.map(|src| match src {
-        FontSourceArg::Custom => FontOrigin::Custom,
-        FontSourceArg::Host => FontOrigin::Host,
-        FontSourceArg::Embedded => FontOrigin::Embedded,
-        FontSourceArg::System => FontOrigin::System,
-    });
     let filter = FontFilter {
         family: cmd.family.clone(),
-        origin,
+        origin: cmd.source,
         resident: None,
         character: cmd.character,
     };
@@ -248,16 +239,10 @@ fn cmd_packages(cli: &Cli, cmd: &PackagesCmd) -> Result<(), String> {
             eprintln!("warning: failed to fetch Universe index: {err}");
         }
     }
-    let origin = cmd.origin.map(|orig| match orig {
-        PackageOriginArg::Local => PackageOriginFilter::Local,
-        PackageOriginArg::Data => PackageOriginFilter::Data,
-        PackageOriginArg::Cache => PackageOriginFilter::Cache,
-        PackageOriginArg::Universe => PackageOriginFilter::Universe,
-    });
     let filter = PackageFilter {
         name: cmd.name.clone(),
         namespace: cmd.namespace.clone(),
-        origin,
+        origin: cmd.origin,
         version: cmd.version.clone(),
     };
     let page = Page {
@@ -285,33 +270,19 @@ fn cmd_packages(cli: &Cli, cmd: &PackagesCmd) -> Result<(), String> {
 }
 
 fn resolve_format(cmd: &CompileCmd) -> OutputFormat {
-    if let Some(fmt) = cmd.format {
-        return match fmt {
-            FormatArg::Pdf => OutputFormat::Pdf,
-            FormatArg::Svg => OutputFormat::Svg,
-            FormatArg::Html => OutputFormat::Html,
-        };
-    }
-    if let Some(ref output) = cmd.output {
-        if let Some(ext) = output.extension().and_then(|e| e.to_str()) {
-            if let Some(fmt) = OutputFormat::parse(ext) {
-                return fmt;
-            }
-        }
-    }
-    OutputFormat::Pdf
+    cmd.format
+        .or_else(|| {
+            let extension = cmd.output.as_ref()?.extension()?.to_str()?;
+            OutputFormat::parse(extension)
+        })
+        .unwrap_or_default()
 }
 
 fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
-    let ext = match format {
-        OutputFormat::Pdf => "pdf",
-        OutputFormat::Svg => "svg",
-        OutputFormat::Html => "html",
-    };
     if input == Path::new("-") {
         PathBuf::from("-")
     } else {
-        input.with_extension(ext)
+        input.with_extension(format.extension())
     }
 }
 
@@ -332,6 +303,17 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
         .clone()
         .unwrap_or_else(|| default_output_path(&cmd.input, format));
     validate_compile_output(&out_path, !cmd.evaluate.is_empty())?;
+
+    if format == OutputFormat::Html && cmd.pages.is_some() {
+        return Err("--pages applies only to paged output".into());
+    }
+    if format == OutputFormat::Pdf && cmd.pages.is_some() && !cmd.no_pdf_tags {
+        return Err("PDF page filtering requires --no-pdf-tags".into());
+    }
+    if cmd.no_pdf_tags && compile::pdf_standards_require_tags(&cmd.pdf_standards) {
+        return Err("the selected PDF standard requires tagging".into());
+    }
+    let pdf_standards = compile::validate_pdf_standards(&cmd.pdf_standards)?;
 
     let source = if cmd.input == Path::new("-") {
         let mut buf = String::new();
@@ -354,13 +336,6 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
             .unwrap_or_else(|| PathBuf::from(".")),
         None => PathBuf::from("."),
     };
-
-    let pages = match cmd.pages.as_deref() {
-        Some(spec) => Some(compile::parse_page_str(spec)?),
-        None => None,
-    };
-    let pdf_standards = compile::parse_pdf_standards(&cmd.pdf_standards)?;
-    let features = compile::parse_features(&cmd.features)?;
 
     let (world_date, pdf_timestamp) = match cmd.creation_timestamp {
         Some(unix) => {
@@ -412,12 +387,12 @@ fn cmd_compile(cli: &Cli, cmd: &CompileCmd) -> Result<(), String> {
         base_path,
         allow_downloads: cli.allow_downloads,
         format,
-        pages,
+        pages: cmd.pages.clone(),
         pdf_standards,
         pdf_tagged: !cmd.no_pdf_tags,
         pdf_timestamp,
         world_date,
-        features,
+        features: cmd.features.clone(),
         evaluate,
         extra_diagnostics,
     };

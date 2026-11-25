@@ -1,6 +1,7 @@
 //! Per-compilation Typst world.
 
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use typst::diag::FileResult;
@@ -18,6 +19,14 @@ use crate::loader::MathemeLoader;
 /// Name shown for the in-memory source string passed from Wolfram.
 pub const MAIN_SOURCE_NAME: &str = "<typst source>";
 
+// Reuse a single virtual ID. Looking up /main.typ by path still refers to disk.
+static MAIN_FILE: LazyLock<FileId> = LazyLock::new(|| {
+    FileId::unique(RootedPath::new(
+        VirtualRoot::Project,
+        VirtualPath::new("/main.typ").expect("valid virtual path"),
+    ))
+});
+
 /// How `World::today` resolves the current date.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorldDate {
@@ -26,6 +35,11 @@ pub enum WorldDate {
     System,
     /// Use a fixed Unix timestamp (seconds since 1970-01-01T00:00:00Z).
     Fixed(i64),
+    /// Use a fixed Unix timestamp and its local offset in minutes.
+    FixedLocal {
+        unix_seconds: i64,
+        offset_minutes: i32,
+    },
     /// Disable `datetime.today()`.
     None,
 }
@@ -41,7 +55,7 @@ pub fn datetime_from_unix(unix_seconds: i64, offset_minutes: Option<i32>) -> Opt
             }
             let offset_secs = mins.checked_mul(60)?;
             let offset = time::UtcOffset::from_whole_seconds(offset_secs).ok()?;
-            utc.to_offset(offset)
+            utc.checked_to_offset(offset)?
         }
         None => utc,
     };
@@ -84,10 +98,7 @@ impl MathemeWorld {
         features: Features,
         date: WorldDate,
     ) -> Self {
-        let main = FileId::new(RootedPath::new(
-            VirtualRoot::Project,
-            VirtualPath::new("/main.typ").expect("valid virtual path"),
-        ));
+        let main = *MAIN_FILE;
         let loader = MathemeLoader::new(main, source_text, base_path);
 
         Self {
@@ -131,15 +142,21 @@ impl World for MathemeWorld {
     }
 
     fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
-        let unix_seconds = match self.date {
-            WorldDate::System => SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .ok()?
-                .as_secs() as i64,
-            WorldDate::Fixed(secs) => secs,
+        let (unix_seconds, default_offset) = match self.date {
+            WorldDate::System => (
+                SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64,
+                0,
+            ),
+            WorldDate::Fixed(seconds) => (seconds, 0),
+            WorldDate::FixedLocal {
+                unix_seconds,
+                offset_minutes,
+            } => (unix_seconds, i64::from(offset_minutes) * 60),
             WorldDate::None => return None,
         };
-        let offset_secs = offset.map(|d| d.seconds().round() as i64).unwrap_or(0);
+        let offset_secs = offset
+            .map(|d| d.seconds().round() as i64)
+            .unwrap_or(default_offset);
         datetime_from_unix(unix_seconds.checked_add(offset_secs)?, None)
     }
 }

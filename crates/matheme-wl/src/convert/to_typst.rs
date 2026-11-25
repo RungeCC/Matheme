@@ -5,6 +5,7 @@
 //! first unsupported element.
 
 use typst::foundations::{Array, Bytes, Dict, Str, Value};
+use wolfram_library_link::expr::ExprKind;
 
 use crate::entry::Entry;
 use crate::expr::Expr;
@@ -18,15 +19,44 @@ pub fn to_typst(expr: &Expr, warnings: &mut Vec<String>) -> Value {
 
 struct Converter<'a> {
     warnings: &'a mut Vec<String>,
+    path: String,
 }
 
 impl<'a> Converter<'a> {
     fn new(warnings: &'a mut Vec<String>) -> Self {
-        Self { warnings }
+        Self {
+            warnings,
+            path: String::new(),
+        }
     }
 
     fn warn(&mut self, message: impl Into<String>) {
-        self.warnings.push(message.into());
+        let message = message.into();
+        self.warnings.push(if self.path.is_empty() {
+            message
+        } else {
+            format!("{}: {message}", self.path)
+        });
+    }
+
+    fn nested(&mut self, segment: &str, expr: &Expr) -> Value {
+        let length = self.path.len();
+        self.path.push_str(segment);
+        let value = self.value(expr);
+        self.path.truncate(length);
+        value
+    }
+
+    fn approximate(&mut self, number: Option<f64>, kind: &str) -> Value {
+        if let Some(value) = number.filter(|n| n.is_finite()) {
+            self.warn(format!("{kind} converted to a machine-precision float"));
+            Value::Float(value)
+        } else {
+            self.warn(format!(
+                "{kind} is out of range for a Typst float; mapped to none"
+            ));
+            Value::None
+        }
     }
 
     fn value(&mut self, expr: &Expr) -> Value {
@@ -38,6 +68,24 @@ impl<'a> Converter<'a> {
         }
         if let Some(value) = expr.as_f64() {
             return Value::Float(value);
+        }
+        match expr.raw().kind() {
+            ExprKind::BigInteger(_) => {
+                self.warn("integer is outside Typst's signed 64-bit integer range; mapped to none");
+                return Value::None;
+            }
+            ExprKind::BigReal(real) => {
+                let text = real.as_str().replace("*^", "e");
+                let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((&text, ""));
+                let digits = mantissa.split('`').next().unwrap_or(mantissa);
+                let number = if exponent.is_empty() {
+                    digits.parse().ok()
+                } else {
+                    format!("{digits}e{exponent}").parse().ok()
+                };
+                return self.approximate(number, "arbitrary-precision real");
+            }
+            _ => {}
         }
         match expr.to_bytes() {
             Ok(Some(bytes)) => return Value::Bytes(Bytes::new(bytes.into_owned())),
@@ -78,6 +126,19 @@ impl<'a> Converter<'a> {
         if normal.has_head(&Symbol::LIST) {
             return self.array(normal.elements());
         }
+        if normal.head() == Some("System`Rational")
+            && let [numerator, denominator] = normal.elements()
+        {
+            let integer = |expr: &Expr| match expr.raw().kind() {
+                ExprKind::Integer(value) => Some(*value as f64),
+                ExprKind::BigInteger(value) => value.as_str().parse().ok(),
+                _ => None,
+            };
+            let number = integer(numerator)
+                .zip(integer(denominator))
+                .map(|(n, d)| n / d);
+            return self.approximate(number, "exact rational");
+        }
         self.warn(format!(
             "unsupported expression head {} mapped to none",
             normal.head().unwrap_or("<not a symbol>")
@@ -86,7 +147,11 @@ impl<'a> Converter<'a> {
     }
 
     fn array(&mut self, elements: &[Expr]) -> Value {
-        let values: Vec<Value> = elements.iter().map(|elem| self.value(elem)).collect();
+        let values: Vec<Value> = elements
+            .iter()
+            .enumerate()
+            .map(|(index, elem)| self.nested(&format!("[{}]", index + 1), elem))
+            .collect();
         Value::Array(values.into_iter().collect::<Array>())
     }
 
@@ -103,7 +168,7 @@ impl<'a> Converter<'a> {
             };
             match key.as_str() {
                 Some(name) => {
-                    let value = self.value(value);
+                    let value = self.nested(&format!("[{name:?}]"), value);
                     dict.insert(Str::from(name), value);
                 }
                 None => self.warn(format!("association key {key} is not a String; skipped")),

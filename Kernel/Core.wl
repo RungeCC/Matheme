@@ -64,14 +64,44 @@ loadFunctions[] := Module[{fn},
 makeCallFailure[template_String, params_Association : <||>] :=
   CreateFailure[MathemeCallError, <|
     "MessageTemplate" -> template,
-    "MessageParameters" -> params
+    "MessageParameters" -> params,
+    "ErrorKind" -> "Call"
   |>];
 
 raiseCallError[template_String, params_Association : <||>] := With[{t = MathemeCallError},
   Raise[t, <|
     "MessageTemplate" -> template,
-    "MessageParameters" -> params
+    "MessageParameters" -> params,
+    "ErrorKind" -> "Call"
   |>]
+];
+
+optionName[name_String] := name;
+optionName[name_Symbol] := SymbolName[Unevaluated[name]];
+optionName[_] := None;
+
+checkOptionRules[raw_List, allowed_List] := Module[{rules = Flatten[raw], names, unknown},
+  If[!AllTrue[rules, MatchQ[#, _Rule | _RuleDelayed] &],
+    raiseCallError["Expected option rules."]
+  ];
+  names = optionName /@ (First /@ rules);
+  unknown = Complement[names, allowed];
+  If[unknown =!= {},
+    raiseCallError["Unknown option(s) `Names`.", <|"Names" -> unknown|>]
+  ];
+  {rules, names}
+];
+
+checkArgumentTypes[action_String, args_Association] := With[{types = $argumentTypes[action]},
+  KeyValueMap[
+    Function[{name, value}, With[{pattern = types[name]},
+      If[!MatchQ[value, pattern],
+        raiseCallError["Invalid type for option `Name`. Expected `Type`.",
+          <|"Name" -> name, "Type" -> ToString[pattern, InputForm]|>]
+      ]
+    ]],
+    args
+  ]
 ];
 
 diagnosticText[diag_Association] := With[
@@ -159,6 +189,8 @@ callUnchecked[name_String, arguments_Association] := Module[{result, tag, report
   ];
   result = $call[<|"Action" -> name, "Arguments" -> arguments|>];
   If[!AssociationQ[result],
+    (* A transport failure can leave the cached LibraryFunction unusable. *)
+    If[Head[$call] === LibraryFunction, Quiet[LibraryFunctionUnload[$call]]; $call = Null];
     With[{t = MathemeLibraryError},
       Raise[t, <|
         "MessageTemplate" -> "The matheme library returned an unexpected result for `Operation`.",
@@ -185,14 +217,13 @@ callFunction[name_String] := callFunction[name, <||>];
 callFunction[name_String, arguments_Association] :=
   Handle[_Failure] @ callUnchecked[name, arguments];
 
-callWithRules[action_String, _String, arg_Association] :=
-  callFunction[action, arg];
-callWithRules[action_String, _String, opts : ((_Rule | _RuleDelayed) .. | {(_Rule | _RuleDelayed) ...})] :=
-  callFunction[action, Association[opts]];
-callWithRules[_String, displayName_String, other_] :=
-  makeCallFailure[
-    "`Name` expects an Association or rules; got `Type`.",
-    <|"Name" -> displayName, "Type" -> Head[other]|>
+checkedArgumentRules[action_String, raw_List] :=
+  Handle[_Failure] @ Module[{rules, names, args},
+    {rules, names} = checkOptionRules[raw, Keys[$argumentTypes[action]]];
+    names = DeleteDuplicates[names];
+    args = If[names === {}, <||>, AssociationThread[names, OptionValue[rules, names]]];
+    checkArgumentTypes[action, args];
+    callUnchecked[action, args]
   ];
 
 MathemeClose[] := If[Head[$call] === LibraryFunction,

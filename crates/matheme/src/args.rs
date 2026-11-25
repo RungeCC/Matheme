@@ -26,11 +26,18 @@ use crate::call::{self, Failure};
 /// Decode a single Wolfram Language expression into a typed Rust value.
 pub trait FromExpr: Sized {
     fn from_expr(expr: &Expr) -> Result<Self, String>;
+
+    /// Wolfram pattern for the accepted wire types. Constraints stay in the decoder.
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String;
 }
 
 /// Decode a Wolfram Language argument association into a structured input type.
 pub trait FromArgs: Sized {
     fn parse_args(entries: &[Entry<'_>]) -> Result<Self, Failure>;
+
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_arguments() -> Vec<(&'static str, String)>;
 }
 
 /// Ensure an action taking no arguments was given an empty Association.
@@ -53,6 +60,11 @@ pub fn named<T>(expr: &Expr, parse: impl Fn(&str) -> Option<T>, what: &str) -> R
 // ---------------------------------------------------------------------------
 
 impl FromExpr for String {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        "_String".into()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         expr.as_str()
             .map(str::to_owned)
@@ -61,6 +73,11 @@ impl FromExpr for String {
 }
 
 impl FromExpr for bool {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        "True | False".into()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         expr.as_bool()
             .ok_or_else(|| "expected True or False".into())
@@ -68,6 +85,11 @@ impl FromExpr for bool {
 }
 
 impl FromExpr for i64 {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        "_Integer".into()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         expr.as_i64()
             .ok_or_else(|| "expected a WL Integer".into())
@@ -75,6 +97,11 @@ impl FromExpr for i64 {
 }
 
 impl FromExpr for usize {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        i64::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         let value = i64::from_expr(expr)?;
         if value < 0 {
@@ -85,6 +112,11 @@ impl FromExpr for usize {
 }
 
 impl FromExpr for NonZeroUsize {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        i64::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         let value = i64::from_expr(expr)?;
         if value < 1 {
@@ -98,6 +130,11 @@ impl FromExpr for NonZeroUsize {
 }
 
 impl FromExpr for char {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        String::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         let text = String::from_expr(expr)?;
         let mut chars = text.chars();
@@ -112,12 +149,22 @@ impl FromExpr for char {
 }
 
 impl FromExpr for PathBuf {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        String::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         String::from_expr(expr).map(PathBuf::from)
     }
 }
 
 impl<T: FromExpr> FromExpr for Vec<T> {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        format!("{{RepeatedNull[{}]}}", T::wl_pattern())
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         let items = expr
             .as_list()
@@ -127,6 +174,11 @@ impl<T: FromExpr> FromExpr for Vec<T> {
 }
 
 impl<T: FromExpr> FromExpr for Option<T> {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        T::wl_pattern()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         T::from_expr(expr).map(Some)
     }
@@ -141,6 +193,11 @@ impl<T: FromExpr> FromExpr for Option<T> {
 pub struct AllOr<T>(pub Option<T>);
 
 impl<T: FromExpr> FromExpr for AllOr<T> {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        format!("All | {}", T::wl_pattern())
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::ALL) {
             Ok(Self(None))
@@ -155,6 +212,11 @@ impl<T: FromExpr> FromExpr for AllOr<T> {
 pub struct AssocExpr(pub Expr);
 
 impl FromExpr for AssocExpr {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        "_Association".into()
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.as_association().is_none() {
             return Err("expected an Association".into());
@@ -174,28 +236,17 @@ impl<T> Default for Resettable<T> {
 }
 
 impl<T: FromExpr> FromExpr for Resettable<T> {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        format!("Null | {}", T::wl_pattern())
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::NULL) {
             Ok(Self(Update::Reset))
         } else {
             T::from_expr(expr).map(|v| Self(Update::Set(v)))
         }
-    }
-}
-
-/// A settings patch field that only accepts `T` (does not accept `Null`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetOnly<T>(pub Update<T>);
-
-impl<T> Default for SetOnly<T> {
-    fn default() -> Self {
-        Self(Update::Keep)
-    }
-}
-
-impl<T: FromExpr> FromExpr for SetOnly<T> {
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        T::from_expr(expr).map(|v| Self(Update::Set(v)))
     }
 }
 
@@ -224,6 +275,11 @@ macro_rules! wl_args {
         }
 
         impl $crate::args::FromArgs for $name {
+            #[cfg(any(test, feature = "option-schema"))]
+            fn wl_arguments() -> Vec<(&'static str, String)> {
+                vec![$(($key, <$ty as $crate::args::FromExpr>::wl_pattern())),*]
+            }
+
             fn parse_args(
                 entries: &[matheme_wl::Entry<'_>],
             ) -> Result<Self, $crate::call::Failure> {
@@ -301,6 +357,15 @@ macro_rules! wl_actions {
         }
 
         impl $enum_name {
+            #[cfg(any(test, feature = "option-schema"))]
+            pub fn wl_actions() -> impl Iterator<Item = (&'static str, Vec<(&'static str, String)>)> {
+                [
+                    $(
+                        ($action_name, $crate::wl_actions!(@wl_args $($args)?)),
+                    )*
+                ].into_iter()
+            }
+
             #[allow(dead_code)]
             pub const ALL_NAMES: &'static [&'static str] = &[
                 $( $action_name, )*
@@ -340,6 +405,13 @@ macro_rules! wl_actions {
                 }
             }
         }
+    };
+
+    (@wl_args $args:ty) => {
+        <$args as $crate::args::FromArgs>::wl_arguments()
+    };
+    (@wl_args) => {
+        Vec::new()
     };
 
     (@parse $action_name:literal, $variant:ident, $args:ty ; $entries:ident) => {

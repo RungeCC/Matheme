@@ -44,6 +44,11 @@ fn font_counts_entry(scan: bool) -> Rule {
 pub struct CacheTargets(pub CacheSelection);
 
 impl FromExpr for CacheTargets {
+    #[cfg(any(test, feature = "option-schema"))]
+    fn wl_pattern() -> String {
+        format!("All | {}", Vec::<String>::wl_pattern())
+    }
+
     fn from_expr(expr: &Expr) -> Result<Self, String> {
         if expr.is_symbol(&Symbol::ALL) {
             return Ok(Self(CacheSelection::all()));

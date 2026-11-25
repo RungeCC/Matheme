@@ -1,11 +1,11 @@
 [package]
 name = "matheme-wstp"
-version = "0.1.0"
-edition = "2021"
-publish = false
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
 license.workspace = true
 
 [dependencies]
-matheme-wl = { path = "../matheme-wl" }
-wolfram-expr = "0.6.0"
-wstp = "0.6.0"
+matheme-wl.workspace = true
+wolfram-expr.workspace = true
+wstp.workspace = true
