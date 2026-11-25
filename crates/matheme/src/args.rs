@@ -23,7 +23,6 @@ use crate::call::{self, Failure};
 pub trait FromArgs: Sized {
     fn parse_args(entries: &[Entry<'_>]) -> Result<Self, Failure>;
 
-    #[cfg(any(test, feature = "option-schema"))]
     fn wl_arguments() -> Vec<(&'static str, String)>;
 }
 
@@ -131,7 +130,6 @@ macro_rules! wl_args {
         }
 
         impl $crate::args::FromArgs for $name {
-            #[cfg(any(test, feature = "option-schema"))]
             fn wl_arguments() -> Vec<(&'static str, String)> {
                 vec![$(($key, matheme_wl::decode::Decoder::pattern(&$decoder))),*]
             }
@@ -213,7 +211,6 @@ macro_rules! wl_actions {
         }
 
         impl $enum_name {
-            #[cfg(any(test, feature = "option-schema"))]
             pub fn wl_actions() -> impl Iterator<Item = (&'static str, Vec<(&'static str, String)>)> {
                 [
                     $(

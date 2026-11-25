@@ -9,13 +9,6 @@ license.workspace = true
 name = "matheme"
 crate-type = ["cdylib", "rlib"]
 
-[features]
-option-schema = []
-
-[[bin]]
-name = "matheme-option-schema"
-required-features = ["option-schema"]
-
 [dependencies]
 matheme-graphics.workspace = true
 matheme-world.workspace = true

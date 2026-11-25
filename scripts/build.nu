@@ -53,20 +53,18 @@ def main [
         ^nu $setup_script
     }
 
+    # Cargo builds the library and runs the schema generator; the generated
+    # ArgumentTypes.wl is consumed by the package and by the completion step.
     if ($jobs != null) {
-        ^cargo build --release -p matheme --features option-schema -j $jobs
+        ^cargo build --release -p matheme -j $jobs
+        ^cargo run --quiet --release -p matheme --bin matheme-option-schema -j $jobs
     } else {
-        ^cargo build --release -p matheme --features option-schema
+        ^cargo build --release -p matheme
+        ^cargo run --quiet --release -p matheme --bin matheme-option-schema
     }
-    let generator = if $nu.os-info.name == "windows" {
-        "matheme-option-schema.exe"
-    } else {
-        "matheme-option-schema"
-    }
-    ^($ROOT | path join "target" "release" $generator)
 
-    # FrontEnd completions are generated from the WL sources (Core.wl
-    # $displayNames, the generated ArgumentTypes.wl, and WL option defaults).
+    # FrontEnd completions come from the loaded package, the generated
+    # ArgumentTypes.wl, and the WL-only positional data in CompletionData.wl.
     if (which wolframscript | is-empty) {
         print --stderr "wolframscript is required to generate specialArgFunctions.tr."
         exit 1
