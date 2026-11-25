@@ -2,10 +2,10 @@
 
 use std::f64::consts::{PI, TAU};
 
-use matheme_wl::{fundamental, graphics, list, normal, rule, Expr};
+use matheme_wl::{Expr, fundamental, graphics, list, normal, rule};
 
-use super::curves::{instanced_expr, point_expr, rgba_expr, stroke_directives};
 use super::WlEncoder;
+use super::curves::{instanced_expr, point_expr, rgba_expr, stroke_directives};
 use crate::geometry::{subpaths_axis_aligned_rect, subpaths_ctrl_bounds, subpaths_oriented_rect};
 use crate::ir::{
     GradientPaint, GradientSpread, GradientStop, PaintStyle, Rgba, StrokeStyle, Subpath,
@@ -110,8 +110,7 @@ impl WlEncoder {
                         filled_curve,
                     ]),
                     Some(stroke_style) => {
-                        let fill_group =
-                            list![self.edge_form_none.clone(), fill_dir, filled_curve];
+                        let fill_group = list![self.edge_form_none.clone(), fill_dir, filled_curve];
                         let mut stroke_group = stroke_directives(stroke_style, plot_width);
                         for sp in &valid_paths {
                             stroke_group.push(self.build_joined_curve_expr(sp));
@@ -284,11 +283,9 @@ impl WlEncoder {
         let mut tile_exprs = Vec::with_capacity(tiling.primitives.len() + 1);
         let mut inner_has_texture = false;
         for prim in &tiling.primitives {
-            if let Some(e) = self.primitive_to_expr(
-                prim,
-                (px1 - px0).abs().max(1e-6),
-                &mut inner_has_texture,
-            ) {
+            if let Some(e) =
+                self.primitive_to_expr(prim, (px1 - px0).abs().max(1e-6), &mut inner_has_texture)
+            {
                 tile_exprs.push(e);
             }
         }
@@ -300,7 +297,11 @@ impl WlEncoder {
         }
         let tile_graphics = self.sub_graphics_for_texture(tile_exprs, [[px0, px1], [py0, py1]]);
         Some((
-            normal!(&graphics::PATTERN_FILLING, tile_graphics, list![step_w, step_h]),
+            normal!(
+                &graphics::PATTERN_FILLING,
+                tile_graphics,
+                list![step_w, step_h]
+            ),
             false,
         ))
     }
@@ -314,7 +315,12 @@ fn gradient_fill_directive(grad: &GradientPaint, ctrl_bounds: [[f64; 2]; 2]) -> 
     let black_face = || {
         normal!(
             &graphics::FACE_FORM,
-            rgba_expr(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+            rgba_expr(Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0
+            }),
         )
     };
 
@@ -330,7 +336,10 @@ fn gradient_fill_directive(grad: &GradientPaint, ctrl_bounds: [[f64; 2]; 2]) -> 
             }
             let g_norm = gvec[0].hypot(gvec[1]);
             if g_norm <= 1e-12 {
-                return (normal!(&graphics::FACE_FORM, rgba_expr(stops[0].color)), false);
+                return (
+                    normal!(&graphics::FACE_FORM, rgba_expr(stops[0].color)),
+                    false,
+                );
             }
             let dx = gvec[0] / g_norm;
             let dy = gvec[1] / g_norm;

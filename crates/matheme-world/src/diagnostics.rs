@@ -7,11 +7,11 @@
 
 use std::ops::Range;
 
+use typst::World;
 use typst::diag::{Severity, SourceDiagnostic};
 use typst::syntax::{DiagSpan, DiagSpanKind, FileId, Spanned};
-use typst::World;
 use typst_kit::diagnostics::{
-    emit as emit_diagnostics, termcolor, DiagnosticFormat, DiagnosticWorld,
+    DiagnosticFormat, DiagnosticWorld, emit as emit_diagnostics, termcolor,
 };
 
 use crate::world::MathemeWorld;

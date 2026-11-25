@@ -552,9 +552,11 @@ pub(crate) fn translate_subpaths_into(
             .iter()
             .map(|seg| match *seg {
                 Segment::Line([x, y]) => Segment::Line([x + dx, y + dy]),
-                Segment::Cubic([c1x, c1y], [c2x, c2y], [px, py]) => {
-                    Segment::Cubic([c1x + dx, c1y + dy], [c2x + dx, c2y + dy], [px + dx, py + dy])
-                }
+                Segment::Cubic([c1x, c1y], [c2x, c2y], [px, py]) => Segment::Cubic(
+                    [c1x + dx, c1y + dy],
+                    [c2x + dx, c2y + dy],
+                    [px + dx, py + dy],
+                ),
             })
             .collect();
         out.push(Subpath {
@@ -693,7 +695,12 @@ mod tests {
     #[test]
     fn analytical_line_stroke_bbox_respects_cap_style_without_overexpanding_butt() {
         let butt = StrokeStyle {
-            color: Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            color: Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
             thickness: 6.0,
             cap: LineCapStyle::Butt,
             join: LineJoinStyle::Miter,
@@ -710,14 +717,20 @@ mod tests {
             "butt cap y: {b:?}"
         );
 
-        let square = StrokeStyle { cap: LineCapStyle::Square, ..butt.clone() };
+        let square = StrokeStyle {
+            cap: LineCapStyle::Square,
+            ..butt.clone()
+        };
         let sq = line_stroke_bbox(Point::new(0.0, 10.0), Point::new(40.0, 10.0), &square);
         assert!(
             (sq.x0 - (-3.0)).abs() < 1e-6 && (sq.x1 - 43.0).abs() < 1e-6,
             "square cap x: {sq:?}"
         );
 
-        let round = StrokeStyle { cap: LineCapStyle::Round, ..butt };
+        let round = StrokeStyle {
+            cap: LineCapStyle::Round,
+            ..butt
+        };
         let rd = line_stroke_bbox(Point::new(0.0, 10.0), Point::new(40.0, 10.0), &round);
         assert!(
             (rd.x0 - (-3.0)).abs() < 1e-6 && (rd.x1 - 43.0).abs() < 1e-6,
@@ -737,7 +750,10 @@ mod tests {
             ],
             closed: true,
         }];
-        assert_eq!(subpaths_axis_aligned_rect(&rect), Some([[10.0, 110.0], [20.0, 60.0]]));
+        assert_eq!(
+            subpaths_axis_aligned_rect(&rect),
+            Some([[10.0, 110.0], [20.0, 60.0]])
+        );
 
         let ang = 30.0_f64.to_radians();
         let (c, s) = (ang.cos(), ang.sin());

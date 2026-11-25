@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use matheme_world::{evict_caches, font_cache, FontCache, MathemeWorld};
+use criterion::{Criterion, criterion_group, criterion_main};
+use matheme_world::{FontCache, MathemeWorld, evict_caches, font_cache};
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime, Dict, Duration as TypstDuration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
@@ -141,7 +141,13 @@ fn bench_world_overhead(c: &mut Criterion) {
     });
 
     group.bench_function("matheme_world_new_heavy_src", |b| {
-        b.iter(|| black_box(MathemeWorld::new(heavy_src.clone(), Dict::new(), base.clone())));
+        b.iter(|| {
+            black_box(MathemeWorld::new(
+                heavy_src.clone(),
+                Dict::new(),
+                base.clone(),
+            ))
+        });
     });
 
     group.finish();
@@ -208,5 +214,9 @@ fn bench_world_compile_strategies(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_world_overhead, bench_world_compile_strategies);
+criterion_group!(
+    benches,
+    bench_world_overhead,
+    bench_world_compile_strategies
+);
 criterion_main!(benches);

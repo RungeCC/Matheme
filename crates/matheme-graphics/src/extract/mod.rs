@@ -17,15 +17,19 @@ use std::num::NonZeroUsize;
 
 use kurbo::{Affine, BezPath, Point, Rect, Shape as _, StrokeOpts};
 use typst::foundations::Smart;
-use typst::layout::{Abs, Frame, FrameItem, FrameKind, GroupItem, PageRanges, Ratio, Size, Transform};
-use typst::visualize::{FixedStroke, Geometry, LineCap, LineJoin, Paint, RelativeTo, Shape, Tiling};
+use typst::layout::{
+    Abs, Frame, FrameItem, FrameKind, GroupItem, PageRanges, Ratio, Size, Transform,
+};
+use typst::visualize::{
+    FixedStroke, Geometry, LineCap, LineJoin, Paint, RelativeTo, Shape, Tiling,
+};
 use typst_layout::{Page, PagedDocument};
 
 use crate::geometry::{
-    affine_from_typst, affine_stroke_scale, axis_aligned_rect_stroke_bbox, bez_path_hash,
-    bez_path_to_subpaths, curve_to_bez_path, is_axis_aligned_rect, kurbo_stroke_from_style,
-    line_stroke_bbox, rect_bez_path, strip_translation, stroke_bounding_box, stroke_hash,
-    subpaths_ctrl_bounds, BoundsTracker,
+    BoundsTracker, affine_from_typst, affine_stroke_scale, axis_aligned_rect_stroke_bbox,
+    bez_path_hash, bez_path_to_subpaths, curve_to_bez_path, is_axis_aligned_rect,
+    kurbo_stroke_from_style, line_stroke_bbox, rect_bez_path, strip_translation,
+    stroke_bounding_box, stroke_hash, subpaths_ctrl_bounds,
 };
 use crate::paint::typst_gradient_to_paint;
 use crate::winding::{self, WindingResolution};
@@ -470,7 +474,10 @@ impl Extractor {
                     parent,
                     false,
                 );
-                (None, Some((convert_stroke_geometry(s, stroke_scale), paint)))
+                (
+                    None,
+                    Some((convert_stroke_geometry(s, stroke_scale), paint)),
+                )
             }
         };
 
@@ -648,7 +655,11 @@ fn push_painted_stroke(
     );
 }
 
-fn shape_self_container(shape: &Shape, item_affine: Affine, include_stroke: bool) -> (Affine, Size) {
+fn shape_self_container(
+    shape: &Shape,
+    item_affine: Affine,
+    include_stroke: bool,
+) -> (Affine, Size) {
     let bbox = shape.bbox(include_stroke);
     let mut offset = bbox.min;
     let mut size = bbox.size();
@@ -682,10 +693,7 @@ pub(super) fn convert_stroke_geometry(stroke: &FixedStroke, scale: f64) -> Strok
     };
     let dash = stroke.dash.as_ref().map(|d| {
         let phase = d.phase.to_pt() * s;
-        (
-            d.array.iter().map(|len| len.to_pt() * s).collect(),
-            phase,
-        )
+        (d.array.iter().map(|len| len.to_pt() * s).collect(), phase)
     });
     StrokeStyle {
         color: Rgba {

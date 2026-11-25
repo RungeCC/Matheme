@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use matheme_bench::{compile_doc, doc_academic_multipage, doc_compile_evaluate};
 use matheme_graphics::{export_vector, pages_to_expr};
 use matheme_world::compile::{self, CompileRequest, EvaluateSpec, OutputFormat, PdfStandards};
-use matheme_world::{font_cache, font_generation, WorldDate};
+use matheme_world::{WorldDate, font_cache, font_generation};
 use matheme_wstp::resolve_unqualified_symbol;
 use typst::foundations::Dict;
 

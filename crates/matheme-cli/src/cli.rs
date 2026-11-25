@@ -277,8 +277,15 @@ mod tests {
     #[test]
     fn compile_options_deserialize_to_typst_types() {
         let cli = Cli::try_parse_from([
-            "matheme", "compile", "doc.typ", "--format", "PDF",
-            "--pdf-standard", "A-2B", "--features", "A11yExtras",
+            "matheme",
+            "compile",
+            "doc.typ",
+            "--format",
+            "PDF",
+            "--pdf-standard",
+            "A-2B",
+            "--features",
+            "A11yExtras",
         ])
         .expect("valid CLI options");
         let Command::Compile(cmd) = cli.command else {
@@ -287,7 +294,11 @@ mod tests {
         assert_eq!(cmd.format, Some(OutputFormat::Pdf));
         assert_eq!(cmd.pdf_standards, vec![PdfStandard::A_2b]);
         assert_eq!(cmd.features, vec![Feature::A11yExtras]);
-        for (flag, value) in [("--pdf-standard", "bogus"), ("--features", "bogus"), ("--pages", "3-2")] {
+        for (flag, value) in [
+            ("--pdf-standard", "bogus"),
+            ("--features", "bogus"),
+            ("--pages", "3-2"),
+        ] {
             assert!(Cli::try_parse_from(["matheme", "compile", "doc.typ", flag, value]).is_err());
         }
     }

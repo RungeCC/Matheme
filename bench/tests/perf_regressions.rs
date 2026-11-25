@@ -10,12 +10,12 @@ use matheme_bench::{
     doc_winding_dense_self_intersecting, doc_winding_slow_stars,
 };
 use matheme_graphics::{
-    cache_generation, clear_caches, export_vector, pages_to_expr, DegradationWarning,
+    DegradationWarning, cache_generation, clear_caches, export_vector, pages_to_expr,
 };
 use matheme_world::compile::{
-    self, parse_page_str, CompileOutput, CompileRequest, EvaluateSpec, OutputFormat, PdfStandards,
+    self, CompileOutput, CompileRequest, EvaluateSpec, OutputFormat, PdfStandards, parse_page_str,
 };
-use matheme_world::{font_generation, WorldDate};
+use matheme_world::{WorldDate, font_generation};
 use matheme_wstp::resolve_unqualified_symbol;
 use typst::foundations::Dict;
 

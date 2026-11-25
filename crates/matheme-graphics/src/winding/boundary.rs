@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::{Point, Rect, Vec2};
 
-use super::intersect::{seg_bbox, segment_split_pair, RingIndex};
-use super::{Ring, ScaleTol, MAX_WINDING_RESOLVE_EDGES, MAX_WINDING_SPLIT_EDGES};
+use super::intersect::{RingIndex, seg_bbox, segment_split_pair};
+use super::{MAX_WINDING_RESOLVE_EDGES, MAX_WINDING_SPLIT_EDGES, Ring, ScaleTol};
 use crate::ir::{Segment, Subpath};
 
 pub(super) type VKey = (i64, i64);

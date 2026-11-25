@@ -125,12 +125,10 @@ impl<'a> Converter<'a> {
     }
 
     fn module(&mut self, module: &Module, depth: usize) -> Expr {
-        let bindings = Expr::association(
-            module
-                .scope()
-                .iter()
-                .map(|(name, binding)| Rule::new(name.as_str(), self.value(binding.read(), depth))),
-        );
+        let bindings =
+            Expr::association(module.scope().iter().map(|(name, binding)| {
+                Rule::new(name.as_str(), self.value(binding.read(), depth))
+            }));
         assoc! {
             "Type" -> "Module",
             "Name" -> module.name().map(|n| n.as_str()),
@@ -243,7 +241,14 @@ fn color_expr(color: &Color) -> Expr {
 }
 
 fn datetime_expr(dt: Datetime) -> Expr {
-    match (dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second()) {
+    match (
+        dt.year(),
+        dt.month(),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+    ) {
         (Some(y), Some(m), Some(d), Some(h), Some(min), Some(s)) => normal!(
             &Symbol::DATE_OBJECT,
             list![
@@ -305,10 +310,7 @@ mod tests {
         assert_eq!(convert(&Value::Int(42)).0.as_i64(), Some(42));
         assert_eq!(convert(&Value::Float(2.5)).0.as_f64(), Some(2.5));
         assert_eq!(convert(&Value::Float(f64::NAN)).0, Symbol::INDETERMINATE);
-        assert_eq!(
-            convert(&Value::Str(Str::from("hi"))).0.as_str(),
-            Some("hi")
-        );
+        assert_eq!(convert(&Value::Str(Str::from("hi"))).0.as_str(), Some("hi"));
     }
 
     #[test]
@@ -358,7 +360,10 @@ mod tests {
         let (len, _) = convert(&Value::Length(Abs::pt(12.0).into()));
         let normal = len.as_normal().expect("Quantity");
         assert!(normal.has_head(&Symbol::QUANTITY));
-        assert_eq!(normal.get(1).and_then(Expr::as_str), Some("DesktopPublishingPoints"));
+        assert_eq!(
+            normal.get(1).and_then(Expr::as_str),
+            Some("DesktopPublishingPoints")
+        );
 
         let (em_len, _) = convert(&Value::Length(Em::new(1.5).into()));
         let em_entries = em_len.as_association().expect("assoc");
@@ -398,17 +403,21 @@ mod tests {
     fn non_finite_compound_values_do_not_panic() {
         let (fr_inf, _) = convert(&Value::Fraction(Fr::new(f64::INFINITY)));
         let fr_entries = fr_inf.as_association().expect("Fraction assoc");
-        assert!(field(&fr_entries, "Value")
-            .as_normal()
-            .is_some_and(|n| n.has_head(&Symbol::DIRECTED_INFINITY)));
+        assert!(
+            field(&fr_entries, "Value")
+                .as_normal()
+                .is_some_and(|n| n.has_head(&Symbol::DIRECTED_INFINITY))
+        );
 
         let (ang_inf, _) = convert(&Value::Angle(Angle::deg(f64::INFINITY)));
         let ang_n = ang_inf.as_normal().expect("Quantity");
         assert!(ang_n.has_head(&Symbol::QUANTITY));
-        assert!(ang_n
-            .get(0)
-            .and_then(Expr::as_normal)
-            .is_some_and(|n| n.has_head(&Symbol::DIRECTED_INFINITY)));
+        assert!(
+            ang_n
+                .get(0)
+                .and_then(Expr::as_normal)
+                .is_some_and(|n| n.has_head(&Symbol::DIRECTED_INFINITY))
+        );
 
         let (len_inf, _) = convert(&Value::Length(Abs::pt(f64::NEG_INFINITY).into()));
         let len_n = len_inf.as_normal().expect("Quantity");

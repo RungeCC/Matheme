@@ -9,23 +9,23 @@ use std::sync::{Arc, LazyLock, Mutex};
 use kurbo::{Affine, BezPath, Point, Rect};
 use ttf_parser::{GlyphId, OutlineBuilder};
 use typst::layout::{Abs, Ratio, Size, Transform};
-use typst::text::color::{glyph_frame, should_outline, GlyphFrameItem};
+use typst::text::color::{GlyphFrameItem, glyph_frame, should_outline};
 use typst::text::{Font, FontInstance, TextItem};
 use typst::visualize::Paint;
 
 use super::{
-    convert_solid_stroke, convert_stroke_geometry, push_painted_stroke, Extractor, ParentContext,
+    Extractor, ParentContext, convert_solid_stroke, convert_stroke_geometry, push_painted_stroke,
 };
 use crate::geometry::{
-    affine_from_typst, affine_stroke_scale, bez_path_to_subpaths, strip_translation,
+    BoundsTracker, affine_from_typst, affine_stroke_scale, bez_path_to_subpaths, strip_translation,
     stroke_bounding_box, stroke_hash, subpaths_to_bez_path, transform_subpaths_and_bbox,
-    translate_subpaths_into, BoundsTracker,
+    translate_subpaths_into,
 };
 use crate::ir::{
     GlyphInstances, GlyphKey, Rgba, StrokeStyle, Subpath, UnitGlyphKey, VectorPrimitive,
     WindingRule,
 };
-use crate::lru::{lock_unpoisoned, LruCache};
+use crate::lru::{LruCache, lock_unpoisoned};
 use crate::winding::{self, WindingResolution};
 
 /// Shared upper bound across all glyph cache tiers (unit outlines, scaled
@@ -232,7 +232,11 @@ fn outline_glyph_unit(font: &FontInstance, key: UnitGlyphKey) -> CachedUnitGlyph
             };
         }
         let mut builder = BezOutlineBuilder::default();
-        if font.ttf().outline_glyph(GlyphId(key.glyph_id), &mut builder).is_none() {
+        if font
+            .ttf()
+            .outline_glyph(GlyphId(key.glyph_id), &mut builder)
+            .is_none()
+        {
             return CachedUnitGlyph {
                 subpaths: None,
                 winding_degraded: false,
@@ -281,7 +285,11 @@ fn outline_glyph_unit(font: &FontInstance, key: UnitGlyphKey) -> CachedUnitGlyph
 impl Extractor {
     fn font_run_key(&mut self, font: &FontInstance) -> FontRunKey {
         let base = font.font();
-        let ptr_key = (base.data().as_ptr() as usize, base.data().len(), base.index());
+        let ptr_key = (
+            base.data().as_ptr() as usize,
+            base.data().len(),
+            base.index(),
+        );
         let font_hash = *self
             .font_content_hashes
             .entry(ptr_key)

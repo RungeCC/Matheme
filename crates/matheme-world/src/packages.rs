@@ -24,7 +24,7 @@ use typst::syntax::package::VersionlessPackageSpec;
 use typst_kit::downloader::Downloader;
 use typst_kit::packages::{FsPackages, SystemPackages, UniversePackages};
 
-use crate::cache::{read_unpoisoned, write_unpoisoned, LazyCache};
+use crate::cache::{LazyCache, read_unpoisoned, write_unpoisoned};
 use crate::settings::{self, Settings};
 
 /// Upper bound when buffering `/preview/index.json` in memory (32 MiB).
@@ -342,7 +342,8 @@ impl Downloader for GatedDownloader {
             // typst caches the index inside `UniversePackages`; buffer the very
             // same response to keep a parsed copy for queries. Re-serving the
             // bytes means this is not a second request.
-            let mut bytes = Vec::with_capacity(size.unwrap_or(0).min(MAX_UNIVERSE_INDEX_BYTES as usize));
+            let mut bytes =
+                Vec::with_capacity(size.unwrap_or(0).min(MAX_UNIVERSE_INDEX_BYTES as usize));
             reader
                 .take(MAX_UNIVERSE_INDEX_BYTES + 1)
                 .read_to_end(&mut bytes)?;
@@ -432,7 +433,9 @@ fn build(settings: &Settings) -> PackageRuntime {
 
 /// Validate a proxy URL without constructing the full runtime.
 pub fn validate_proxy(proxy: &str) -> Result<(), String> {
-    ureq::Proxy::new(proxy).map(|_| ()).map_err(|err| format!("invalid proxy {proxy:?}: {err}"))
+    ureq::Proxy::new(proxy)
+        .map(|_| ())
+        .map_err(|err| format!("invalid proxy {proxy:?}: {err}"))
 }
 
 static PACKAGES: LazyCache<PackageRuntime> = LazyCache::new();
@@ -496,7 +499,12 @@ pub fn prefetch_universe_index() -> Result<usize, String> {
         .packages
         .universe()
         .latest_version(&spec)
-        .map(|_| runtime.metadata.universe().map_or(0, |entries| entries.len()))
+        .map(|_| {
+            runtime
+                .metadata
+                .universe()
+                .map_or(0, |entries| entries.len())
+        })
         .map_err(|err| err.to_string())
 }
 

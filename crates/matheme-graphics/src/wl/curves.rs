@@ -2,14 +2,14 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use matheme_wl::{fundamental, graphics, list, normal, Expr};
+use matheme_wl::{Expr, fundamental, graphics, list, normal};
 
 use super::WlEncoder;
-use crate::extract::{cache_generation, GLYPH_CACHE_CAPACITY};
+use crate::extract::{GLYPH_CACHE_CAPACITY, cache_generation};
 use crate::ir::{
     GlyphInstances, GlyphKey, LineCapStyle, LineJoinStyle, Rgba, Segment, StrokeStyle, Subpath,
 };
-use crate::lru::{lock_unpoisoned, LruCache};
+use crate::lru::{LruCache, lock_unpoisoned};
 
 #[derive(Clone)]
 pub(super) struct CachedGlyphExpr {
@@ -50,7 +50,8 @@ impl WlEncoder {
         let segs_expr = Expr::list(all_segs);
         let pts_expr = Expr::list(all_pts);
         let filled = normal!(&graphics::FILLED_CURVE, segs_expr.clone(), pts_expr.clone());
-        let joined = need_joined.then(|| joined_curve_from_encoded(segs_expr, pts_expr, closed_flags));
+        let joined =
+            need_joined.then(|| joined_curve_from_encoded(segs_expr, pts_expr, closed_flags));
         (filled, joined)
     }
 
@@ -81,7 +82,10 @@ impl WlEncoder {
         }
 
         let (filled, joined) = match existing_filled {
-            Some(filled) => (filled, Some(self.build_joined_curve_expr(&instance.subpaths))),
+            Some(filled) => (
+                filled,
+                Some(self.build_joined_curve_expr(&instance.subpaths)),
+            ),
             None => self.build_curve_exprs(&instance.subpaths, need_joined),
         };
 
@@ -118,7 +122,9 @@ impl WlEncoder {
     ) -> Option<Expr> {
         let valid_inputs: Vec<&GlyphInstances> = glyphs
             .iter()
-            .filter(|g| !g.positions.is_empty() && g.subpaths.iter().any(|s| !s.segments.is_empty()))
+            .filter(|g| {
+                !g.positions.is_empty() && g.subpaths.iter().any(|s| !s.segments.is_empty())
+            })
             .collect();
         if valid_inputs.is_empty() {
             return None;

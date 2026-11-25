@@ -476,10 +476,14 @@ pub fn rasterize_gradient_texture(
     }
 
     let (w, h) = if cw >= ch {
-        let h = ((ch / cw) * max_dim as f64).round().clamp(16.0, max_dim as f64) as usize;
+        let h = ((ch / cw) * max_dim as f64)
+            .round()
+            .clamp(16.0, max_dim as f64) as usize;
         (max_dim, h)
     } else {
-        let w = ((cw / ch) * max_dim as f64).round().clamp(16.0, max_dim as f64) as usize;
+        let w = ((cw / ch) * max_dim as f64)
+            .round()
+            .clamp(16.0, max_dim as f64) as usize;
         (w, max_dim)
     };
 
@@ -583,23 +587,49 @@ mod tests {
     use std::f64::consts::{FRAC_PI_2, PI};
 
     fn red() -> Rgba {
-        Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }
+        Rgba {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        }
     }
     fn green() -> Rgba {
-        Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }
+        Rgba {
+            r: 0.0,
+            g: 1.0,
+            b: 0.0,
+            a: 1.0,
+        }
     }
     fn blue() -> Rgba {
-        Rgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 }
+        Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 1.0,
+            a: 1.0,
+        }
     }
     fn yellow() -> Rgba {
-        Rgba { r: 1.0, g: 1.0, b: 0.0, a: 1.0 }
+        Rgba {
+            r: 1.0,
+            g: 1.0,
+            b: 0.0,
+            a: 1.0,
+        }
     }
 
     #[test]
     fn linear_projection_clips_out_of_unit_stops_accurately() {
         let stops = vec![
-            GradientStop { offset: 0.0, color: red() },
-            GradientStop { offset: 1.0, color: blue() },
+            GradientStop {
+                offset: 0.0,
+                color: red(),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: blue(),
+            },
         ];
         let proj = project_linear_stops_to_unit(&stops, -0.5, 2.0, GradientSpread::Pad);
         assert_eq!(proj.stops.len(), 2);
@@ -614,11 +644,26 @@ mod tests {
     #[test]
     fn conic_cw_from_left_maps_cardinal_directions_for_wl_ccw() {
         let stops = vec![
-            GradientStop { offset: 0.0, color: red() },
-            GradientStop { offset: 0.25, color: green() },
-            GradientStop { offset: 0.5, color: blue() },
-            GradientStop { offset: 0.75, color: yellow() },
-            GradientStop { offset: 1.0, color: red() },
+            GradientStop {
+                offset: 0.0,
+                color: red(),
+            },
+            GradientStop {
+                offset: 0.25,
+                color: green(),
+            },
+            GradientStop {
+                offset: 0.5,
+                color: blue(),
+            },
+            GradientStop {
+                offset: 0.75,
+                color: yellow(),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: red(),
+            },
         ];
         let wl = map_conic_stops_to_wl(&stops, PI, true);
         assert_eq!(wl.len(), 5);

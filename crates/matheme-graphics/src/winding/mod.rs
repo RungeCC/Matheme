@@ -17,7 +17,7 @@ mod intersect;
 use kurbo::{Point, Rect};
 
 use crate::ir::{Segment, Subpath};
-use boundary::{extract_nonzero_boundary, ExtractError};
+use boundary::{ExtractError, extract_nonzero_boundary};
 use flatten::{flatten_subpaths, refine_rings};
 use intersect::{bboxes_overlap, is_evenodd_equivalent, seg_bbox, segments_intersect};
 
@@ -108,9 +108,7 @@ pub(crate) fn resolve_nonzero_subpaths(subpaths: &[Subpath]) -> WindingResolutio
     // O(1) zero-allocation fast path for a single closed linear triangle or quad.
     if closed_count == 1 {
         let sp = &subpaths[single_closed_idx];
-        if sp.segments.len() <= 4
-            && sp.segments.iter().all(|s| matches!(s, Segment::Line(_)))
-        {
+        if sp.segments.len() <= 4 && sp.segments.iter().all(|s| matches!(s, Segment::Line(_))) {
             if let Some(simple) = check_small_linear_polygon_simple(sp) {
                 if simple {
                     return WindingResolution::Unchanged;
@@ -242,7 +240,7 @@ fn subpaths_extent(subpaths: &[Subpath]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boundary::{stitch_boundary_loops, DirectedEdge};
+    use boundary::{DirectedEdge, stitch_boundary_loops};
     use intersect::RingIndex;
 
     fn evenodd_winding(subpaths: &[Subpath], pt: [f64; 2]) -> i32 {

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use matheme_wl::Expr;
 
-use crate::{EvalOutput, Link, WstpError, WstpLink, DEFAULT_HANDSHAKE_MAX_PACKETS};
+use crate::{DEFAULT_HANDSHAKE_MAX_PACKETS, EvalOutput, Link, WstpError, WstpLink};
 
 /// Error returned by [`KernelSession`] operations.
 pub type KernelError = WstpError;
@@ -83,7 +83,7 @@ System`Null
 /// `$Context` / `$ContextPath` (persisting any `Needs[...]` / `Begin[...]`
 /// changes) while letting the kernel return under the isolated wire context.
 fn isolated_eval_expr(wl_code: &str) -> Expr {
-    use matheme_wl::{list, normal, Symbol};
+    use matheme_wl::{Symbol, list, normal};
     let ctx_var = Symbol::from_static("Runge`Matheme`WSTP`$Context");
     let path_var = Symbol::from_static("Runge`Matheme`WSTP`$ContextPath");
     let sys_ctx = Symbol::from_static("System`$Context");
@@ -114,13 +114,7 @@ impl KernelSession {
                 // WSTP launch syntax quotes the executable path inside -linkname.
                 let path_str = kernel_path.to_string_lossy();
                 let linkname = format!("\"{path_str}\" -wstp");
-                let argv = [
-                    "matheme",
-                    "-linkmode",
-                    "launch",
-                    "-linkname",
-                    &linkname,
-                ];
+                let argv = ["matheme", "-linkmode", "launch", "-linkname", &linkname];
                 let mut link = Link::open_with_args(&argv).map_err(|err| {
                     KernelError::transport(format!(
                         "failed to launch Wolfram kernel ({path_str}): {err}"
@@ -292,7 +286,10 @@ mod tests {
     fn owned_session_exits_once() {
         let mut policy = ExitPolicy::owned();
         assert!(policy.take_exit(), "first close/drop should send Exit[]");
-        assert!(!policy.take_exit(), "subsequent drop must not resend Exit[]");
+        assert!(
+            !policy.take_exit(),
+            "subsequent drop must not resend Exit[]"
+        );
     }
 
     #[test]

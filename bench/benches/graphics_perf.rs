@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use matheme_bench::{
     compile_doc, doc_academic_multipage, doc_glyph_cache_churn, doc_stroked_shapes,
     doc_winding_dense_self_intersecting, doc_winding_fast_curves, doc_winding_simple_polys,

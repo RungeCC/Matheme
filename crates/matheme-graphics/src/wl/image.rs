@@ -7,10 +7,10 @@
 //! (`BinaryDeserialize[ByteArray[...]]`), avoiding both per-pixel expression
 //! allocation and Wolfram's slow `ImportByteArray` pipeline.
 
-use matheme_wl::{fundamental, graphics, list, normal, Expr};
+use matheme_wl::{Expr, fundamental, graphics, list, normal};
 
-use super::curves::point_expr;
 use super::WlEncoder;
+use super::curves::point_expr;
 use crate::ir::{EmbeddedImageFormat, ImagePayload, RasterPixels};
 
 impl WlEncoder {

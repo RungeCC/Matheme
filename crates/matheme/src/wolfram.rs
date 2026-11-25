@@ -12,11 +12,11 @@ use std::sync::OnceLock;
 
 use wolfram_library_link::{
     rtl,
-    wstp::{sys as wstp_sys, Link},
+    wstp::{Link, sys as wstp_sys},
 };
 
 use matheme_wl::Expr;
-use matheme_wstp::{install, EvalOptions, WstpError, WstpLink};
+use matheme_wstp::{EvalOptions, WstpError, WstpLink, install};
 
 static INSTALLATION_DIR: OnceLock<PathBuf> = OnceLock::new();
 static HOST_FONTS_SET: OnceLock<()> = OnceLock::new();
@@ -44,7 +44,8 @@ pub fn dll_info() -> DllInfo {
     #[cfg(test)]
     let library_link_runtime: Option<i64> = library_data.map(|_| 0);
     #[cfg(not(test))]
-    let library_link_runtime = library_data.map(|data| unsafe { (*data.raw_library_data).VersionNumber });
+    let library_link_runtime =
+        library_data.map(|data| unsafe { (*data.raw_library_data).VersionNumber });
     #[cfg(test)]
     let wstp_runtime: Option<(i64, i64, i64)> = None;
     #[cfg(not(test))]
@@ -81,9 +82,11 @@ fn evaluate(link: &mut Link, query: &Expr) -> Result<Expr, WstpError> {
         .eval_with(query, EvalOptions::library_link(), |raw_link| {
             let processed = unsafe { rtl::processWSLINK(raw_link.raw_link().cast()) };
             if processed == 0 {
-                Err(WstpError::transport(raw_link.error_message().unwrap_or_else(
-                    || "unknown error processing WSTP link".into(),
-                )))
+                Err(WstpError::transport(
+                    raw_link
+                        .error_message()
+                        .unwrap_or_else(|| "unknown error processing WSTP link".into()),
+                ))
             } else {
                 Ok(())
             }

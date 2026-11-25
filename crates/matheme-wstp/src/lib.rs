@@ -134,10 +134,7 @@ pub use install::wolfram_truetype_font_dir;
 pub enum WstpError {
     /// Low-level WSTP transport or encoding error (preserving WSTP error code
     /// when available).
-    Transport {
-        code: Option<i32>,
-        message: String,
-    },
+    Transport { code: Option<i32>, message: String },
     /// Unexpected WSTP packet or malformed envelope.
     Protocol(String),
     /// Exceeded the configured maximum packet count before receiving a return packet.

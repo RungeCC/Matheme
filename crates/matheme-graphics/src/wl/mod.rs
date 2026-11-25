@@ -7,7 +7,7 @@ mod paint;
 #[cfg(test)]
 mod tests;
 
-use matheme_wl::{fundamental, graphics, list, normal, Expr};
+use matheme_wl::{Expr, fundamental, graphics, list, normal};
 
 use crate::ir::{ClipRegion, Rgba, StrokeStyle, Subpath, VectorPage, VectorPrimitive};
 
@@ -99,7 +99,13 @@ impl WlEncoder {
                 fill,
                 stroke,
                 ..
-            } => self.paths_to_expr(paths, fill.as_ref(), stroke.as_ref(), plot_width, has_texture),
+            } => self.paths_to_expr(
+                paths,
+                fill.as_ref(),
+                stroke.as_ref(),
+                plot_width,
+                has_texture,
+            ),
             VectorPrimitive::Line { start, end, stroke } => {
                 let mut group = curves::stroke_directives(stroke, plot_width);
                 group.push(normal!(

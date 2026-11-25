@@ -73,7 +73,9 @@ pub fn doc_winding_slow_stars(star_count: usize, points: usize) -> String {
     for idx in 0..star_count {
         let ox = (idx % 4) * 95 + 45;
         let oy = (idx / 4) * 95 + 45;
-        s.push_str("#place(dx: 0pt, dy: 0pt, polygon(fill: rgb(\"#2563eb\"), fill-rule: \"non-zero\"");
+        s.push_str(
+            "#place(dx: 0pt, dy: 0pt, polygon(fill: rgb(\"#2563eb\"), fill-rule: \"non-zero\"",
+        );
         for k in 0..points {
             let v = (k * step) % points;
             let angle = std::f64::consts::TAU * (v as f64) / (points as f64);

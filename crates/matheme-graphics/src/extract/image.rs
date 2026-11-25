@@ -11,7 +11,7 @@ use typst::visualize::{Image, ImageKind, RasterImage};
 use typst_svg::WebImage;
 
 use super::Extractor;
-use crate::geometry::{affine_from_typst, include_transformed_box, BoundsTracker};
+use crate::geometry::{BoundsTracker, affine_from_typst, include_transformed_box};
 use crate::ir::{EmbeddedImageFormat, ImagePayload, RasterPixels, VectorPrimitive};
 
 /// Extract top-down 8-bit row-major pixels directly from Typst's already-decoded

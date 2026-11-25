@@ -1,9 +1,9 @@
 //! Wolfram Language serialization for [`matheme_world::diagnostics`].
 
-use matheme_wl::{assoc, Expr};
+use matheme_wl::{Expr, assoc};
 
 pub use matheme_world::diagnostics::{
-    format_line, warning, Diagnostic, DiagnosticSource, Location,
+    Diagnostic, DiagnosticSource, Location, format_line, warning,
 };
 
 fn location_expr(location: &Option<Location>) -> Expr {

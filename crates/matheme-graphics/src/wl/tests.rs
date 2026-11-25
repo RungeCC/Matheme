@@ -137,8 +137,7 @@ fn encodes_decoded_raster_as_bottom_up_numeric_array_without_import() {
         height: 2,
         channels: 4,
         data: Arc::from(vec![
-            255, 0, 0, 255, 0, 255, 0, 255,
-            0, 0, 255, 255, 255, 255, 0, 128,
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 128,
         ]),
     };
     let page = VectorPage {
@@ -167,13 +166,7 @@ fn encodes_decoded_raster_as_bottom_up_numeric_array_without_import() {
     );
 
     // Inspect the NumericArray inside the first Raster primitive directly.
-    let elems = expr
-        .as_normal()
-        .unwrap()
-        .get(0)
-        .unwrap()
-        .as_list()
-        .unwrap();
+    let elems = expr.as_normal().unwrap().get(0).unwrap().as_list().unwrap();
     let raster0 = elems[0].as_normal().expect("Raster");
     assert!(raster0.has_head(&graphics::RASTER));
     let na = raster0
@@ -186,13 +179,21 @@ fn encodes_decoded_raster_as_bottom_up_numeric_array_without_import() {
     // Bottom-up row 0 must be original row 1 (Blue, Yellow); row 1 must be Red, Green.
     assert_eq!(
         bytes,
-        &[0, 0, 255, 255, 255, 255, 0, 128, 255, 0, 0, 255, 0, 255, 0, 255]
+        &[
+            0, 0, 255, 255, 255, 255, 0, 128, 255, 0, 0, 255, 0, 255, 0, 255
+        ]
     );
 
     // Second primitive is rotated -> wrapped in GeometricTransformation[Raster[...], ...].
     let gt = elems[1].as_normal().expect("GeometricTransformation");
     assert!(gt.has_head(&graphics::GEOMETRIC_TRANSFORMATION));
-    assert!(gt.get(0).unwrap().as_normal().unwrap().has_head(&graphics::RASTER));
+    assert!(
+        gt.get(0)
+            .unwrap()
+            .as_normal()
+            .unwrap()
+            .has_head(&graphics::RASTER)
+    );
 }
 
 #[test]
@@ -210,11 +211,21 @@ fn encodes_gradients_tiling_and_dash_phase_natively() {
     let stops = vec![
         GradientStop {
             offset: 0.0,
-            color: Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+            color: Rgba {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
         },
         GradientStop {
             offset: 1.0,
-            color: Rgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+            color: Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0,
+                a: 1.0,
+            },
         },
     ];
     let page = VectorPage {
@@ -276,7 +287,12 @@ fn encodes_gradients_tiling_and_dash_phase_natively() {
                 start: [0.0, 50.0],
                 end: [100.0, 50.0],
                 stroke: StrokeStyle {
-                    color: Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                    color: Rgba {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
                     thickness: 2.0,
                     cap: LineCapStyle::Round,
                     join: LineJoinStyle::Miter,
@@ -288,10 +304,22 @@ fn encodes_gradients_tiling_and_dash_phase_natively() {
     };
     let expr = page_to_expr(&page);
     let rendered = expr.to_string();
-    assert!(rendered.contains("System`LinearGradientFilling"), "{rendered}");
-    assert!(rendered.contains("System`RadialGradientFilling"), "{rendered}");
-    assert!(rendered.contains("System`ConicGradientFilling"), "{rendered}");
-    assert!(rendered.contains("System`Texture[System`Image["), "{rendered}");
+    assert!(
+        rendered.contains("System`LinearGradientFilling"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("System`RadialGradientFilling"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("System`ConicGradientFilling"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("System`Texture[System`Image["),
+        "{rendered}"
+    );
     assert!(
         rendered.contains("System`Dashing[{0.1, 0.05}, 0.03, \"Round\"]"),
         "{rendered}"
@@ -338,15 +366,30 @@ fn rectangular_conic_tiling_uses_pure_vector_inset_without_texture() {
     let stops = vec![
         GradientStop {
             offset: 0.0,
-            color: Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+            color: Rgba {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
         },
         GradientStop {
             offset: 0.5,
-            color: Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
+            color: Rgba {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: 1.0,
+            },
         },
         GradientStop {
             offset: 1.0,
-            color: Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+            color: Rgba {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
         },
     ];
     let tile_prim = VectorPrimitive::Paths {
@@ -375,7 +418,12 @@ fn rectangular_conic_tiling_uses_pure_vector_inset_without_texture() {
             paths: vec![vec![rect_sp]],
             fill: Some(PaintStyle::Tiling(Box::new(tiling))),
             stroke: Some(StrokeStyle {
-                color: Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                color: Rgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
                 thickness: 1.0,
                 cap: LineCapStyle::Butt,
                 join: LineJoinStyle::Miter,
@@ -387,7 +435,10 @@ fn rectangular_conic_tiling_uses_pure_vector_inset_without_texture() {
     };
     let rendered = page_to_expr(&page).to_string();
     assert!(rendered.contains("System`Inset"), "{rendered}");
-    assert!(rendered.contains("System`ConicGradientFilling"), "{rendered}");
+    assert!(
+        rendered.contains("System`ConicGradientFilling"),
+        "{rendered}"
+    );
     assert!(
         !rendered.contains("System`Texture"),
         "axis-aligned rectangular tiling must not rasterize via Texture: {rendered}"
@@ -422,7 +473,11 @@ fn glyph_expr_cache_invalidates_on_world_cache_generation() {
 
     let encoder = WlEncoder::new();
     let _ = encoder.cached_glyph_expr(&inst, false);
-    assert!(lock_unpoisoned(&GLYPH_EXPR_CACHE).entries.contains_key(&key));
+    assert!(
+        lock_unpoisoned(&GLYPH_EXPR_CACHE)
+            .entries
+            .contains_key(&key)
+    );
     clear_glyph_cache();
     let (_, joined) = encoder.cached_glyph_expr(&inst, true);
     assert!(joined.is_some());

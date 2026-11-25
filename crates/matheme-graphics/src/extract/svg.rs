@@ -8,11 +8,12 @@ use typst::foundations::Bytes;
 use typst::layout::{Abs, Size};
 
 use super::{
-    push_painted_stroke, push_resolved_paths, DegradationWarnings, Extractor, MAX_TILING_DEPTH,
+    DegradationWarnings, Extractor, MAX_TILING_DEPTH, push_painted_stroke, push_resolved_paths,
 };
 use crate::geometry::{
-    affine_from_usvg, affine_stroke_scale, bez_path_to_subpaths, include_transformed_box,
-    is_axis_aligned_rect, strip_translation, subpaths_ctrl_bounds, usvg_path_to_bez, BoundsTracker,
+    BoundsTracker, affine_from_usvg, affine_stroke_scale, bez_path_to_subpaths,
+    include_transformed_box, is_axis_aligned_rect, strip_translation, subpaths_ctrl_bounds,
+    usvg_path_to_bez,
 };
 use crate::ir::{
     ClipRegion, EmbeddedImageFormat, GradientPaint, GradientSpread, GradientStop, ImagePayload,
@@ -42,7 +43,12 @@ impl Extractor {
                 let stops = usvg_stops_to_ir(g.stops(), opacity);
                 if stops.len() <= 1 {
                     return PaintStyle::Solid(stops.first().map_or(
-                        Rgba { r: 0.0, g: 0.0, b: 0.0, a: opacity },
+                        Rgba {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: opacity,
+                        },
                         |s| s.color,
                     ));
                 }
@@ -71,7 +77,12 @@ impl Extractor {
                 let stops = usvg_stops_to_ir(g.stops(), opacity);
                 if stops.len() <= 1 {
                     return PaintStyle::Solid(stops.first().map_or(
-                        Rgba { r: 0.0, g: 0.0, b: 0.0, a: opacity },
+                        Rgba {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: opacity,
+                        },
                         |s| s.color,
                     ));
                 }
@@ -239,7 +250,12 @@ impl Extractor {
                             let style = usvg_stroke_with_color(
                                 s,
                                 stroke_scale,
-                                Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                                Rgba {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 1.0,
+                                },
                             );
                             (None, Some((style, paint)))
                         }
@@ -416,8 +432,7 @@ fn collect_usvg_clip_paths(
                     match winding::resolve_nonzero_subpaths(&raw) {
                         WindingResolution::Unchanged => out_subpaths.extend(raw),
                         WindingResolution::Resolved(resolved) => out_subpaths.extend(resolved),
-                        WindingResolution::BudgetExceeded
-                        | WindingResolution::ExtractionFailed => {
+                        WindingResolution::BudgetExceeded | WindingResolution::ExtractionFailed => {
                             warnings.winding = true;
                             out_subpaths.extend(raw);
                         }

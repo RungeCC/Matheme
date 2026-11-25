@@ -55,7 +55,10 @@ fn flatten_linear_subpath(
     let before = rings.len();
     flush_ring(&mut pts, rings, tol, true);
     if rings.len() > before {
-        *total_vertices += rings[before..].iter().map(|r| r.points.len()).sum::<usize>();
+        *total_vertices += rings[before..]
+            .iter()
+            .map(|r| r.points.len())
+            .sum::<usize>();
     }
     *total_vertices <= vertex_budget
 }
@@ -111,7 +114,10 @@ fn flatten_cubic_subpath(
     }
     flush_ring(&mut pts, rings, tol, false);
     if rings.len() > before {
-        *total_vertices += rings[before..].iter().map(|r| r.points.len()).sum::<usize>();
+        *total_vertices += rings[before..]
+            .iter()
+            .map(|r| r.points.len())
+            .sum::<usize>();
     }
     *total_vertices <= vertex_budget
 }
@@ -220,8 +226,7 @@ fn flush_ring(pts: &mut Vec<Point>, rings: &mut Vec<Ring>, tol: ScaleTol, is_lin
     }
 
     let bbox = Rect::new(x0, y0, x1, y1);
-    if (0.5 * area2).abs() <= tol.area_eps
-        && (bbox.width() <= tol.eps || bbox.height() <= tol.eps)
+    if (0.5 * area2).abs() <= tol.area_eps && (bbox.width() <= tol.eps || bbox.height() <= tol.eps)
     {
         pts.clear();
         return;

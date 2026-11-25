@@ -15,7 +15,7 @@ use matheme_world::compile::{
 };
 use matheme_world::query::{FontFilter, PackageFilter, Page};
 use matheme_world::settings::{Patch, Update};
-use matheme_world::{datetime_from_unix, WorldDate};
+use matheme_world::{WorldDate, datetime_from_unix};
 use matheme_wstp::{EvalOutput, KernelSession};
 use typst::foundations::{Dict, Repr, Str, Value};
 
@@ -96,10 +96,7 @@ fn cmd_kernels(explicit: Option<&Path>) -> Result<(), String> {
     for (idx, c) in candidates.iter().enumerate() {
         let marker = if idx == 0 { "*" } else { " " };
         let version = c.version.as_deref().unwrap_or("unknown");
-        println!(
-            "{marker} {} ({version}) [{}]",
-            c.app_name, c.source
-        );
+        println!("{marker} {} ({version}) [{}]", c.app_name, c.source);
         println!("    kernel: {}", c.kernel_path.display());
         if let Some(ref dir) = c.install_dir {
             println!("    install: {}", dir.display());
@@ -161,8 +158,8 @@ fn cmd_eval(cli: &Cli, cmd: &EvalCmd) -> Result<(), String> {
         print_eval_sideband(&out);
     }
 
-    let read_stdin = cmd.expressions.is_empty()
-        || (cmd.expressions.len() == 1 && cmd.expressions[0] == "-");
+    let read_stdin =
+        cmd.expressions.is_empty() || (cmd.expressions.len() == 1 && cmd.expressions[0] == "-");
 
     let run_one = |session: &mut KernelSession, code: &str| -> Result<(), String> {
         match cmd.format {
@@ -172,7 +169,8 @@ fn cmd_eval(cli: &Cli, cmd: &EvalCmd) -> Result<(), String> {
                 println!("{}", out.expr);
             }
             EvalFormat::Typst => {
-                let (val, warnings, out) = eval_to_typst(session, code).map_err(|e| e.to_string())?;
+                let (val, warnings, out) =
+                    eval_to_typst(session, code).map_err(|e| e.to_string())?;
                 print_eval_sideband(&out);
                 for w in warnings {
                     eprintln!("warning: {w}");
@@ -468,14 +466,8 @@ fn write_output(path: &Path, output: &CompileOutput) -> Result<(), String> {
                 fs::write(path, content)
                     .map_err(|e| format!("failed to write {}: {e}", path.display()))
             } else {
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("page");
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("svg");
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("page");
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("svg");
                 let parent = path.parent().unwrap_or_else(|| Path::new(""));
                 for (idx, svg) in pages.iter().enumerate() {
                     let page_path = parent.join(format!("{stem}-{}.{ext}", idx + 1));

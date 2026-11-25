@@ -85,7 +85,12 @@ fn candidate_from_install_dir(
     let kernel_names: &[&str] = if cfg!(windows) {
         &["WolframKernel.exe", "MathKernel.exe"]
     } else {
-        &["Executables/WolframKernel", "WolframKernel", "Executables/MathKernel", "MathKernel"]
+        &[
+            "Executables/WolframKernel",
+            "WolframKernel",
+            "Executables/MathKernel",
+            "MathKernel",
+        ]
     };
     let kernel_path = kernel_names
         .iter()
@@ -121,7 +126,9 @@ fn parse_numeric_version(name: &str) -> Option<Vec<u64>> {
     if name.is_empty() {
         return None;
     }
-    name.split('.').map(|part| part.parse::<u64>().ok()).collect()
+    name.split('.')
+        .map(|part| part.parse::<u64>().ok())
+        .collect()
 }
 
 fn compare_version_names(a: &str, b: &str) -> Ordering {
@@ -175,7 +182,12 @@ fn find_in_standard_dirs() -> Vec<KernelCandidate> {
             .into_iter()
             .filter_map(std::env::var_os)
             .map(|p| PathBuf::from(p).join("Wolfram Research"));
-        let products = ["Wolfram", "Mathematica", "Wolfram Engine", "Wolfram Desktop"];
+        let products = [
+            "Wolfram",
+            "Mathematica",
+            "Wolfram Engine",
+            "Wolfram Desktop",
+        ];
         scan_product_dirs(roots, &products, &mut found);
     }
 
@@ -184,7 +196,10 @@ fn find_in_standard_dirs() -> Vec<KernelCandidate> {
         for (app, name) in [
             ("/Applications/Wolfram.app/Contents", "Wolfram"),
             ("/Applications/Mathematica.app/Contents", "Mathematica"),
-            ("/Applications/Wolfram Engine.app/Contents", "Wolfram Engine"),
+            (
+                "/Applications/Wolfram Engine.app/Contents",
+                "Wolfram Engine",
+            ),
         ] {
             let dir = PathBuf::from(app);
             let kernel = dir.join("MacOS").join("WolframKernel");
@@ -211,9 +226,11 @@ fn find_in_standard_dirs() -> Vec<KernelCandidate> {
             ("/opt/WolframEngine", "WolframEngine"),
             ("/usr/local/Wolfram/WolframEngine", "WolframEngine"),
         ] {
-            if let Some(c) =
-                candidate_from_install_dir(PathBuf::from(dir), name.to_owned(), "standard install dir")
-            {
+            if let Some(c) = candidate_from_install_dir(
+                PathBuf::from(dir),
+                name.to_owned(),
+                "standard install dir",
+            ) {
                 found.push(c);
             }
         }

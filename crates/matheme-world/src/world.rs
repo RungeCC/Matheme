@@ -13,7 +13,7 @@ use typst::{Features, Library, LibraryExt, World};
 use typst_kit::diagnostics::DiagnosticWorld;
 use typst_kit::files::FileStore;
 
-use crate::fonts::{font_cache, FontCache};
+use crate::fonts::{FontCache, font_cache};
 use crate::loader::MathemeLoader;
 
 /// Name shown for the in-memory source string passed from Wolfram.
@@ -194,7 +194,10 @@ mod tests {
     #[test]
     fn unix_epoch_and_modern_dates_convert_accurately() {
         let epoch = datetime_from_unix(0, None).unwrap();
-        assert_eq!((epoch.year(), epoch.month(), epoch.day()), (Some(1970), Some(1), Some(1)));
+        assert_eq!(
+            (epoch.year(), epoch.month(), epoch.day()),
+            (Some(1970), Some(1), Some(1))
+        );
 
         // 2026-11-18T12:00:00Z = 1795003200
         let sample = datetime_from_unix(1_795_003_200, Some(480)).unwrap();

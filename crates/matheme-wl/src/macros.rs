@@ -119,7 +119,7 @@ macro_rules! normal {
 
 #[cfg(test)]
 mod tests {
-    use crate::{fundamental, graphics, Expr, Rule, Symbol};
+    use crate::{Expr, Rule, Symbol, fundamental, graphics};
 
     #[test]
     fn rule_builds_an_immediate_rule() {
@@ -131,7 +131,10 @@ mod tests {
         let as_expr = Expr::from(sym_rule);
         let n = as_expr.as_normal().expect("Rule expr");
         assert!(n.has_head(&Symbol::RULE));
-        assert_eq!(n.get(0).and_then(Expr::as_symbol), Some("System`ImagePadding"));
+        assert_eq!(
+            n.get(0).and_then(Expr::as_symbol),
+            Some("System`ImagePadding")
+        );
         assert_eq!(n.get(1).and_then(Expr::as_symbol), Some("System`None"));
     }
 
@@ -214,7 +217,12 @@ mod tests {
         assert!(n0.has_head(&graphics::GRAPHICS));
         assert!(n0.is_empty());
 
-        let plain = crate::normal!(&graphics::DASHING, crate::list![0.1_f64, 0.05_f64], 0.03_f64, "Round");
+        let plain = crate::normal!(
+            &graphics::DASHING,
+            crate::list![0.1_f64, 0.05_f64],
+            0.03_f64,
+            "Round"
+        );
         let np = plain.as_normal().expect("plain normal");
         assert!(np.has_head(&graphics::DASHING));
         assert_eq!(np.len(), 3);
@@ -233,7 +241,10 @@ mod tests {
         assert_eq!(nw.len(), 4);
         let opt1 = nw.get(1).unwrap().as_normal().expect("Rule");
         assert!(opt1.has_head(&Symbol::RULE));
-        assert_eq!(opt1.get(0).and_then(Expr::as_symbol), Some("System`ImageSize"));
+        assert_eq!(
+            opt1.get(0).and_then(Expr::as_symbol),
+            Some("System`ImageSize")
+        );
         let opt2 = nw.get(2).unwrap().as_normal().expect("Rule");
         assert_eq!(opt2.get(1).and_then(Expr::as_bool), Some(true));
         let opt3 = nw.get(3).unwrap().as_normal().expect("Rule");

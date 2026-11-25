@@ -28,8 +28,8 @@
 //! 4. OS fonts.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use typst::text::{Font, FontBook, FontInfo};
 use typst::utils::LazyHash;
