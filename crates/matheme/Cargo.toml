@@ -22,4 +22,5 @@ matheme-world.workspace = true
 matheme-wl.workspace = true
 matheme-wstp.workspace = true
 wolfram-library-link.workspace = true
+serde.workspace = true
 typst.workspace = true

@@ -1,14 +1,16 @@
 //! Cache lifecycle endpoints: `ClearMathemeCache`, `MathemeWarmup`,
 //! `MathemeReloadFonts`, `MathemeReloadPackages`, and `MathemeClose`.
 
-use matheme_wl::{rule, rules, Expr, Rule, Symbol};
+use matheme_wl::{Expr, Rule, Symbol, rule, rules};
 use matheme_world::{self as world, CacheSelection};
 
-use crate::args::FromExpr;
+use crate::args::schema;
 use crate::call::{Answer, Outcome};
 use crate::diagnostics::DiagnosticSource;
 use crate::settings;
 use crate::wl_args;
+use matheme_wl::decode::{self, Decoder};
+use serde::Deserialize;
 
 pub(crate) fn package_entries(status: &world::PackageStatus) -> Vec<Rule> {
     rules! [
@@ -40,56 +42,46 @@ fn font_counts_entry(scan: bool) -> Rule {
 // ClearMathemeCache
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CacheTargets(pub CacheSelection);
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CacheTarget {
+    All,
+    Fonts,
+    Packages,
+    Memoization,
+}
 
-impl FromExpr for CacheTargets {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        format!("All | {}", Vec::<String>::wl_pattern())
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::ALL) {
-            return Ok(Self(CacheSelection::all()));
-        }
-        let items = expr
-            .as_list()
-            .ok_or_else(|| "must be All or a List of strings".to_owned())?;
-        let mut selection = CacheSelection::default();
-        for item in items {
-            let name = String::from_expr(item)?;
-            if name.eq_ignore_ascii_case("all") {
-                selection = CacheSelection::all();
-            } else if name.eq_ignore_ascii_case("fonts") {
-                selection.fonts = true;
-            } else if name.eq_ignore_ascii_case("packages") {
-                selection.packages = true;
-            } else if name.eq_ignore_ascii_case("memoization") {
-                selection.memoization = true;
-            } else {
-                return Err(format!(
-                    "unknown cache target {name:?}; expected Fonts, Packages, Memoization, or All"
-                ));
+fn cache_targets() -> impl Decoder<Value = CacheSelection> {
+    let target = schema::enumeration(|name| schema::parse_name(name, "cache target"));
+    decode::symbol(Symbol::ALL)
+        .map(|()| CacheSelection::all())
+        .or(decode::list(target).map(|targets| {
+            let mut selection = CacheSelection::default();
+            for target in targets {
+                match target {
+                    CacheTarget::All => return CacheSelection::all(),
+                    CacheTarget::Fonts => selection.fonts = true,
+                    CacheTarget::Packages => selection.packages = true,
+                    CacheTarget::Memoization => selection.memoization = true,
+                }
             }
-        }
-        Ok(Self(selection))
-    }
+            selection
+        }))
 }
 
 wl_args! {
     #[action = "clearCache"]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ClearCacheArgs {
-        "Targets" => pub targets: CacheTargets = CacheTargets(CacheSelection::all()),
+        "Targets" => pub targets: CacheSelection [cache_targets()] = CacheSelection::all(),
     }
 }
 
 pub fn run_clear(input: ClearCacheArgs) -> Answer {
-    let cleared = world::clear_caches(input.targets.0);
+    let cleared = world::clear_caches(input.targets);
     // Eagerly release cached glyph outlines / WL expressions when Fonts are
     // explicitly cleared (ordinary font reloads auto-invalidate via font_generation).
-    if input.targets.0.fonts {
+    if input.targets.fonts {
         matheme_graphics::clear_caches();
     }
     Outcome::new([rule!(
@@ -106,9 +98,9 @@ wl_args! {
     #[action = "warmup"]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct WarmupArgs {
-        "Fonts" => pub fonts: bool = true,
-        "Packages" => pub packages: bool = true,
-        "PackageIndex" => pub package_index: bool = true,
+        "Fonts" => pub fonts: bool [decode::boolean()] = true,
+        "Packages" => pub packages: bool [decode::boolean()] = true,
+        "PackageIndex" => pub package_index: bool [decode::boolean()] = true,
     }
 }
 
@@ -185,12 +177,12 @@ mod tests {
     #[test]
     fn clear_cache_parses_targets_and_rejects_unknown_keys_after_all() {
         assert_eq!(
-            ClearCacheArgs::parse_args(&[]).unwrap().targets.0,
+            ClearCacheArgs::parse_args(&[]).unwrap().targets,
             CacheSelection::all()
         );
         with_entries([Rule::new("Targets", Symbol::ALL)], |args| {
             assert_eq!(
-                ClearCacheArgs::parse_args(args).unwrap().targets.0,
+                ClearCacheArgs::parse_args(args).unwrap().targets,
                 CacheSelection::all()
             );
         });
@@ -211,7 +203,7 @@ mod tests {
             [Rule::new("Targets", Expr::list(["Fonts", "Memoization"]))],
             |args| {
                 assert_eq!(
-                    ClearCacheArgs::parse_args(args).unwrap().targets.0,
+                    ClearCacheArgs::parse_args(args).unwrap().targets,
                     CacheSelection {
                         fonts: true,
                         packages: false,

@@ -5,54 +5,39 @@
 //! values into [`matheme_world::query`] filters and renders the answers; the
 //! world crate owns the data and all filtering logic.
 
-use matheme_wl::{assoc, rules, Expr, Rule, Symbol};
+use matheme_wl::{Expr, Rule, Symbol, assoc, rules};
 use matheme_world as world;
 use world::query::{
     FontAnswer, FontFace, FontFilter, FontOrigin, PackageAnswer, PackageEntry, PackageFilter,
     PackageOriginFilter, Page, UniverseMetadata,
 };
 
-use crate::args::{self, AllOr, FromExpr};
+use crate::args::schema;
 use crate::call::{Answer, Outcome};
 use crate::diagnostics::DiagnosticSource;
 use crate::wl_args;
+use matheme_wl::decode::{self, Decoder};
 
 /// Default page size. Small enough that a bare `MathemeQueryFonts[]` does not
 /// ship the whole font book over WSTP; `MaxResults -> All` opts out.
 const DEFAULT_LIMIT: usize = 50;
 
-impl FromExpr for FontOrigin {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        String::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        args::named(expr, Self::parse, "font source")
-    }
-}
-
-impl FromExpr for PackageOriginFilter {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        String::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        args::named(expr, Self::parse, "package origin")
-    }
+fn query_limit() -> impl Decoder<Value = Option<usize>> {
+    decode::symbol(Symbol::ALL)
+        .map(|()| None)
+        .or(decode::unsigned().map(Some))
 }
 
 wl_args! {
     #[action = "queryFonts"]
     #[derive(Debug, Clone)]
     pub struct FontQueryArgs {
-        "Family" => pub family: Option<String> = None,
-        "Source" => pub origin: Option<FontOrigin> = None,
-        "Resident" => pub resident: Option<bool> = None,
-        "Character" => pub character: Option<char> = None,
-        "MaxResults" => pub limit: AllOr<usize> = AllOr(Some(DEFAULT_LIMIT)),
-        "Offset" => pub offset: usize = 0,
+        "Family" => pub family: Option<String> [decode::string().map(Some)] = None,
+        "Source" => pub origin: Option<FontOrigin> [schema::enumeration(str::parse::<FontOrigin>).map(Some)] = None,
+        "Resident" => pub resident: Option<bool> [decode::boolean().map(Some)] = None,
+        "Character" => pub character: Option<char> [decode::character().map(Some)] = None,
+        "MaxResults" => pub limit: Option<usize> [query_limit()] = Some(DEFAULT_LIMIT),
+        "Offset" => pub offset: usize [decode::unsigned()] = 0,
     }
 }
 
@@ -69,7 +54,7 @@ impl FontQueryArgs {
     fn page(&self) -> Page {
         Page {
             offset: self.offset,
-            limit: self.limit.0,
+            limit: self.limit,
         }
     }
 }
@@ -78,14 +63,14 @@ wl_args! {
     #[action = "queryPackages"]
     #[derive(Debug, Clone)]
     pub struct PackageQueryArgs {
-        "Name" => pub name: Option<String> = None,
-        "Namespace" => pub namespace: Option<String> = None,
-        "Origin" => pub origin: Option<PackageOriginFilter> = None,
-        "Version" => pub version: Option<String> = None,
-        "MaxResults" => pub limit: AllOr<usize> = AllOr(Some(DEFAULT_LIMIT)),
-        "Offset" => pub offset: usize = 0,
-        "AllowDownloads" => pub allow_downloads: bool = false,
-        "Refresh" => pub refresh: bool = false,
+        "Name" => pub name: Option<String> [decode::string().map(Some)] = None,
+        "Namespace" => pub namespace: Option<String> [decode::string().map(Some)] = None,
+        "Origin" => pub origin: Option<PackageOriginFilter> [schema::enumeration(str::parse::<PackageOriginFilter>).map(Some)] = None,
+        "Version" => pub version: Option<String> [decode::string().map(Some)] = None,
+        "MaxResults" => pub limit: Option<usize> [query_limit()] = Some(DEFAULT_LIMIT),
+        "Offset" => pub offset: usize [decode::unsigned()] = 0,
+        "AllowDownloads" => pub allow_downloads: bool [decode::boolean()] = false,
+        "Refresh" => pub refresh: bool [decode::boolean()] = false,
     }
 }
 
@@ -102,7 +87,7 @@ impl PackageQueryArgs {
     fn page(&self) -> Page {
         Page {
             offset: self.offset,
-            limit: self.limit.0,
+            limit: self.limit,
         }
     }
 }

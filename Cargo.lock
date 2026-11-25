@@ -1637,6 +1637,7 @@ dependencies = [
  "matheme-wl",
  "matheme-world",
  "matheme-wstp",
+ "serde",
  "typst",
  "wolfram-library-link",
 ]

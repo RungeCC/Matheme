@@ -12,6 +12,7 @@
 //! - [`Symbol`] for `` System` `` symbols.
 
 mod convert;
+pub mod decode;
 mod entry;
 mod expr;
 mod macros;
@@ -22,4 +23,4 @@ pub use convert::{from_typst, to_typst};
 pub use entry::{Entry, Rule};
 pub use expr::Expr;
 pub use normal::Normal;
-pub use symbol::{fundamental, graphics, Symbol};
+pub use symbol::{Symbol, fundamental, graphics};

@@ -80,6 +80,8 @@ optionName[name_String] := name;
 optionName[name_Symbol] := SymbolName[Unevaluated[name]];
 optionName[_] := None;
 
+enumOption[names_List] := _String ? (StringMatchQ[#, Alternatives @@ names, IgnoreCase -> True] &);
+
 checkOptionRules[raw_List, allowed_List] := Module[{rules = Flatten[raw], names, unknown},
   If[!AllTrue[rules, MatchQ[#, _Rule | _RuleDelayed] &],
     raiseCallError["Expected option rules."]

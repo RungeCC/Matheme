@@ -241,6 +241,14 @@ impl Expr {
         normal.has_head(&Symbol::LIST).then(|| normal.elements())
     }
 
+    /// Whether this expression is an association in either wire form.
+    pub fn is_association(&self) -> bool {
+        matches!(self.0.kind(), ExprKind::Association(_))
+            || self
+                .as_normal()
+                .is_some_and(|normal| normal.has_head(&Symbol::ASSOCIATION))
+    }
+
     /// Borrowed association entries from both the WXF `ExprKind::Association`
     /// form and the ``System`Association[System`Rule[…], …]`` form sent over WSTP.
     pub fn as_association(&self) -> Option<Vec<Entry<'_>>> {

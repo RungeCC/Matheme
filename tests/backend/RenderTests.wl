@@ -301,10 +301,15 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
             MathemeCompile["hello", "Pages" -> 2],
             MathemeCompile["hello", "Format" -> "HTML", "Pages" -> 2],
             MathemeCompile["hello", "PDFStandard" -> {42}],
+            MathemeCompile["hello", "PDFStandard" -> "unknown-standard"],
+            MathemeCompile["hello", "PDFStandard" -> {"1.4", "unknown-standard"}],
+            MathemeCompile["hello", "Features" -> "unknown-feature"],
+            MathemeCompile["hello", "Format" -> "unknown-format"],
             MathemeCompile["hello", "Format" -> "SVG", "PDFStandard" -> "1.4"],
             MathemeToGraphics["hello", "Format" -> "HTML"],
             MathemeWarmup["PackageIndxe" -> False],
             MathemeQueryPackages[<|"Ofset" -> 1|>],
+            MathemeQueryFonts["Source" -> "unknown-source"],
             SetMatheme["Proxy" -> False]
           }
         ];
@@ -312,6 +317,20 @@ RunMathemeRenderTests[] := Module[{tests, results, passed, total},
       ],
       True,
       TestID -> "Invalid-Options-Never-Load-Library"
+    ],
+    VerificationTest[
+      Block[{Runge`Matheme`Private`loadFunctions = Function[Null, True],
+          Runge`Matheme`Private`$call = Function[arg,
+            <|"Status" -> "Success", "Arguments" -> arg["Arguments"]|>]},
+        With[{res = MathemeCompile["hello", "PDFStandard" -> {"1.4", "A-1B"},
+            "Features" -> "A11yExtras"]},
+          AssociationQ[res] &&
+            res["Arguments", "PDFStandard"] === {"1.4", "A-1B"} &&
+            res["Arguments", "Features"] === {"A11yExtras"}
+        ]
+      ],
+      True,
+      TestID -> "Generated-Enum-Patterns-Allow-Serde-Names-And-Aliases"
     ],
     VerificationTest[
       Module[{orig = Options[MathemeCompile, "Format"], seen = 0, default, explicit},

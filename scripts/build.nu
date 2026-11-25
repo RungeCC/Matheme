@@ -54,10 +54,16 @@ def main [
     }
 
     if ($jobs != null) {
-        ^cargo build --release -p matheme -j $jobs
+        ^cargo build --release -p matheme --features option-schema -j $jobs
     } else {
-        ^cargo build --release -p matheme
+        ^cargo build --release -p matheme --features option-schema
     }
+    let generator = if $nu.os-info.name == "windows" {
+        "matheme-option-schema.exe"
+    } else {
+        "matheme-option-schema"
+    }
+    ^($ROOT | path join "target" "release" $generator)
 
     let paclet_dir = ($ROOT | path join "output" "Matheme")
     let lib_dir = ($paclet_dir | path join "LibraryResources" $platform.system_id)

@@ -11,6 +11,7 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 use serde::de::IntoDeserializer;
+use typst::World;
 use typst::comemo::Track;
 use typst::diag::{SourceDiagnostic, SourceResult};
 use typst::engine::{Route, Sink, Traced};
@@ -18,10 +19,9 @@ use typst::foundations::{Context, Dict, StyleChain, Target, TargetElem, Value};
 use typst::introspection::Introspector;
 use typst::routines::SpanMode;
 use typst::syntax::{Span, SyntaxMode};
-use typst::World;
-use typst_html::{html, HtmlDocument, HtmlOptions};
-use typst_pdf::{pdf, PdfOptions};
-use typst_svg::{svg, SvgOptions};
+use typst_html::{HtmlDocument, HtmlOptions, html};
+use typst_pdf::{PdfOptions, pdf};
+use typst_svg::{SvgOptions, svg};
 
 pub use typst::layout::{PageRange, PageRanges};
 pub use typst::{Feature, Features};
@@ -284,8 +284,14 @@ enum FeatureName {
 }
 
 pub fn parse_feature(name: &str) -> Result<Feature, String> {
-    FeatureName::deserialize(name.to_ascii_lowercase().as_str().into_deserializer())
+    deserialize_feature(name.to_ascii_lowercase().as_str().into_deserializer())
         .map_err(|_: serde::de::value::Error| format!("unknown Typst feature: {name:?}"))
+}
+
+pub fn deserialize_feature<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Feature, D::Error> {
+    FeatureName::deserialize(deserializer)
 }
 
 pub fn parse_features(names: &[String]) -> Result<Vec<Feature>, String> {
@@ -436,7 +442,10 @@ pub fn compile_paged_with<T, F>(
     export: F,
 ) -> Result<PagedCompileSuccess<T>, CompileFailure>
 where
-    F: FnOnce(&PagedDocument, Option<&PageRanges>) -> Result<(T, Vec<Diagnostic>), Vec<SourceDiagnostic>>,
+    F: FnOnce(
+        &PagedDocument,
+        Option<&PageRanges>,
+    ) -> Result<(T, Vec<Diagnostic>), Vec<SourceDiagnostic>>,
 {
     let features = resolve_features(request.features.clone(), OutputFormat::Pdf);
     let result = compile_document::<PagedDocument, (T, usize, usize), _>(
@@ -827,11 +836,13 @@ mod tests {
         assert_eq!(success.exported_pages, 1);
         assert_eq!(success.total_pages, 1);
         assert_eq!(success.output, 1);
-        assert!(success
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("custom exporter warning")
-                && d.source == DiagnosticSource::Graphics));
+        assert!(
+            success
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("custom exporter warning")
+                    && d.source == DiagnosticSource::Graphics)
+        );
         assert!(
             success
                 .formatted
@@ -883,7 +894,9 @@ mod tests {
         };
         let ok = compile(req).expect("filtered PDF compile");
         match ok.output {
-            CompileOutput::Pdf { pages, total_pages, .. } => {
+            CompileOutput::Pdf {
+                pages, total_pages, ..
+            } => {
                 assert_eq!(pages, 1);
                 assert_eq!(total_pages, 3);
             }

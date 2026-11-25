@@ -80,9 +80,9 @@ All option names are strings. `MathemeToGraphics` shares the same options, with 
 
 Downloads are off by default: use `"AllowDownloads" -> True` per call or `"Downloads" -> True` in the settings. Paged exports report `"Pages"` and `"TotalPages"`; results also carry `Diagnostics` and `FormattedCell` when there are diagnostics.
 
-Call options use Wolfram's `OptionValue` precedence and honor `SetOptions` on the public function. Wolfram checks option names, basic types, and format-level conflicts before loading the library. Rust validates ranges, accepted values, and exporter-specific constraints. Rational and arbitrary-precision real inputs are converted to machine precision with a conversion warning. Integers outside Typst's range become `none` with a warning.
+Call options use Wolfram's `OptionValue` precedence and honor `SetOptions` on the public function. Wolfram checks option names, expression types, Serde enum values, and format-level conflicts before loading the library. Rust validates ranges and exporter-specific constraints. Rational and arbitrary-precision real inputs are converted to machine precision with a conversion warning. Integers outside Typst's range become `none` with a warning.
 
-When Rust argument types change, regenerate `Kernel/ArgumentTypes.wl` with `cargo run -p matheme --features option-schema --bin matheme-option-schema`. The Rust tests check that the generated file is current.
+The paclet build generates `Kernel/ArgumentTypes.wl` from the decoders declared in `wl_args!`. Regenerate it during development with `cargo run -p matheme --features option-schema --bin matheme-option-schema`. The Rust tests check that the generated file is current.
 
 ## Results and errors
 

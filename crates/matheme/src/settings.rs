@@ -6,68 +6,56 @@
 
 use std::path::PathBuf;
 
-use matheme_wl::{assoc, rule, Expr, Symbol};
+use matheme_wl::{Expr, Symbol, assoc, rule};
 use matheme_world::settings::{Patch, Settings as WorldSettings, Update};
 use matheme_world::{self as world, FontCounts};
 
-use crate::args::{FromExpr, Resettable};
 use crate::call::{Answer, Outcome};
 use crate::wl_args;
+use matheme_wl::decode::{self, Decoder};
 
-/// Proxy field value: `Null` or empty string resets the proxy, otherwise sets it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProxyUpdate(pub Update<String>);
-
-impl Default for ProxyUpdate {
-    fn default() -> Self {
-        Self(Update::Keep)
-    }
+fn resettable<T: Decoder>(value: T) -> impl Decoder<Value = Update<T::Value>> {
+    decode::symbol(Symbol::NULL)
+        .map(|()| Update::Reset)
+        .or(value.map(Update::Set))
 }
 
-impl FromExpr for ProxyUpdate {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        Resettable::<String>::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::NULL) {
-            return Ok(Self(Update::Reset));
-        }
-        let text = String::from_expr(expr)?;
-        if text.is_empty() {
-            Ok(Self(Update::Reset))
-        } else {
+fn proxy_update() -> impl Decoder<Value = Update<String>> {
+    decode::symbol(Symbol::NULL)
+        .map(|()| Update::Reset)
+        .or(decode::string().try_map(|text| {
+            if text.is_empty() {
+                return Ok(Update::Reset);
+            }
             world::packages::validate_proxy(&text)?;
-            Ok(Self(Update::Set(text)))
-        }
-    }
+            Ok(Update::Set(text))
+        }))
 }
 
 wl_args! {
     #[action = "setSettings"]
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SettingsPatchArgs {
-        "FontPaths" => pub font_paths: Resettable<Vec<PathBuf>> = Resettable::default(),
-        "SystemFonts" => pub system_fonts: Resettable<bool> = Resettable::default(),
-        "EmbeddedFonts" => pub embedded_fonts: Resettable<bool> = Resettable::default(),
-        "PackagePath" => pub package_data: Resettable<PathBuf> = Resettable::default(),
-        "PackageCache" => pub package_cache: Resettable<PathBuf> = Resettable::default(),
-        "Proxy" => pub proxy: ProxyUpdate = ProxyUpdate::default(),
-        "Downloads" => pub downloads: Resettable<bool> = Resettable::default(),
+        "FontPaths" => pub font_paths: Update<Vec<PathBuf>> [resettable(decode::list(decode::path()))] = Update::Keep,
+        "SystemFonts" => pub system_fonts: Update<bool> [resettable(decode::boolean())] = Update::Keep,
+        "EmbeddedFonts" => pub embedded_fonts: Update<bool> [resettable(decode::boolean())] = Update::Keep,
+        "PackagePath" => pub package_data: Update<PathBuf> [resettable(decode::path())] = Update::Keep,
+        "PackageCache" => pub package_cache: Update<PathBuf> [resettable(decode::path())] = Update::Keep,
+        "Proxy" => pub proxy: Update<String> [proxy_update()] = Update::Keep,
+        "Downloads" => pub downloads: Update<bool> [resettable(decode::boolean())] = Update::Keep,
     }
 }
 
 impl SettingsPatchArgs {
     pub fn into_patch(self) -> Patch {
         Patch {
-            font_paths: self.font_paths.0,
-            system_fonts: self.system_fonts.0,
-            embedded_fonts: self.embedded_fonts.0,
-            package_data: self.package_data.0,
-            package_cache: self.package_cache.0,
-            proxy: self.proxy.0,
-            downloads: self.downloads.0,
+            font_paths: self.font_paths,
+            system_fonts: self.system_fonts,
+            embedded_fonts: self.embedded_fonts,
+            package_data: self.package_data,
+            package_cache: self.package_cache,
+            proxy: self.proxy,
+            downloads: self.downloads,
             reset: false,
         }
     }
@@ -215,7 +203,8 @@ mod tests {
         let err = with_entries([Rule::new("SystemFonts", "yes")], parse).expect_err("wrong type");
         assert_eq!(err.kind, crate::call::ErrorKind::Call);
         assert!(
-            err.message.contains("setSettings.SystemFonts: expected True or False"),
+            err.message
+                .contains("setSettings.SystemFonts: expected True or False"),
             "{}",
             err.message
         );

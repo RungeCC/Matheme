@@ -5,8 +5,8 @@
 //! action declares its schema with [`wl_args!`] and registers itself in the
 //! top-level [`wl_actions!`] enum:
 //!
-//! - [`FromExpr`] acts like `clap`'s `ValueParser`, decoding a single WL
-//!   [`Expr`] into a typed Rust value.
+//! - Exact decoders from `matheme_wl::decode` read argument values and
+//!   describe their Wolfram expression shapes.
 //! - [`FromArgs`] parses an entire argument association in a single pass,
 //!   checking key names *before* values, rejecting unknown keys, duplicate keys,
 //!   and `RuleDelayed` entries uniformly, and attaching `<action>.<key>` context
@@ -15,22 +15,9 @@
 //!   of truth for action names, host-font requirements, argument parsing, and
 //!   dispatch.
 
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
-
-use matheme_wl::{Entry, Expr, Symbol};
-use matheme_world::settings::Update;
+use matheme_wl::Entry;
 
 use crate::call::{self, Failure};
-
-/// Decode a single Wolfram Language expression into a typed Rust value.
-pub trait FromExpr: Sized {
-    fn from_expr(expr: &Expr) -> Result<Self, String>;
-
-    /// Wolfram pattern for the accepted wire types. Constraints stay in the decoder.
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String;
-}
 
 /// Decode a Wolfram Language argument association into a structured input type.
 pub trait FromArgs: Sized {
@@ -49,203 +36,71 @@ pub fn ensure_empty(entries: &[Entry<'_>], action: &str) -> Result<(), Failure> 
     }
 }
 
-/// Parse a named enumeration value from a WL String.
-pub fn named<T>(expr: &Expr, parse: impl Fn(&str) -> Option<T>, what: &str) -> Result<T, String> {
-    let name = String::from_expr(expr)?;
-    parse(&name).ok_or_else(|| format!("unknown {what}: {name:?}"))
-}
+pub(crate) mod schema {
+    use matheme_wl::decode::{self, Decoder};
+    use serde::de::{self, DeserializeOwned, Visitor, value};
 
-// ---------------------------------------------------------------------------
-// Core `FromExpr` implementations
-// ---------------------------------------------------------------------------
-
-impl FromExpr for String {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        "_String".into()
+    pub fn parse_name<T: DeserializeOwned>(name: &str, kind: &str) -> Result<T, String> {
+        T::deserialize(value::StrDeserializer::<value::Error>::new(
+            &name.to_ascii_lowercase(),
+        ))
+        .map_err(|_| format!("unknown {kind}: {name:?}"))
     }
 
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        expr.as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| "expected a WL String".into())
-    }
-}
-
-impl FromExpr for bool {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        "True | False".into()
+    pub fn enumeration<T: DeserializeOwned>(
+        parse: impl Fn(&str) -> Result<T, String>,
+    ) -> impl Decoder<Value = T> {
+        enumeration_with(parse, |deserializer| T::deserialize(deserializer))
     }
 
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        expr.as_bool()
-            .ok_or_else(|| "expected True or False".into())
-    }
-}
-
-impl FromExpr for i64 {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        "_Integer".into()
+    pub fn enumeration_with<T>(
+        parse: impl Fn(&str) -> Result<T, String>,
+        deserialize: impl Fn(EnumNames<'_>) -> Result<T, value::Error>,
+    ) -> impl Decoder<Value = T> {
+        decode::string()
+            .try_map(move |name| parse(&name))
+            .with_pattern(move || enum_pattern_with(&deserialize))
     }
 
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        expr.as_i64()
-            .ok_or_else(|| "expected a WL Integer".into())
+    fn enum_pattern_with<T>(
+        deserialize: impl FnOnce(EnumNames<'_>) -> Result<T, value::Error>,
+    ) -> String {
+        let mut names = &[][..];
+        deserialize(EnumNames(&mut names)).expect("expected a Serde enum with unit variants");
+        let alternatives = names
+            .iter()
+            .map(|name| format!("{name:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("enumOption[{{{alternatives}}}]")
     }
-}
 
-impl FromExpr for usize {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        i64::wl_pattern()
-    }
+    pub struct EnumNames<'a>(&'a mut &'static [&'static str]);
 
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        let value = i64::from_expr(expr)?;
-        if value < 0 {
-            return Err("expected a non-negative Integer".into());
+    impl<'de> de::Deserializer<'de> for EnumNames<'_> {
+        type Error = value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+            Err(de::Error::custom("expected a Serde enum"))
         }
-        usize::try_from(value).map_err(|_| "Integer out of range".into())
-    }
-}
 
-impl FromExpr for NonZeroUsize {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        i64::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        let value = i64::from_expr(expr)?;
-        if value < 1 {
-            return Err("expected a positive Integer".into());
+        fn deserialize_enum<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            variants: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, Self::Error> {
+            *self.0 = variants;
+            let first = variants
+                .first()
+                .ok_or_else(|| de::Error::custom("enum has no variants"))?;
+            visitor.visit_enum(value::StrDeserializer::new(first))
         }
-        usize::try_from(value)
-            .ok()
-            .and_then(NonZeroUsize::new)
-            .ok_or_else(|| "Integer out of range".into())
-    }
-}
 
-impl FromExpr for char {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        String::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        let text = String::from_expr(expr)?;
-        let mut chars = text.chars();
-        let first = chars
-            .next()
-            .ok_or_else(|| "expected a non-empty String".to_owned())?;
-        if chars.next().is_some() {
-            return Err("expected a single character".into());
-        }
-        Ok(first)
-    }
-}
-
-impl FromExpr for PathBuf {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        String::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        String::from_expr(expr).map(PathBuf::from)
-    }
-}
-
-impl<T: FromExpr> FromExpr for Vec<T> {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        format!("{{RepeatedNull[{}]}}", T::wl_pattern())
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        let items = expr
-            .as_list()
-            .ok_or_else(|| "expected a WL List".to_owned())?;
-        items.iter().map(T::from_expr).collect()
-    }
-}
-
-impl<T: FromExpr> FromExpr for Option<T> {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        T::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        T::from_expr(expr).map(Some)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Reusable wrapper types for WL-specific argument idioms
-// ---------------------------------------------------------------------------
-
-/// Either ``System`All`` (represented as `None`) or a typed value `Some(T)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AllOr<T>(pub Option<T>);
-
-impl<T: FromExpr> FromExpr for AllOr<T> {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        format!("All | {}", T::wl_pattern())
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::ALL) {
-            Ok(Self(None))
-        } else {
-            T::from_expr(expr).map(|value| Self(Some(value)))
-        }
-    }
-}
-
-/// An owned `Expr` guaranteed to be a WL Association.
-#[derive(Debug, Clone)]
-pub struct AssocExpr(pub Expr);
-
-impl FromExpr for AssocExpr {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        "_Association".into()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.as_association().is_none() {
-            return Err("expected an Association".into());
-        }
-        Ok(Self(expr.clone()))
-    }
-}
-
-/// A settings patch field that resets to default on `Null`, otherwise sets `T`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resettable<T>(pub Update<T>);
-
-impl<T> Default for Resettable<T> {
-    fn default() -> Self {
-        Self(Update::Keep)
-    }
-}
-
-impl<T: FromExpr> FromExpr for Resettable<T> {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        format!("Null | {}", T::wl_pattern())
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::NULL) {
-            Ok(Self(Update::Reset))
-        } else {
-            T::from_expr(expr).map(|v| Self(Update::Set(v)))
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map struct identifier ignored_any
         }
     }
 }
@@ -256,6 +111,7 @@ impl<T: FromExpr> FromExpr for Resettable<T> {
 
 /// Define a typed argument struct and its single-pass [`FromArgs`] parser.
 ///
+/// Each bracketed decoder reads the value and supplies its Wolfram pattern.
 /// Fields without `= default` are required; fields with `= default` are
 /// optional and fall back to the default expression when omitted.
 #[macro_export]
@@ -265,7 +121,7 @@ macro_rules! wl_args {
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
             $(
-                $key:literal => $fvis:vis $field:ident : $ty:ty $(= $default:expr)?
+                $key:literal => $fvis:vis $field:ident : $ty:ty [$decoder:expr] $(= $default:expr)?
             ),* $(,)?
         }
     ) => {
@@ -277,7 +133,7 @@ macro_rules! wl_args {
         impl $crate::args::FromArgs for $name {
             #[cfg(any(test, feature = "option-schema"))]
             fn wl_arguments() -> Vec<(&'static str, String)> {
-                vec![$(($key, <$ty as $crate::args::FromExpr>::wl_pattern())),*]
+                vec![$(($key, matheme_wl::decode::Decoder::pattern(&$decoder))),*]
             }
 
             fn parse_args(
@@ -301,7 +157,7 @@ macro_rules! wl_args {
                                         $action, key
                                     )));
                                 }
-                                let parsed = <$ty as $crate::args::FromExpr>::from_expr(value_expr)
+                                let parsed = matheme_wl::decode::Decoder::decode(&$decoder, value_expr)
                                     .map_err(|reason| {
                                         $crate::call::error(format!(
                                             "{}.{}: {}",

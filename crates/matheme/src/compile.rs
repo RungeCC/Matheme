@@ -2,74 +2,44 @@
 //!
 //! All Typst compilation, export, evaluation, and diagnostic formatting live in
 //! [`matheme_world::compile`]; this module only decodes WL arguments via
-//! [`wl_args!`] / [`FromExpr`] and marshals results back into WL expressions.
+//! [`wl_args!`] and marshals results back into WL expressions.
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
+use matheme_wl::decode::{self, Decoder};
 use matheme_wl::{Expr, Rule, Symbol, from_typst, rule, to_typst};
 use matheme_world::compile::{
     self, CompileFailure, CompileOutput, CompileRequest, EvaluateSpec, EvaluatedValues, Feature,
     OutputFormat, PageRange, PageRanges, PagedCompileRequest, PdfStandards, Timestamp,
 };
-use matheme_world::{datetime_from_unix, WorldDate};
+use matheme_world::{WorldDate, datetime_from_unix};
+use serde::Deserialize;
 use typst::foundations::Value;
 
-use crate::args::{self, AssocExpr, FromArgs, FromExpr};
+use crate::args::{FromArgs, schema};
 use crate::call::{Answer, Failure, Outcome};
 use crate::diagnostics::{self, DiagnosticSource};
 use crate::wl_args;
 
 // ---------------------------------------------------------------------------
-// `FromExpr` value parsers for `compile` options
+// Value decoders for `compile` options
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CompileFormat {
     #[default]
     Pdf,
     Svg,
     Html,
+    #[serde(alias = "vector")]
     Graphics,
 }
 
-impl CompileFormat {
-    pub fn parse(name: &str) -> Option<Self> {
-        if name.eq_ignore_ascii_case("graphics") || name.eq_ignore_ascii_case("vector") {
-            Some(Self::Graphics)
-        } else {
-            OutputFormat::parse(name).map(Self::from)
-        }
-    }
-}
-
-impl From<OutputFormat> for CompileFormat {
-    fn from(fmt: OutputFormat) -> Self {
-        match fmt {
-            OutputFormat::Pdf => Self::Pdf,
-            OutputFormat::Svg => Self::Svg,
-            OutputFormat::Html => Self::Html,
-        }
-    }
-}
-
-impl FromExpr for CompileFormat {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        String::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        args::named(expr, Self::parse, "output format")
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PagesInput(pub Option<PageRanges>);
-
 fn parse_page_item(expr: &Expr) -> Result<PageRange, String> {
     if expr.as_i64().is_some() {
-        let page = NonZeroUsize::from_expr(expr)?;
+        let page = decode::positive().decode(expr)?;
         return Ok(Some(page)..=Some(page));
     }
     if let Some(normal) = expr.as_normal().filter(|n| n.has_head(&Symbol::SPAN)) {
@@ -77,11 +47,11 @@ fn parse_page_item(expr: &Expr) -> Result<PageRange, String> {
         if elements.len() != 2 {
             return Err("Span in Pages must have two endpoints".into());
         }
-        let lo = NonZeroUsize::from_expr(&elements[0])?;
+        let lo = decode::positive().decode(&elements[0])?;
         let hi = if elements[1].is_symbol(&Symbol::ALL) {
             None
         } else {
-            Some(NonZeroUsize::from_expr(&elements[1])?)
+            Some(decode::positive().decode(&elements[1])?)
         };
         return checked_page_range(Some(lo), hi);
     }
@@ -92,12 +62,12 @@ fn parse_page_item(expr: &Expr) -> Result<PageRange, String> {
         let lo = if pair[0].is_symbol(&Symbol::ALL) || pair[0].is_symbol(&Symbol::NONE) {
             None
         } else {
-            Some(NonZeroUsize::from_expr(&pair[0])?)
+            Some(decode::positive().decode(&pair[0])?)
         };
         let hi = if pair[1].is_symbol(&Symbol::ALL) || pair[1].is_symbol(&Symbol::NONE) {
             None
         } else {
-            Some(NonZeroUsize::from_expr(&pair[1])?)
+            Some(decode::positive().decode(&pair[1])?)
         };
         if lo.is_none() && hi.is_none() {
             return Err("Pages range cannot be unbounded on both ends".into());
@@ -117,27 +87,16 @@ fn checked_page_range(
     Ok(lo..=hi)
 }
 
-impl FromExpr for PagesInput {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        "All | Automatic | _Integer | _String | _Span | _List".into()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::ALL) || expr.is_symbol(&Symbol::AUTOMATIC) {
-            return Ok(Self(None));
-        }
-        if let Some(spec) = expr.as_str() {
-            return compile::parse_page_str(spec).map(|r| Self(Some(r)));
-        }
-        if expr.as_i64().is_some()
-            || expr
-                .as_normal()
-                .is_some_and(|n| n.has_head(&Symbol::SPAN))
-        {
-            return Ok(Self(Some(PageRanges::new(vec![parse_page_item(expr)?]))));
-        }
-        if let Some(items) = expr.as_list() {
+fn pages() -> impl Decoder<Value = Option<PageRanges>> {
+    let one_page = |range| Some(PageRanges::new(vec![range]));
+    decode::symbol(Symbol::ALL)
+        .or(decode::symbol(Symbol::AUTOMATIC))
+        .map(|()| None)
+        .or(decode::string().try_map(|spec| compile::parse_page_str(&spec).map(Some)))
+        .or(decode::positive().map(move |page| one_page(Some(page)..=Some(page))))
+        .or(decode::head(Symbol::SPAN).try_map(move |expr| parse_page_item(&expr).map(one_page)))
+        .or(decode::head(Symbol::LIST).try_map(|expr| {
+            let items = expr.as_list().expect("list decoder matched");
             if items.is_empty() {
                 return Err("Pages list must not be empty".into());
             }
@@ -145,10 +104,8 @@ impl FromExpr for PagesInput {
                 .iter()
                 .map(parse_page_item)
                 .collect::<Result<Vec<_>, _>>()?;
-            return Ok(Self(Some(PageRanges::new(ranges))));
-        }
-        Err("must be All, an Integer, a range String, or a List of pages/ranges".into())
-    }
+            Ok(Some(PageRanges::new(ranges)))
+        }))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -158,42 +115,28 @@ pub struct PdfStandardsInput {
     requires_tags: bool,
 }
 
-impl FromExpr for PdfStandardsInput {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        format!("Automatic | None | _String | {}", Vec::<String>::wl_pattern())
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::AUTOMATIC) || expr.is_symbol(&Symbol::NONE) {
-            return Ok(Self::default());
-        }
-        let names = if let Some(s) = expr.as_str() {
-            vec![s.to_owned()]
-        } else if let Some(list) = expr.as_list() {
-            list.iter()
-                .map(String::from_expr)
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            return Err("must be Automatic, a standard String, or a List of Strings".into());
-        };
-        let parsed = names
-            .iter()
-            .map(|name| compile::parse_pdf_standard(name))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self {
-            standards: compile::validate_pdf_standards(&parsed)?,
-            specified: !names.is_empty(),
-            requires_tags: compile::pdf_standards_require_tags(&parsed),
-        })
-    }
+fn pdf_standards() -> impl Decoder<Value = PdfStandardsInput> {
+    let standard = || schema::enumeration(compile::parse_pdf_standard);
+    decode::symbol(Symbol::AUTOMATIC)
+        .or(decode::symbol(Symbol::NONE))
+        .map(|()| PdfStandardsInput::default())
+        .or(standard()
+            .map(|value| vec![value])
+            .or(decode::list(standard()))
+            .try_map(|standards| {
+                Ok(PdfStandardsInput {
+                    standards: compile::validate_pdf_standards(&standards)?,
+                    specified: !standards.is_empty(),
+                    requires_tags: compile::pdf_standards_require_tags(&standards),
+                })
+            }))
 }
 
 wl_args! {
     #[action = "timestamp"]
     struct TimestampAssocArgs {
-        "Unix" => unix: i64,
-        "OffsetMinutes" => offset_minutes: Option<i64> = None,
+        "Unix" => unix: i64 [decode::integer()],
+        "OffsetMinutes" => offset_minutes: Option<i64> [decode::integer().map(Some)] = None,
     }
 }
 
@@ -203,121 +146,79 @@ pub struct TimestampInput {
     pub pdf_timestamp: Option<Timestamp>,
 }
 
-impl FromExpr for TimestampInput {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        "Automatic | None | Null | _Integer | _Association".into()
-    }
+fn fixed_timestamp(
+    unix_seconds: i64,
+    offset_minutes: Option<i32>,
+) -> Result<TimestampInput, String> {
+    let datetime = datetime_from_unix(unix_seconds, offset_minutes)
+        .ok_or_else(|| "timestamp is out of range".to_owned())?;
+    let (world_date, pdf_timestamp) = match offset_minutes {
+        Some(offset_minutes) => (
+            WorldDate::FixedLocal {
+                unix_seconds,
+                offset_minutes,
+            },
+            Timestamp::new_local(datetime, offset_minutes)
+                .ok_or_else(|| "OffsetMinutes must be within -23:59..=+23:59".to_owned())?,
+        ),
+        None => (WorldDate::Fixed(unix_seconds), Timestamp::new_utc(datetime)),
+    };
+    Ok(TimestampInput {
+        world_date,
+        pdf_timestamp: Some(pdf_timestamp),
+    })
+}
 
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::AUTOMATIC) {
-            return Ok(Self {
-                world_date: WorldDate::System,
-                pdf_timestamp: None,
-            });
-        }
-        if expr.is_symbol(&Symbol::NONE) || expr.is_symbol(&Symbol::NULL) {
-            return Ok(Self {
+fn timestamp() -> impl Decoder<Value = TimestampInput> {
+    decode::symbol(Symbol::AUTOMATIC)
+        .map(|()| TimestampInput::default())
+        .or(decode::symbol(Symbol::NONE)
+            .or(decode::symbol(Symbol::NULL))
+            .map(|()| TimestampInput {
                 world_date: WorldDate::None,
                 pdf_timestamp: None,
-            });
-        }
-        if let Some(unix) = expr.as_i64() {
-            let dt = datetime_from_unix(unix, None)
-                .ok_or_else(|| "timestamp is out of range".to_owned())?;
-            return Ok(Self {
-                world_date: WorldDate::Fixed(unix),
-                pdf_timestamp: Some(Timestamp::new_utc(dt)),
-            });
-        }
-        if let Some(entries) = expr.as_association() {
-            let parsed = TimestampAssocArgs::parse_args(&entries).map_err(|f| f.message)?;
-            let offset_mins = match parsed.offset_minutes {
-                Some(raw) => Some(
-                    i32::try_from(raw).map_err(|_| "OffsetMinutes out of range".to_owned())?,
-                ),
-                None => None,
-            };
-            let dt = datetime_from_unix(parsed.unix, offset_mins)
-                .ok_or_else(|| "timestamp is out of range".to_owned())?;
-            let ts = match offset_mins {
-                Some(mins) => Timestamp::new_local(dt, mins)
-                    .ok_or_else(|| "OffsetMinutes must be within -23:59..=+23:59".to_owned())?,
-                None => Timestamp::new_utc(dt),
-            };
-            return Ok(Self {
-                world_date: match offset_mins {
-                    Some(offset_minutes) => WorldDate::FixedLocal {
-                        unix_seconds: parsed.unix,
-                        offset_minutes,
-                    },
-                    None => WorldDate::Fixed(parsed.unix),
-                },
-                pdf_timestamp: Some(ts),
-            });
-        }
-        Err(
-            "must be Automatic, None, an Integer Unix timestamp, or <|\"Unix\" -> ..., \"OffsetMinutes\" -> ...|>"
-                .into(),
-        )
-    }
+            }))
+        .or(decode::integer().try_map(|unix| fixed_timestamp(unix, None)))
+        .or(decode::association().try_map(|expr| {
+            let entries = expr.as_association().expect("association decoder matched");
+            let parsed =
+                TimestampAssocArgs::parse_args(&entries).map_err(|failure| failure.message)?;
+            let offset = parsed
+                .offset_minutes
+                .map(i32::try_from)
+                .transpose()
+                .map_err(|_| "OffsetMinutes out of range".to_owned())?;
+            fixed_timestamp(parsed.unix, offset)
+        }))
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct FeaturesInput(pub Vec<Feature>);
-
-impl FromExpr for FeaturesInput {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        Vec::<String>::wl_pattern()
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        let names = Vec::<String>::from_expr(expr)
-            .map_err(|_| "must be a List of feature strings".to_owned())?;
-        compile::parse_features(&names).map(Self)
-    }
+fn features() -> impl Decoder<Value = Vec<Feature>> {
+    decode::list(schema::enumeration_with(
+        compile::parse_feature,
+        |deserializer| compile::deserialize_feature(deserializer),
+    ))
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct EvaluateInput(pub Option<EvaluateSpec>);
-
-impl FromExpr for EvaluateInput {
-    #[cfg(any(test, feature = "option-schema"))]
-    fn wl_pattern() -> String {
-        format!("None | Null | _String | _Association | {}", Vec::<String>::wl_pattern())
-    }
-
-    fn from_expr(expr: &Expr) -> Result<Self, String> {
-        if expr.is_symbol(&Symbol::NONE) || expr.is_symbol(&Symbol::NULL) {
-            return Ok(Self(None));
-        }
-        if let Some(code) = expr.as_str() {
-            return Ok(Self(Some(EvaluateSpec::Single(code.to_owned()))));
-        }
-        if let Some(items) = expr.as_list() {
-            let codes = items
+fn evaluate() -> impl Decoder<Value = Option<EvaluateSpec>> {
+    decode::symbol(Symbol::NONE)
+        .or(decode::symbol(Symbol::NULL))
+        .map(|()| None)
+        .or(decode::string().map(|code| Some(EvaluateSpec::Single(code))))
+        .or(decode::list(decode::string()).map(|codes| Some(EvaluateSpec::List(codes))))
+        .or(decode::association().try_map(|expr| {
+            let entries = expr.as_association().expect("association decoder matched");
+            let pairs = entries
                 .iter()
-                .map(String::from_expr)
-                .collect::<Result<Vec<_>, _>>()?;
-            return Ok(Self(Some(EvaluateSpec::List(codes))));
-        }
-        if let Some(entries) = expr.as_association() {
-            let mut pairs = Vec::with_capacity(entries.len());
-            for entry in &entries {
-                let (k, v) = entry.pair()?;
-                let key = k
-                    .as_str()
-                    .ok_or_else(|| format!("association key must be a String, got: {k}"))?;
-                pairs.push((key.to_owned(), String::from_expr(v)?));
-            }
-            return Ok(Self(Some(EvaluateSpec::Map(pairs))));
-        }
-        Err(
-            "must be None, a code String, a List of code Strings, or an Association of key -> code String"
-                .into(),
-        )
-    }
+                .map(|entry| {
+                    let (key, value) = entry.pair()?;
+                    let key = key
+                        .as_str()
+                        .ok_or_else(|| format!("association key must be a String, got: {key}"))?;
+                    Ok((key.to_owned(), decode::string().decode(value)?))
+                })
+                .collect::<Result<_, String>>()?;
+            Ok(Some(EvaluateSpec::Map(pairs)))
+        }))
 }
 
 // ---------------------------------------------------------------------------
@@ -327,17 +228,17 @@ impl FromExpr for EvaluateInput {
 wl_args! {
     #[action = "compile"]
     pub struct CompileArgs {
-        "Source" => pub source: String,
-        "Inputs" => pub inputs: AssocExpr,
-        "BasePath" => pub base_path: PathBuf,
-        "AllowDownloads" => pub allow_downloads: bool,
-        "Format" => pub format: CompileFormat = CompileFormat::Pdf,
-        "Pages" => pub pages: PagesInput = PagesInput::default(),
-        "PDFStandard" => pub pdf_standards: PdfStandardsInput = PdfStandardsInput::default(),
-        "PDFTags" => pub pdf_tagged: bool = true,
-        "CreationTimestamp" => pub timestamp: TimestampInput = TimestampInput::default(),
-        "Features" => pub features: FeaturesInput = FeaturesInput::default(),
-        "Evaluate" => pub evaluate: EvaluateInput = EvaluateInput::default(),
+        "Source" => pub source: String [decode::string()],
+        "Inputs" => pub inputs: Expr [decode::association()],
+        "BasePath" => pub base_path: PathBuf [decode::path()],
+        "AllowDownloads" => pub allow_downloads: bool [decode::boolean()],
+        "Format" => pub format: CompileFormat [schema::enumeration(|name| schema::parse_name::<CompileFormat>(name, "output format"))] = CompileFormat::Pdf,
+        "Pages" => pub pages: Option<PageRanges> [self::pages()] = None,
+        "PDFStandard" => pub pdf_standards: PdfStandardsInput [self::pdf_standards()] = PdfStandardsInput::default(),
+        "PDFTags" => pub pdf_tagged: bool [decode::boolean()] = true,
+        "CreationTimestamp" => pub timestamp: TimestampInput [self::timestamp()] = TimestampInput::default(),
+        "Features" => pub features: Vec<Feature> [self::features()] = Vec::new(),
+        "Evaluate" => pub evaluate: Option<EvaluateSpec> [self::evaluate()] = None,
     }
 }
 
@@ -348,9 +249,7 @@ wl_args! {
 fn evaluated_to_expr(values: &EvaluatedValues, warnings: &mut Vec<String>) -> Expr {
     match values {
         EvaluatedValues::Single(val) => from_typst(val, warnings),
-        EvaluatedValues::List(vals) => {
-            Expr::list(vals.iter().map(|val| from_typst(val, warnings)))
-        }
+        EvaluatedValues::List(vals) => Expr::list(vals.iter().map(|val| from_typst(val, warnings))),
         EvaluatedValues::Map(pairs) => Expr::association(
             pairs
                 .iter()
@@ -388,10 +287,10 @@ fn finish_failure(failure: CompileFailure) -> Answer {
 }
 
 pub fn run(input: CompileArgs) -> Answer {
-    if input.format == CompileFormat::Html && input.pages.0.is_some() {
+    if input.format == CompileFormat::Html && input.pages.is_some() {
         return Failure::call("\"Pages\" filtering is not supported for HTML output.").into();
     }
-    if input.format == CompileFormat::Pdf && input.pages.0.is_some() && input.pdf_tagged {
+    if input.format == CompileFormat::Pdf && input.pages.is_some() && input.pdf_tagged {
         return Failure::call("PDF page filtering requires \"PDFTags\" -> False.").into();
     }
     if input.format != CompileFormat::Pdf && (input.pdf_standards.specified || !input.pdf_tagged) {
@@ -402,7 +301,7 @@ pub fn run(input: CompileArgs) -> Answer {
     }
 
     let mut input_warnings = Vec::new();
-    let Value::Dict(inputs) = to_typst(&input.inputs.0, &mut input_warnings) else {
+    let Value::Dict(inputs) = to_typst(&input.inputs, &mut input_warnings) else {
         return Failure::internal("Inputs association did not convert to a Typst dictionary")
             .into();
     };
@@ -423,10 +322,10 @@ pub fn run(input: CompileArgs) -> Answer {
             inputs,
             base_path: input.base_path,
             allow_downloads: input.allow_downloads,
-            pages: input.pages.0,
+            pages: input.pages,
             world_date: input.timestamp.world_date,
-            features: input.features.0,
-            evaluate: input.evaluate.0,
+            features: input.features,
+            evaluate: input.evaluate,
             extra_diagnostics,
         };
         return match compile::compile_paged_with(paged_request, |doc, pages| {
@@ -466,13 +365,13 @@ pub fn run(input: CompileArgs) -> Answer {
         base_path: input.base_path,
         allow_downloads: input.allow_downloads,
         format,
-        pages: input.pages.0,
+        pages: input.pages,
         pdf_standards: input.pdf_standards.standards,
         pdf_tagged: input.pdf_tagged,
         pdf_timestamp: input.timestamp.pdf_timestamp,
         world_date: input.timestamp.world_date,
-        features: input.features.0,
-        evaluate: input.evaluate.0,
+        features: input.features,
+        evaluate: input.evaluate,
         extra_diagnostics,
     };
 
@@ -536,15 +435,15 @@ mod tests {
             Rule::new("Features", Expr::list(["a11y-extras"])),
             Rule::new("Evaluate", Expr::list(["1 + 2", "x"])),
         ]);
-        let parsed = CompileArgs::parse_args(&expr.as_association().unwrap())
-            .expect("valid compile args");
+        let parsed =
+            CompileArgs::parse_args(&expr.as_association().unwrap()).expect("valid compile args");
 
         assert_eq!(parsed.format, CompileFormat::Svg);
         assert!(!parsed.pdf_tagged);
         assert_eq!(parsed.timestamp.world_date, WorldDate::Fixed(1_795_003_200));
-        assert!(parsed.features.0.contains(&Feature::A11yExtras));
+        assert!(parsed.features.contains(&Feature::A11yExtras));
         assert_eq!(
-            parsed.evaluate.0,
+            parsed.evaluate,
             Some(EvaluateSpec::List(vec!["1 + 2".into(), "x".into()]))
         );
 
@@ -562,13 +461,21 @@ mod tests {
         let err = CompileArgs::parse_args(&unknown.as_association().unwrap())
             .err()
             .expect("unknown key");
-        assert!(err.message.contains("unknown compile key: Bogus"), "{}", err.message);
+        assert!(
+            err.message.contains("unknown compile key: Bogus"),
+            "{}",
+            err.message
+        );
 
         let dup = base_args([Rule::new("Format", "PDF"), Rule::new("Format", "SVG")]);
         let err = CompileArgs::parse_args(&dup.as_association().unwrap())
             .err()
             .expect("duplicate key");
-        assert!(err.message.contains("duplicate compile key: Format"), "{}", err.message);
+        assert!(
+            err.message.contains("duplicate compile key: Format"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
