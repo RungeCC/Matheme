@@ -47,6 +47,9 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      # One Wolfram Engine entitlement is shared by all jobs; concurrent
+      # activations hit "network license limit reached" (wolframscript 61/255).
+      max-parallel: 1
       matrix:
         include:
           - system-id: Windows-x86-64
@@ -98,13 +101,14 @@ jobs:
           # Point wolfram-app-discovery straight at the installed app. wstp-sys
           # otherwise re-runs `wolframscript -code $InstallationDirectory`, which
           # can return a non-success exit code that the crate turns into a panic.
-          system_files="$(find /opt/Wolfram /usr/local/Wolfram /opt/WolframEngine /opt/Mathematica -maxdepth 3 -type d -name SystemFiles 2>/dev/null | head -1)"
+          system_files="$(find /opt/Wolfram /usr/local/Wolfram /opt/WolframEngine /opt/Mathematica -maxdepth 4 -name SystemFiles 2>/dev/null | head -1 || true)"
           if [ -z "$system_files" ]; then
             echo "::error::Unable to locate the Wolfram installation directory"
             exit 1
           fi
           app_dir="$(dirname "$system_files")"
           echo "WOLFRAM_APP_DIRECTORY=$app_dir" >> "$GITHUB_ENV"
+          echo "WOLFRAMSCRIPT_KERNELPATH=$app_dir/Executables/WolframKernel" >> "$GITHUB_ENV"
           echo "WOLFRAM_APP_DIRECTORY=$app_dir"
 
       - name: Install Wolfram Engine (macOS)
@@ -124,6 +128,13 @@ jobs:
             exit 1
           fi
           echo "WOLFRAM_APP_DIRECTORY=$app" >> "$GITHUB_ENV"
+          echo "WOLFRAMSCRIPT_KERNELPATH=$app/Contents/MacOS/WolframKernel" >> "$GITHUB_ENV"
+          # The cask's wolframscript lives inside the nested Wolfram Player.app;
+          # point it at the Engine kernel explicitly instead of its own ARM one.
+          if command -v wolframscript >/dev/null 2>&1; then
+            wolframscript -config "WOLFRAMSCRIPT_KERNELPATH=$app/Contents/MacOS/WolframKernel" ||
+              echo "::warning::could not persist WOLFRAMSCRIPT_KERNELPATH config"
+          fi
           echo "WOLFRAM_APP_DIRECTORY=$app"
 
       - name: Install Wolfram Engine (Windows)
@@ -143,6 +154,7 @@ jobs:
             throw "Wolfram Engine installation with SystemFiles not found under $engineRoot"
           }
           Add-Content -Path $env:GITHUB_ENV -Value "WOLFRAM_APP_DIRECTORY=$($app.FullName)" -Encoding utf8
+          Add-Content -Path $env:GITHUB_ENV -Value "WOLFRAMSCRIPT_KERNELPATH=$(Join-Path $app.FullName 'WolframKernel.exe')" -Encoding utf8
           Write-Host "WOLFRAM_APP_DIRECTORY=$($app.FullName)"
 
       - name: Locate wolframscript
@@ -155,7 +167,10 @@ jobs:
                 # Homebrew symlinks wolframscript into its bin directory, but
                 # wolframscript locates its runtime relative to its own real
                 # path. Prefer the binary inside the app bundle.
-                real="$(find /Applications -maxdepth 8 -type f -name wolframscript 2>/dev/null | head -1)"
+                real="$(find /Applications -maxdepth 8 -type f -name wolframscript 2>/dev/null | grep -v 'Wolfram Player.app' | head -1 || true)"
+                if [ -z "$real" ]; then
+                  real="$(find /Applications -maxdepth 8 -type f -name wolframscript 2>/dev/null | head -1)"
+                fi
                 if [ -n "$real" ]; then
                   echo "$(dirname "$real")" >> "$GITHUB_PATH"
                   echo "using real binary: $real"
