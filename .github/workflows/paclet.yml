@@ -1,0 +1,186 @@
+# Package the Matheme paclet for every supported platform.
+#
+# Each matrix job installs the free Wolfram Engine (it provides the WSTP
+# DeveloperKit that `scripts/setup-wstp.nu` stages, generates the FrontEnd
+# completions, and runs CreatePacletArchive), builds the shared library with
+# Cargo, and uploads the assembled .paclet as a workflow artifact. Pushing a
+# `v*` tag additionally publishes a GitHub Release with all platform paclets.
+#
+# Required repository secret (the only credential this workflow needs):
+#
+#   WOLFRAMSCRIPT_ENTITLEMENTID — a free Wolfram Engine entitlement ID.
+#   Create it in a Wolfram Cloud notebook with
+#     ent = CreateLicenseEntitlement[]; ent["EntitlementID"]
+#   (https://reference.wolfram.com/language/ref/CreateLicenseEntitlement.html)
+#
+# GitHub Releases use the built-in GITHUB_TOKEN; no personal token is needed.
+#
+# Linux-ARM64 is intentionally absent: Wolfram does not publish an arm64 Linux
+# engine package that CI could install (the x86-64 deb resolves through
+# https://wolfr.am/wolfram-engine.deb, but there is no arm64 short link). To
+# add it, extend the matrix with
+#   - system-id: Linux-ARM64
+#     runs-on: ubuntu-24.04-arm
+# and point the install step at an arm64 engine source once one is available.
+
+name: Paclet
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paclet-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WOLFRAMSCRIPT_ENTITLEMENTID: ${{ secrets.WOLFRAMSCRIPT_ENTITLEMENTID }}
+
+jobs:
+  build:
+    name: paclet-${{ matrix.system-id }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system-id: Windows-x86-64
+            runs-on: windows-latest
+            rust-target: ""
+          - system-id: Linux-x86-64
+            runs-on: ubuntu-latest
+            rust-target: ""
+          - system-id: MacOSX-ARM64
+            runs-on: macos-latest # Apple Silicon
+            rust-target: ""
+          # Intel macOS is cross-compiled from the Apple Silicon runner: the
+          # WSTP static library ships as a universal binary and wstp-sys lipos
+          # the x86_64 slice out of it at build time.
+          - system-id: MacOSX-x86-64
+            runs-on: macos-latest
+            rust-target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Nushell
+        uses: hustcer/setup-nu@v3
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add cross-compile target
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ------------------------------------------------------------------
+      # Wolfram Engine: SDK + completions + CreatePacletArchive
+      # ------------------------------------------------------------------
+
+      - name: Install Wolfram Engine (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl -fL --retry 3 -o /tmp/engine.deb https://wolfr.am/wolfram-engine.deb
+          sudo apt-get update
+          sudo apt-get install -y /tmp/engine.deb
+          rm -f /tmp/engine.deb
+
+      - name: Install Wolfram Engine (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: brew install --cask wolfram-engine
+
+      - name: Install Wolfram Engine (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          winget install --id Wolfram.WolframEngine --silent `
+            --accept-source-agreements --accept-package-agreements
+
+      - name: Locate wolframscript
+        shell: bash
+        run: |
+          if command -v wolframscript >/dev/null 2>&1; then
+            echo "wolframscript on PATH: $(command -v wolframscript)"
+            exit 0
+          fi
+          case "${{ runner.os }}" in
+            Linux)  probe="/opt" ;;
+            macOS)  probe="/Applications" ;;
+            Windows) probe="C:/Program Files/Wolfram Research" ;;
+          esac
+          found="$(find "$probe" -maxdepth 6 -type f -iname 'wolframscript*' 2>/dev/null | head -1)"
+          if [ -z "$found" ]; then
+            echo "::error::wolframscript not found under $probe"
+            exit 1
+          fi
+          echo "$(dirname "$found")" >> "$GITHUB_PATH"
+          echo "added to PATH: $(dirname "$found")"
+
+      - name: Verify Wolfram activation
+        shell: bash
+        run: |
+          if [ -z "${WOLFRAMSCRIPT_ENTITLEMENTID:-}" ]; then
+            echo "::error::Repository secret WOLFRAMSCRIPT_ENTITLEMENTID is not set."
+            echo "::error::Create a free entitlement in Wolfram Cloud with: ent = CreateLicenseEntitlement[]; ent[\"EntitlementID\"]"
+            exit 1
+          fi
+          out="$(wolframscript -code 'Print[21 * 2]' 2>&1)"
+          echo "$out"
+          grep -q 42 <<< "$out" || { echo "::error::Wolfram Engine activation failed"; exit 1; }
+
+      - name: Stage WSTP SDK
+        run: nu scripts/setup-wstp.nu
+
+      - name: Build and package
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.rust-target }}" ]; then
+            nu scripts/build.nu --target ${{ matrix.rust-target }}
+          else
+            nu scripts/build.nu
+          fi
+
+      # CreatePacletArchive names every platform's archive identically
+      # (Publisher__Name-Version.paclet); suffix the platform so the
+      # artifacts — and the release assets — cannot shadow each other.
+      - name: Rename paclet with platform
+        shell: bash
+        run: |
+          for f in output/*.paclet; do
+            version="$(basename "$f" .paclet)"
+            version="${version##*-}"
+            mv "$f" "output/Matheme-$version-${{ matrix.system-id }}.paclet"
+            echo "Matheme-$version-${{ matrix.system-id }}.paclet"
+          done
+
+      - name: Upload paclet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paclet-${{ matrix.system-id }}
+          path: output/*.paclet
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect platform paclets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: paclet-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/*.paclet --generate-notes
