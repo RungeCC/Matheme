@@ -16,6 +16,7 @@ $errorTags = <|
 
 $displayNames = <|
   "compile" -> "MathemeCompile",
+  "boxesToTypst" -> "BoxesToTypst",
   "version" -> "MathemeVersion",
   "settings" -> "SetMatheme",
   "setSettings" -> "SetMatheme",
@@ -55,6 +56,9 @@ loadFunctions[] := Module[{fn},
     fn = LibraryFunctionLoad[$library, "matheme_call", LinkObject, LinkObject];
     If[Head[fn] === LibraryFunction,
       $call = fn;
+      (* The native TypstForm path latches link failures; a successful
+         (re)load resumes it. *)
+      TypstForm`$typstNativeLinkFailed = False;
       True,
       False
     ]
@@ -228,8 +232,13 @@ checkedArgumentRules[action_String, raw_List] :=
     callUnchecked[action, args]
   ];
 
-MathemeClose[] := If[Head[$call] === LibraryFunction,
-  Quiet[callFunction["close"]];
-  Quiet[LibraryFunctionUnload[$call]];
-  $call = Null;
-];
+MathemeClose[] := (
+  If[Head[$call] === LibraryFunction,
+    Quiet[callFunction["close"]];
+    Quiet[LibraryFunctionUnload[$call]];
+    $call = Null
+  ];
+  (* Clear the latched native TypstForm link failure so the next load attempt
+     can resume the fast path after the library is rebuilt or reinstalled. *)
+  TypstForm`$typstNativeLinkFailed = False
+);

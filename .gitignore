@@ -5,6 +5,7 @@
 /output/
 *.paclet
 /Kernel/ArgumentTypes.wl
+/Kernel/TypstForm/NativeCapabilities.wl
 
 # Local scratch space: probe scripts, logs, WSTP SDK alias (see scripts/setup-wstp.nu)
 /.tmp/

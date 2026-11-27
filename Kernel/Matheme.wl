@@ -20,6 +20,7 @@ TypstForm::usage = "TypstForm[expr, opts] prints as a customizable Typst math ex
 MathemeToTypst::usage = "MathemeToTypst[expr, opts] converts expr to a Typst math String. Supports customization via \"Form\", \"ExpressionRules\", \"BoxRules\", \"TemplateRules\", \"CharacterRules\", \"OperatorNames\", \"DelimiterStyle\", \"FractionStyle\", \"ConstantStyle\", \"DifferentialStyle\", \"TransposeSymbol\", \"ConjugateStyle\", \"BlackboardStyle\", \"ScriptStyle\", \"MultiLetterStyle\", \"MatrixDelimiter\", \"PreserveStyle\", \"StripContext\", \"UnknownCharacterHandler\", and \"UnsupportedBoxHandler\".";
 BoxesToTypst::usage = "BoxesToTypst[boxes, opts] converts a Wolfram Language Box expression to a Typst math String.";
 TypstRaw::usage = "TypstRaw[str] embeds a literal Typst math fragment verbatim inside expressions converted by TypstForm or MathemeToTypst.";
+TypstTemplate::usage = "TypstTemplate[body] is a Typst source template with tinytemplate value slots: {1}, {2}, ... for already-rendered string arguments and {rest} for the remaining arguments joined by a separator (default \", \"). A literal opening brace is written as \\{. TypstTemplate[body, sep] overrides the separator. It is a native data value, not Wolfram StringTemplate.";
 MakeTypst::usage = "MakeTypst[expr] (or MakeTypst[expr, conv]) is an extensible UpValue formatting hook checked by TypstForm and MathemeToTypst before boxing expr.";
 MathemeVersion::usage = "MathemeVersion[] returns version metadata for Matheme, Typst, LibraryLink, and WSTP.";
 SetMatheme::usage = "SetMatheme[] returns the active compiler settings Association. SetMatheme[key -> val, ...] updates process-wide settings (Null resets a field) and returns <|\"Changed\" -> ..., \"Settings\" -> ...|>.";
@@ -38,6 +39,7 @@ MathemeCompileError::usage = "MathemeCompileError is the Failure tag for Typst c
 MathemeInternalError::usage = "MathemeInternalError is the Failure tag for unexpected internal backend panics or invariant violations.";
 MathemeDiagnostic::usage = "MathemeDiagnostic::warning is issued for non-fatal warning diagnostics.";
 TypstForm::unspt = "TypstForm of `1` is not supported.";
+TypstForm::nativefallback = "Native TypstForm path unavailable (`1`/`2`): `3`; using the WL renderer.";
 TypstForm::unkchar = "Unmapped Wolfram private-use character `1` (`2`) encountered in TypstForm; falling back to text literal.";
 
 $TypstTemplates::usage = "Builtins typst templates";

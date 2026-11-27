@@ -145,12 +145,45 @@ convertBuiltinTemplate[_, _, tbox_TemplateBox] := Module[{expanded},
 ];
 
 (* ------------------------------------------------------------------------ *)
+(* TypstTemplate: a native data value, not Wolfram StringTemplate            *)
+(* ------------------------------------------------------------------------ *)
+
+(* The body is a tinytemplate value-interpolation subset: {n} addresses an
+   already-rendered string argument, {rest} inserts every argument not claimed
+   by a fixed slot, and \{ is a literal opening brace. The Rust side compiles
+   the same subset; blocks such as {{ if ... }} are rejected there. *)
+typstTemplateApply[TypstTemplate[body_String], args_List] :=
+  typstTemplateApply[TypstTemplate[body, ", "], args];
+
+typstTemplateApply[TypstTemplate[body_String, sep_String], args_List] := Module[
+  {escaped, slots, used, rest, result},
+  escaped = StringReplace[body, "\\{" -> "\:FDD0"];
+  slots = FromDigits /@ StringCases[escaped, "{" ~~ d : DigitCharacter .. ~~ "}" :> d];
+  If[AnyTrue[slots, # > Length[args] &],
+    Message[TypstForm::unspt, body];
+    Return[""]
+  ];
+  used = DeleteDuplicates[slots];
+  rest = Select[Range[Length[args]], !MemberQ[used, #] &];
+  result = StringReplace[escaped, {
+    "{" ~~ d : DigitCharacter .. ~~ "}" :> args[[FromDigits[d]]],
+    "{rest}" :> StringRiffle[args[[rest]], sep]
+  }];
+  If[StringContainsQ[result, "{"],
+    Message[TypstForm::unspt, body];
+    Return[""]
+  ];
+  StringReplace[result, "\:FDD0" -> "{"]
+];
+
+(* ------------------------------------------------------------------------ *)
 (* Public template dispatcher (user TemplateRules take priority)            *)
 (* ------------------------------------------------------------------------ *)
 
 applyUserTemplateRule[handler_, args : (_List | _Association)] := Module[{res},
   res = Which[
     StringQ[handler], handler,
+    MatchQ[handler, _TypstTemplate], typstTemplateApply[handler, convertInsideDelim /@ args],
     MatchQ[handler, _StringTemplate | _TemplateObject],
       TemplateApply[handler, convertInsideDelim /@ args],
     True,
@@ -164,7 +197,13 @@ applyUserTemplateRule[handler_, args : (_List | _Association)] := Module[{res},
 ];
 
 convertTemplateBox[tbox : TemplateBox[args : (_List | _Association), tag_String, ___]] := Module[{userHandler},
-  userHandler = Lookup[$typstTemplateMap, tag, Missing["NotFound"]];
+  (* Exact tag/arity wins over the tag-wide key, matching the native
+     renderer's Config::template lookup. *)
+  userHandler = Lookup[$typstTemplateMap,
+    tag <> "/" <> ToString[Length[args]], Missing["NotFound"]];
+  If[MissingQ[userHandler],
+    userHandler = Lookup[$typstTemplateMap, tag, Missing["NotFound"]]
+  ];
   If[!MissingQ[userHandler],
     applyUserTemplateRule[userHandler, args],
     convertBuiltinTemplate[tag, args, tbox]
