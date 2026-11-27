@@ -6,6 +6,7 @@
 //! uniform result association.
 
 mod args;
+mod boxes;
 mod cache;
 mod call;
 mod compile;
@@ -28,6 +29,7 @@ fn matheme_call(link: &mut Link) {
 wl_actions! {
     pub enum Action {
         "compile" => Compile(compile::CompileArgs) => compile::run,
+        "boxesToTypst" [no_host_fonts] => BoxesToTypst(boxes::BoxesArgs) => boxes::run,
         "version" [no_host_fonts] => Version => version::run,
         "settings" [no_host_fonts] => Settings => settings::run_get,
         "setSettings" => SetSettings(settings::SettingsPatchArgs) => settings::run_set,
