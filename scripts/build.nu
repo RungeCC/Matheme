@@ -53,14 +53,36 @@ def main [
         ^nu $setup_script
     }
 
-    # Cargo builds the library and runs the schema generator; the generated
-    # ArgumentTypes.wl is consumed by the package and by the completion step.
+    # Cargo builds the library and runs the schema generator; it writes both
+    # ArgumentTypes.wl (actions/completions) and TypstForm/NativeCapabilities.wl
+    # (native config fields) from the Rust-side declarations.
     if ($jobs != null) {
         ^cargo build --release -p matheme -j $jobs
         ^cargo run --quiet --release -p matheme --bin matheme-option-schema -j $jobs
     } else {
         ^cargo build --release -p matheme
         ^cargo run --quiet --release -p matheme --bin matheme-option-schema
+    }
+
+    # The Rust renderer reads its lookup tables from a generated snapshot of
+    # Kernel/TypstForm/{Characters,Boxes}.wl. A stale snapshot would make the
+    # two engines diverge silently, so the generator's recorded source hash is
+    # compared against the current files. Regenerate with:
+    #   wolframscript -file scripts/generate-box-tables.wl
+    let tables_file = ($ROOT | path join "crates" "matheme-box" "src" "tables.json")
+    let recorded = (open $tables_file | get "$typstTableSourceHash" | default "")
+    if ($recorded == "") {
+        print --stderr "warning: tables.json carries no $typstTableSourceHash; run wolframscript -file scripts/generate-box-tables.wl"
+    } else {
+        let current = [
+            (open --raw ($ROOT | path join "Kernel" "TypstForm" "Characters.wl") | hash md5)
+            (open --raw ($ROOT | path join "Kernel" "TypstForm" "Boxes.wl") | hash md5)
+        ] | str join ":"
+        if ($recorded != $current) {
+            print --stderr "tables.json is stale: it mirrors older Kernel/TypstForm/Characters.wl or Boxes.wl."
+            print --stderr "Regenerate it with: wolframscript -file scripts/generate-box-tables.wl"
+            exit 1
+        }
     }
 
     let paclet_dir = ($ROOT | path join "output" "Matheme")
