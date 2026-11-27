@@ -324,6 +324,125 @@ RunMathemeTypstFormTests[] := Module[{tests, results, passed, total, symKet, sym
       BoxesToTypst[FractionBox["a", SuperscriptBox["b", "2"]]],
       "frac(a, b^2)",
       TestID -> "BoxesToTypst-Fraction"
+    ],
+    (* Inactive heads box as TemplateBox[..., "InactiveHead"]; the payload is
+       either a bare name or the typeset head of an inverse function. *)
+    VerificationTest[
+      MathemeToTypst[Inactive[Sin][Global`x]],
+      "sin(x)",
+      TestID -> "Inactive-Head-Plain"
+    ],
+    VerificationTest[
+      MathemeToTypst[Inactive[ArcSin][Global`x]],
+      "sin^(-1)(x)",
+      TestID -> "Inactive-Head-Superscript"
+    ],
+    VerificationTest[
+      MathemeToTypst[Inactive[f][Global`a, Global`b]],
+      "f[a, b]",
+      TestID -> "Inactive-Head-Brackets"
+    ],
+    (* Held special functions box as semantic TemplateBox tags, resolved through
+       the generated `TemplateBoxToDisplayBoxes` table rather than a whitelist. *)
+    VerificationTest[
+      MathemeToTypst[HoldForm[BesselY[2, Global`x]]],
+      "Y_2(x)",
+      TestID -> "Template-HoldForm-BesselY"
+    ],
+    VerificationTest[
+      MathemeToTypst[HoldForm[EllipticK[Global`m]]],
+      "K(m)",
+      TestID -> "Template-HoldForm-EllipticK"
+    ],
+    VerificationTest[
+      MathemeToTypst[HoldForm[PolyLog[2, Global`z]]],
+      "op(\"Li\")_2(z)",
+      TestID -> "Template-HoldForm-PolyLog"
+    ],
+    VerificationTest[
+      MathemeToTypst[HoldForm[Inverse[{{Global`a, Global`b}, {Global`c, Global`d}}]]],
+      "mat(a, b; c, d)^(-1)",
+      TestID -> "Template-HoldForm-Inverse"
+    ],
+
+    (* --- TypstTemplate: native string slots, distinct from StringTemplate --- *)
+    VerificationTest[
+      BoxesToTypst[TemplateBox[{"x", "y"}, "MyTag"],
+        "TemplateRules" -> {"MyTag" -> TypstTemplate["f({1}, {2})"]}],
+      "f(x, y)",
+      TestID -> "TypstTemplate-Fixed-Slots"
+    ],
+    VerificationTest[
+      BoxesToTypst[TemplateBox[{"x", "y", "z"}, "MyTag"],
+        "TemplateRules" -> {"MyTag" -> TypstTemplate["row({1}; {rest})", "; "]}],
+      "row(x; y; z)",
+      TestID -> "TypstTemplate-Rest-Slot"
+    ],
+    VerificationTest[
+      BoxesToTypst[TemplateBox[{"x"}, "MyTag"],
+        "TemplateRules" -> {"MyTag" -> StringTemplate["{{1}}"]}],
+      "{{1}}",
+      TestID -> "TypstTemplate-Wolfram-Template-Is-Distinct"
+    ],
+
+    (* --- Native config patch (R1 P0): fail-closed, generated capability --- *)
+    VerificationTest[
+      Runge`Matheme`Private`TypstForm`nativeConfigPatch[
+        Association[Runge`Matheme`Private`TypstForm`$typstBoxOptionDefaults]
+      ],
+      <|
+        "Version" -> 2,
+        "CharOverrides" -> <||>,
+        "OperatorOverrides" -> <||>,
+        "TemplateOverrides" -> <||>,
+        "Switches" -> <||>
+      |>,
+      TestID -> "NativeConfig-Default-Patch-Is-Empty"
+    ],
+    VerificationTest[
+      Head[Runge`Matheme`Private`TypstForm`nativeConfigPatch[
+        Association[Append[
+          Runge`Matheme`Private`TypstForm`$typstBoxOptionDefaults,
+          "BoxRules" -> {FractionBox[n_, d_] :> "myfrac(n, d)"}
+        ]]
+      ]],
+      Failure,
+      TestID -> "NativeConfig-BoxRules-Is-Code-Plane"
+    ],
+    VerificationTest[
+      (Runge`Matheme`Private`TypstForm`nativeConfigPatch[
+        Association[Append[
+          Runge`Matheme`Private`TypstForm`$typstBoxOptionDefaults,
+          "FractionStlye" -> "Slash"
+        ]]
+      ][[2]])["Field"],
+      "FractionStlye",
+      TestID -> "NativeConfig-Typo-Reports-Field"
+    ],
+    VerificationTest[
+      KeyExistsQ[
+        Lookup[
+          Runge`Matheme`Private`TypstForm`nativeConfigPatch[
+            Association[Append[
+              Runge`Matheme`Private`TypstForm`$typstBoxOptionDefaults,
+              "FractionStyle" -> "Slash"
+            ]]
+          ],
+          "Switches"
+        ],
+        "FractionStyle"
+      ],
+      True,
+      TestID -> "NativeConfig-NonDefault-Switch-Is-Patched"
+    ],
+    (* The generated schema (single source: matheme_box::OPTIONS) and the
+       hand-written WL defaults must describe exactly the same option set;
+       a drift here would let an option exist without a native plane or
+       without a default. *)
+    VerificationTest[
+      Sort[Keys[Runge`Matheme`Private`TypstForm`$typstNativeOptionSchema]],
+      Sort[Keys[Association[Runge`Matheme`Private`TypstForm`$typstExprOptionDefaults]]],
+      TestID -> "NativeConfig-Schema-Covers-Every-Option"
     ]
   };
 
