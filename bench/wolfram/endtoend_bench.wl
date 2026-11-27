@@ -3,11 +3,15 @@
    Compares native "Graphics" export against "SVG" and "PDF" import pipelines
    across math, prose, multi-page filtering, winding resolution, and glyph churn.
 
-   Run after `nu scripts/build.nu`:
-     wolframscript -file bench/wolfram_bench.wl
+   Run after `nu scripts/build.nu`, from anywhere inside the repository:
+     wolframscript -file bench/wolfram/endtoend_bench.wl
 *)
 
-PacletDirectoryLoad[FileNameJoin[{Directory[], "output", "Matheme"}]];
+(* This script lives in bench/wolfram/, so the repository root is two levels up;
+   nothing here depends on the working directory. *)
+$repoRoot = DirectoryName[DirectoryName[DirectoryName[ExpandFileName[$InputFileName]]]];
+
+PacletDirectoryLoad[FileNameJoin[{$repoRoot, "output", "Matheme"}]];
 Needs["Runge`Matheme`"];
 
 MathemeWarmup["Fonts" -> True, "Packages" -> False, "PackageIndex" -> False];

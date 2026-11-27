@@ -15,8 +15,14 @@ typst-layout.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+matheme-box.workspace = true
 matheme-graphics.workspace = true
+matheme-wl.workspace = true
 matheme-wstp.workspace = true
+
+[[bench]]
+name = "boxes_perf"
+harness = false
 
 [[bench]]
 name = "graphics_perf"
