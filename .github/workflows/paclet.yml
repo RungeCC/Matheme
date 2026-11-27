@@ -99,9 +99,9 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          # --no-quarantine: Gatekeeper's quarantine bit silently kills the
-          # engine's binaries on the runner otherwise.
-          brew install --cask --no-quarantine wolfram-engine
+          # Homebrew 5 removed --no-quarantine. Clear the quarantine attribute
+          # ourselves; the runner has no Gatekeeper prompt to approve it.
+          brew install --cask wolfram-engine
           xattr -dr com.apple.quarantine "/Applications/Wolfram Engine.app" 2>/dev/null || true
 
       - name: Install Wolfram Engine (Windows)
@@ -144,6 +144,26 @@ jobs:
           echo "$(dirname "$found")" >> "$GITHUB_PATH"
           echo "added to PATH: $(dirname "$found")"
 
+      # wstp-sys's build script calls `wolframscript -code $InstallationDirectory`
+      # through wolfram-app-discovery. On Windows that bare invocation can return
+      # exit code 61, which the crate turns into a panic. Export the installation
+      # directory discovered via an explicit Exit[0] so no re-probe is needed.
+      - name: Configure Wolfram app discovery
+        shell: bash
+        run: |
+          install_dir="$(wolframscript -code 'WriteString["stdout", $InstallationDirectory]; Exit[0]' 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//')"
+          if [ -z "$install_dir" ]; then
+            echo "::error::Unable to query the Wolfram installation directory"
+            exit 1
+          fi
+          case "${{ runner.os }}" in
+            # WOLFRAM_APP_DIRECTORY expects the .app bundle, not its Contents dir.
+            macOS) app_dir="${install_dir%/Contents}" ;;
+            *)     app_dir="$install_dir" ;;
+          esac
+          echo "WOLFRAM_APP_DIRECTORY=$app_dir" >> "$GITHUB_ENV"
+          echo "WOLFRAM_APP_DIRECTORY=$app_dir"
+
       - name: Verify Wolfram activation
         shell: bash
         run: |
@@ -155,8 +175,15 @@ jobs:
           echo "wolframscript: $(command -v wolframscript)"
           ls -l "$(command -v wolframscript)" || true
           wolframscript -version 2>&1 | head -3 || echo "::warning::wolframscript -version exited $?"
+          set +e
           out="$(wolframscript -code 'Print[21 * 2]' 2>&1)"
+          status=$?
+          set -e
           echo "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::wolframscript exited with $status (see output above)"
+            exit 1
+          fi
           grep -q 42 <<< "$out" || { echo "::error::Wolfram Engine activation failed (see output above)"; exit 1; }
 
       - name: Stage WSTP SDK
