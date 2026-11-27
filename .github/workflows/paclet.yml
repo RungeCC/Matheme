@@ -87,21 +87,28 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          curl -fL --retry 3 -o /tmp/engine.deb https://wolfr.am/wolfram-engine.deb
+          # uuid-dev: wstp-sys links `libuuid` on Linux and the runner image
+          # does not ship the development symlink.
           sudo apt-get update
+          sudo apt-get install -y uuid-dev
+          curl -fL --retry 3 -o /tmp/engine.deb https://wolfr.am/wolfram-engine.deb
           sudo apt-get install -y /tmp/engine.deb
           rm -f /tmp/engine.deb
 
       - name: Install Wolfram Engine (macOS)
         if: runner.os == 'macOS'
         shell: bash
-        run: brew install --cask wolfram-engine
+        run: |
+          # --no-quarantine: Gatekeeper's quarantine bit silently kills the
+          # engine's binaries on the runner otherwise.
+          brew install --cask --no-quarantine wolfram-engine
+          xattr -dr com.apple.quarantine "/Applications/Wolfram Engine.app" 2>/dev/null || true
 
       - name: Install Wolfram Engine (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          winget install --id Wolfram.WolframEngine --silent `
+          winget install --id WolframResearch.WolframEngine --silent `
             --accept-source-agreements --accept-package-agreements
 
       - name: Locate wolframscript
@@ -109,6 +116,19 @@ jobs:
         run: |
           if command -v wolframscript >/dev/null 2>&1; then
             echo "wolframscript on PATH: $(command -v wolframscript)"
+            case "${{ runner.os }}" in
+              macOS)
+                # Homebrew symlinks wolframscript into its bin directory, but
+                # wolframscript locates its runtime relative to its own real
+                # path. Prefer the binary inside the app bundle.
+                real="$(find /Applications -maxdepth 8 -type f -name wolframscript 2>/dev/null | head -1)"
+                if [ -n "$real" ]; then
+                  echo "$(dirname "$real")" >> "$GITHUB_PATH"
+                  echo "using real binary: $real"
+                  exit 0
+                fi
+                ;;
+            esac
             exit 0
           fi
           case "${{ runner.os }}" in
@@ -116,7 +136,7 @@ jobs:
             macOS)  probe="/Applications" ;;
             Windows) probe="C:/Program Files/Wolfram Research" ;;
           esac
-          found="$(find "$probe" -maxdepth 6 -type f -iname 'wolframscript*' 2>/dev/null | head -1)"
+          found="$(find "$probe" -maxdepth 8 -type f -iname 'wolframscript*' 2>/dev/null | head -1)"
           if [ -z "$found" ]; then
             echo "::error::wolframscript not found under $probe"
             exit 1
@@ -132,9 +152,12 @@ jobs:
             echo "::error::Create a free entitlement in Wolfram Cloud with: ent = CreateLicenseEntitlement[]; ent[\"EntitlementID\"]"
             exit 1
           fi
+          echo "wolframscript: $(command -v wolframscript)"
+          ls -l "$(command -v wolframscript)" || true
+          wolframscript -version 2>&1 | head -3 || echo "::warning::wolframscript -version exited $?"
           out="$(wolframscript -code 'Print[21 * 2]' 2>&1)"
           echo "$out"
-          grep -q 42 <<< "$out" || { echo "::error::Wolfram Engine activation failed"; exit 1; }
+          grep -q 42 <<< "$out" || { echo "::error::Wolfram Engine activation failed (see output above)"; exit 1; }
 
       - name: Stage WSTP SDK
         run: nu scripts/setup-wstp.nu
