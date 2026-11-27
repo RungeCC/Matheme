@@ -37,14 +37,51 @@ def platform-info [] {
     }
 }
 
+# Rust target triples accepted by --target, carrying the same facts
+# platform-info derives from the host.
+def rust-target-info [target: string] {
+    match $target {
+        "x86_64-pc-windows-msvc" => {
+            let cargo_lib = "matheme.dll"
+            let wl_lib = "matheme.dll"
+            { system_id: "Windows-x86-64", cargo_lib: $cargo_lib, wl_lib: $wl_lib }
+        }
+        "x86_64-unknown-linux-gnu" => {
+            let cargo_lib = "libmatheme.so"
+            let wl_lib = "matheme.so"
+            { system_id: "Linux-x86-64", cargo_lib: $cargo_lib, wl_lib: $wl_lib }
+        }
+        "aarch64-unknown-linux-gnu" => {
+            let cargo_lib = "libmatheme.so"
+            let wl_lib = "matheme.so"
+            { system_id: "Linux-ARM64", cargo_lib: $cargo_lib, wl_lib: $wl_lib }
+        }
+        "aarch64-apple-darwin" => {
+            let cargo_lib = "libmatheme.dylib"
+            let wl_lib = "matheme.dylib"
+            { system_id: "MacOSX-ARM64", cargo_lib: $cargo_lib, wl_lib: $wl_lib }
+        }
+        "x86_64-apple-darwin" => {
+            let cargo_lib = "libmatheme.dylib"
+            let wl_lib = "matheme.dylib"
+            { system_id: "MacOSX-x86-64", cargo_lib: $cargo_lib, wl_lib: $wl_lib }
+        }
+        _ => {
+            print --stderr $"Unsupported rust target: ($target)"
+            exit 1
+        }
+    }
+}
+
 def main [
     --sdk-dir: path # Override the WSTP DeveloperKit CompilerAdditions directory
     --skip-pack     # Assemble output/Matheme without invoking wolframscript CreatePacletArchive
     --jobs (-j): int # Limit parallel Cargo build jobs (useful on memory-constrained systems)
+    --target: string # Rust target triple to cross-compile (e.g. x86_64-apple-darwin); the library lands in target/<triple>/release
 ] {
     cd $ROOT
 
-    let platform = (platform-info)
+    let platform = (if ($target == null) { platform-info } else { rust-target-info $target })
 
     let setup_script = ($ROOT | path join "scripts" "setup-wstp.nu")
     if ($sdk_dir != null) {
@@ -55,13 +92,24 @@ def main [
 
     # Cargo builds the library and runs the schema generator; it writes both
     # ArgumentTypes.wl (actions/completions) and TypstForm/NativeCapabilities.wl
-    # (native config fields) from the Rust-side declarations.
-    if ($jobs != null) {
-        ^cargo build --release -p matheme -j $jobs
-        ^cargo run --quiet --release -p matheme --bin matheme-option-schema -j $jobs
+    # (native config fields) from the Rust-side declarations. The schema
+    # generator is a host binary and never carries --target.
+    if ($target == null) {
+        if ($jobs != null) {
+            ^cargo build --release -p matheme -j $jobs
+            ^cargo run --quiet --release -p matheme --bin matheme-option-schema -j $jobs
+        } else {
+            ^cargo build --release -p matheme
+            ^cargo run --quiet --release -p matheme --bin matheme-option-schema
+        }
     } else {
-        ^cargo build --release -p matheme
-        ^cargo run --quiet --release -p matheme --bin matheme-option-schema
+        if ($jobs != null) {
+            ^cargo build --release -p matheme --target $target -j $jobs
+            ^cargo run --quiet --release -p matheme --bin matheme-option-schema -j $jobs
+        } else {
+            ^cargo build --release -p matheme --target $target
+            ^cargo run --quiet --release -p matheme --bin matheme-option-schema
+        }
     }
 
     # The Rust renderer reads its lookup tables from a generated snapshot of
@@ -111,7 +159,12 @@ def main [
     cp --recursive ($ROOT | path join "third-party") $paclet_dir
     # Copy Kernel/ including subdirectories such as Kernel/TypstForm/.
     cp --recursive ($ROOT | path join "Kernel") $paclet_dir
-    cp ($ROOT | path join "target" "release" $platform.cargo_lib) ($lib_dir | path join $platform.wl_lib)
+    let release_dir = (if ($target == null) {
+        $ROOT | path join "target" "release"
+    } else {
+        $ROOT | path join "target" $target "release"
+    })
+    cp ($release_dir | path join $platform.cargo_lib) ($lib_dir | path join $platform.wl_lib)
 
     for old in (glob "output/*Matheme-*.paclet") {
         rm --force $old
