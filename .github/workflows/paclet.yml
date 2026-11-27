@@ -204,13 +204,26 @@ jobs:
           echo "wolframscript: $(command -v wolframscript)"
           ls -l "$(command -v wolframscript)" || true
           wolframscript -version 2>&1 | head -3 || echo "::warning::wolframscript -version exited $?"
+          # Free entitlements allow only a few concurrent kernels. Retry briefly
+          # so a just-released seat from another job/session does not fail CI.
           set +e
-          out="$(wolframscript -code 'Print[21 * 2]' 2>&1)"
-          status=$?
+          status=1
+          out=""
+          for attempt in 1 2 3 4 5; do
+            out="$(wolframscript -code 'Print[21 * 2]' 2>&1)"
+            status=$?
+            if [ "$status" -eq 0 ] && grep -q 42 <<< "$out"; then
+              break
+            fi
+            echo "::warning::activation attempt $attempt failed (exit $status): $out"
+            if [ "$attempt" -lt 5 ]; then
+              sleep 20
+            fi
+          done
           set -e
           echo "$out"
           if [ "$status" -ne 0 ]; then
-            echo "::error::wolframscript exited with $status (see output above)"
+            echo "::error::wolframscript exited with $status after 5 attempts (see output above)"
             exit 1
           fi
           grep -q 42 <<< "$out" || { echo "::error::Wolfram Engine activation failed (see output above)"; exit 1; }
