@@ -1633,6 +1633,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 name = "matheme"
 version = "0.1.0"
 dependencies = [
+ "matheme-box",
  "matheme-graphics",
  "matheme-wl",
  "matheme-world",
@@ -1647,11 +1648,22 @@ name = "matheme-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "matheme-box",
  "matheme-graphics",
+ "matheme-wl",
  "matheme-world",
  "matheme-wstp",
  "typst",
  "typst-layout",
+]
+
+[[package]]
+name = "matheme-box"
+version = "0.1.0"
+dependencies = [
+ "matheme-wl",
+ "rayon",
+ "serde_json",
 ]
 
 [[package]]
@@ -1685,6 +1697,7 @@ dependencies = [
 name = "matheme-wl"
 version = "0.1.0"
 dependencies = [
+ "tinytemplate",
  "typst",
  "wolfram-library-link",
 ]

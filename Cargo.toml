@@ -4,6 +4,7 @@ members = [
     "crates/matheme-graphics",
     "crates/matheme-world",
     "crates/matheme-wl",
+    "crates/matheme-box",
     "crates/matheme-wstp",
     "crates/matheme-cli",
     "bench",
@@ -27,6 +28,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # Internal crates
+matheme-box = { path = "crates/matheme-box" }
 matheme-graphics = { path = "crates/matheme-graphics" }
 matheme-world = { path = "crates/matheme-world" }
 matheme-wl = { path = "crates/matheme-wl" }
@@ -38,9 +40,11 @@ comemo = "0.5.1"
 criterion = { version = "0.8", features = ["html_reports"] }
 image = { version = "0.25", default-features = false }
 kurbo = "0.13"
+rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = "0.3"
+tinytemplate = "1.2.1"
 ttf-parser = "0.25"
 typst = "=0.15.1"
 typst-eval = "=0.15.1"

@@ -6,6 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+tinytemplate.workspace = true
 typst.workspace = true
 # Only the pure expression types are needed here. Leaving out the `wstp`
 # feature keeps this crate linkable in unit tests (no WSTP static library).

@@ -22,6 +22,69 @@
 use std::borrow::{Borrow, Cow};
 use std::fmt;
 
+/// The unqualified short name of a fully-qualified WL symbol name: everything
+/// after the final context mark, or the name itself when it carries no
+/// context. This is the one place that knows how WL contexts are spelled;
+/// every short-name need in the bridge crates routes through it instead of
+/// repeating ``rsplit('`')`` at each call site.
+pub fn short_name(name: &str) -> &str {
+    name.rsplit_once('`').map_or(name, |(_, short)| short)
+}
+
+/// A WL symbol name parsed out of a text token, e.g. ``"MyPkg`Private`x"``.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SymbolName<'a> {
+    /// The text as written, context included.
+    pub full: &'a str,
+    /// The context part (everything before the final context mark), or `None`
+    /// when the name is unqualified.
+    pub context: Option<&'a str>,
+    /// The unqualified name.
+    pub short: &'a str,
+}
+
+/// Parse a text token as a WL symbol name.
+///
+/// The recognized grammar mirrors the reference converter's context regular
+/// expression ``([A-Za-z$][A-Za-z0-9$]*`)+[^`]+``: each context segment is an
+/// ASCII identifier (`` $ `` allowed) ending in a backtick, and the short name
+/// is any nonempty backtick-free text. Unqualified names parse with
+/// `` context: None ``. This is the one place that knows the spelling, so text
+/// classification in the renderers can ask "is this a symbol name?" instead of
+/// re-deriving the grammar with ad-hoc scans.
+pub fn parse_symbol_name(text: &str) -> Option<SymbolName<'_>> {
+    match text.rsplit_once('`') {
+        Some((context, short)) => {
+            if short.is_empty() || !is_context(context) {
+                return None;
+            }
+            Some(SymbolName {
+                full: text,
+                context: Some(context),
+                short,
+            })
+        }
+        None if text.is_empty() => None,
+        None => Some(SymbolName {
+            full: text,
+            context: None,
+            short: text,
+        }),
+    }
+}
+
+/// Every segment of ``"A`B`"`` context spelled without its final backtick must
+/// be a nonempty ASCII identifier (`` $ `` counts as a leading character).
+fn is_context(context: &str) -> bool {
+    context.split('`').all(|part| {
+        let mut chars = part.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '$')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '$')
+    })
+}
+
 /// A fully-qualified Wolfram Language symbol name, e.g. ``System`List``.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Symbol(Cow<'static, str>);
@@ -52,7 +115,7 @@ impl Symbol {
 
     /// The unqualified short name (after the final `` ` ``), if any.
     pub fn short_name(&self) -> &str {
-        self.0.rsplit_once('`').map_or(&self.0, |(_, short)| short)
+        short_name(&self.0)
     }
 
     // Convenience aliases for the most commonly used fundamental symbols.
@@ -269,5 +332,31 @@ mod tests {
             );
             assert!(!sym.short_name().is_empty());
         }
+    }
+
+    #[test]
+    fn parse_symbol_name_reads_context_parts() {
+        let parsed = parse_symbol_name("MyPkg`Private`x").unwrap();
+        assert_eq!(parsed.context, Some("MyPkg`Private"));
+        assert_eq!(parsed.short, "x");
+        assert_eq!(parsed.full, "MyPkg`Private`x");
+
+        let plain = parse_symbol_name("abc").unwrap();
+        assert_eq!(plain.context, None);
+        assert_eq!(plain.short, "abc");
+
+        let dollar = parse_symbol_name("$`x").unwrap();
+        assert_eq!(dollar.context, Some("$"));
+    }
+
+    #[test]
+    fn parse_symbol_name_rejects_non_symbol_text() {
+        // Trailing or leading context marks, empty, and numeric-precision
+        // strings are not symbol names.
+        assert!(parse_symbol_name("").is_none());
+        assert!(parse_symbol_name("A`").is_none());
+        assert!(parse_symbol_name("`x").is_none());
+        assert!(parse_symbol_name("1`2").is_none());
+        assert!(parse_symbol_name("3.14`").is_none());
     }
 }

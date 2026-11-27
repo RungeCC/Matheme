@@ -204,6 +204,16 @@ pub fn head(symbol: Symbol) -> impl Decoder<Value = Expr> {
     }
 }
 
+/// Accept any WL expression unchanged. Used by transports that pass an opaque
+/// expression tree (for example the Box DSL) to a typed action.
+pub fn any() -> impl Decoder<Value = Expr> {
+    Atom {
+        pattern: || "_".into(),
+        take: |expr: &Expr| Some(expr.clone()),
+        expected: "expected a WL expression",
+    }
+}
+
 pub fn association() -> impl Decoder<Value = Expr> {
     Atom {
         pattern: || "_Association".into(),
