@@ -95,6 +95,18 @@ jobs:
           sudo apt-get install -y /tmp/engine.deb
           rm -f /tmp/engine.deb
 
+          # Point wolfram-app-discovery straight at the installed app. wstp-sys
+          # otherwise re-runs `wolframscript -code $InstallationDirectory`, which
+          # can return a non-success exit code that the crate turns into a panic.
+          system_files="$(find /opt/Wolfram /usr/local/Wolfram /opt/WolframEngine /opt/Mathematica -maxdepth 3 -type d -name SystemFiles 2>/dev/null | head -1)"
+          if [ -z "$system_files" ]; then
+            echo "::error::Unable to locate the Wolfram installation directory"
+            exit 1
+          fi
+          app_dir="$(dirname "$system_files")"
+          echo "WOLFRAM_APP_DIRECTORY=$app_dir" >> "$GITHUB_ENV"
+          echo "WOLFRAM_APP_DIRECTORY=$app_dir"
+
       - name: Install Wolfram Engine (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -104,12 +116,34 @@ jobs:
           brew install --cask wolfram-engine
           xattr -dr com.apple.quarantine "/Applications/Wolfram Engine.app" 2>/dev/null || true
 
+          # WOLFRAM_APP_DIRECTORY expects the .app bundle; wolfram-app-discovery
+          # derives $InstallationDirectory from its Contents directory.
+          app="/Applications/Wolfram Engine.app"
+          if [ ! -d "$app/Contents/SystemFiles" ]; then
+            echo "::error::Wolfram Engine.app not found at $app"
+            exit 1
+          fi
+          echo "WOLFRAM_APP_DIRECTORY=$app" >> "$GITHUB_ENV"
+          echo "WOLFRAM_APP_DIRECTORY=$app"
+
       - name: Install Wolfram Engine (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           winget install --id WolframResearch.WolframEngine --silent `
             --accept-source-agreements --accept-package-agreements
+
+          # Skip wolfram-app-discovery's wolframscript probe, which can exit 61.
+          $engineRoot = 'C:\Program Files\Wolfram Research\Wolfram Engine'
+          $app = Get-ChildItem -LiteralPath $engineRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName 'SystemFiles') } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $app) {
+            throw "Wolfram Engine installation with SystemFiles not found under $engineRoot"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "WOLFRAM_APP_DIRECTORY=$($app.FullName)" -Encoding utf8
+          Write-Host "WOLFRAM_APP_DIRECTORY=$($app.FullName)"
 
       - name: Locate wolframscript
         shell: bash
@@ -143,26 +177,6 @@ jobs:
           fi
           echo "$(dirname "$found")" >> "$GITHUB_PATH"
           echo "added to PATH: $(dirname "$found")"
-
-      # wstp-sys's build script calls `wolframscript -code $InstallationDirectory`
-      # through wolfram-app-discovery. On Windows that bare invocation can return
-      # exit code 61, which the crate turns into a panic. Export the installation
-      # directory discovered via an explicit Exit[0] so no re-probe is needed.
-      - name: Configure Wolfram app discovery
-        shell: bash
-        run: |
-          install_dir="$(wolframscript -code 'WriteString["stdout", $InstallationDirectory]; Exit[0]' 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//')"
-          if [ -z "$install_dir" ]; then
-            echo "::error::Unable to query the Wolfram installation directory"
-            exit 1
-          fi
-          case "${{ runner.os }}" in
-            # WOLFRAM_APP_DIRECTORY expects the .app bundle, not its Contents dir.
-            macOS) app_dir="${install_dir%/Contents}" ;;
-            *)     app_dir="$install_dir" ;;
-          esac
-          echo "WOLFRAM_APP_DIRECTORY=$app_dir" >> "$GITHUB_ENV"
-          echo "WOLFRAM_APP_DIRECTORY=$app_dir"
 
       - name: Verify Wolfram activation
         shell: bash
