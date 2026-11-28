@@ -50,12 +50,13 @@ jobs:
           - system-id: MacOSX-ARM64
             runs-on: macos-latest # Apple Silicon
             rust-target: ""
-          # Intel macOS is cross-compiled from the Apple Silicon runner: the
-          # WSTP static library ships as a universal binary and wstp-sys lipos
-          # the x86_64 slice out of it at build time.
+          # Intel macOS builds natively on an Intel runner. wstp-sys refuses to
+          # link a host-arch WSTP library into a cross-compile unless it can
+          # discover a matching WolframApp, and the Engine cask only ships the
+          # x86-64 DeveloperKit inside its embedded Player bundle.
           - system-id: MacOSX-x86-64
-            runs-on: macos-latest
-            rust-target: x86_64-apple-darwin
+            runs-on: macos-15-intel
+            rust-target: ""
     steps:
       - uses: actions/checkout@v4
 
