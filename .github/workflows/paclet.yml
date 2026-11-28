@@ -129,16 +129,20 @@ jobs:
           fi
           # Both macOS jobs run on Apple Silicon; the DeveloperKit ships a
           # universal libWSTPi4.a, which wstp-sys lipos for x86_64.
-          sdk="$app/Contents/SystemFiles/Links/WSTP/DeveloperKit/MacOSX-ARM64/CompilerAdditions"
+          # The cask nests the Player inside Resources/Wolfram Player.app, and
+          # CompilerAdditions contains both libWSTPi4.a and wstp.framework.
+          # Select the directory matching this job's Wolfram SystemID.
+          devkit="$app/Contents/SystemFiles/Links/WSTP/DeveloperKit"
+          if [ ! -d "$devkit" ]; then
+            devkit="$(find "$app/Contents" -type d -path '*Links/WSTP/DeveloperKit' 2>/dev/null | head -1 || true)"
+          fi
+          sdk="$devkit/${{ matrix.system-id }}/CompilerAdditions"
           if [ ! -d "$sdk" ]; then
-            # The cask nests the Player (and sometimes its DeveloperKit) inside
-            # Resources/Wolfram Player.app; locate CompilerAdditions by header.
-            header="$(find "$app/Contents" -type f -name 'wstp.h' 2>/dev/null | head -1 || true)"
-            if [ -n "$header" ]; then sdk="$(dirname "$header")"; fi
+            sdk="$(find "$devkit" -type d -name CompilerAdditions 2>/dev/null | head -1 || true)"
           fi
           if [ -z "$sdk" ] || [ ! -d "$sdk" ]; then
             echo "::error::WSTP DeveloperKit not found under $app"
-            find "$app/Contents" -maxdepth 10 \( -name 'wstp.h' -o -name 'libWSTP*' -o -name 'libMLi4.a' \) 2>/dev/null | head -20 || true
+            find "$app/Contents" -maxdepth 10 -name 'libWSTPi4.a' 2>/dev/null | head -10 || true
             exit 1
           fi
           echo "WSTP SDK directory: $sdk"
