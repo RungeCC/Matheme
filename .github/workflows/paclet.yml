@@ -1,19 +1,14 @@
 # Package the Matheme paclet for every supported platform.
 #
-# Each matrix job installs the free Wolfram Engine (it provides the WSTP
-# DeveloperKit that `scripts/setup-wstp.nu` stages, generates the FrontEnd
-# completions, and runs CreatePacletArchive), builds the shared library with
-# Cargo, and uploads the assembled .paclet as a workflow artifact. Pushing a
-# `v*` tag additionally publishes a GitHub Release with all platform paclets.
-#
-# Required repository secret (the only credential this workflow needs):
-#
-#   WOLFRAMSCRIPT_ENTITLEMENTID — a free Wolfram Engine entitlement ID.
-#   Create it in a Wolfram Cloud notebook with
-#     ent = CreateLicenseEntitlement[]; ent["EntitlementID"]
-#   (https://reference.wolfram.com/language/ref/CreateLicenseEntitlement.html)
-#
-# GitHub Releases use the built-in GITHUB_TOKEN; no personal token is needed.
+# CI never starts a Wolfram kernel and needs no entitlement. The Wolfram Engine
+# is installed only as the source of the WSTP DeveloperKit that
+# `scripts/setup-wstp.nu` stages; linking that SDK does not require a license.
+# The one kernel-produced input — the FrontEnd completion table — is generated
+# locally and checked in under `.github/pregenerated/` (see
+# `scripts/precompile-completions.nu`). CI verifies its recorded source hashes
+# and then builds the shared library with Cargo and zips the paclet.
+# Pushing a `v*` tag additionally publishes a GitHub Release with all platform
+# paclets.
 #
 # Linux-ARM64 is intentionally absent: Wolfram does not publish an arm64 Linux
 # engine package that CI could install (the x86-64 deb resolves through
@@ -37,9 +32,6 @@ concurrency:
   group: paclet-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  WOLFRAMSCRIPT_ENTITLEMENTID: ${{ secrets.WOLFRAMSCRIPT_ENTITLEMENTID }}
-
 jobs:
   build:
     name: paclet-${{ matrix.system-id }}
@@ -47,9 +39,6 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      # One Wolfram Engine entitlement is shared by all jobs; concurrent
-      # activations hit "network license limit reached" (wolframscript 61/255).
-      max-parallel: 1
       matrix:
         include:
           - system-id: Windows-x86-64
@@ -83,7 +72,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # ------------------------------------------------------------------
-      # Wolfram Engine: SDK + completions + CreatePacletArchive
+      # Wolfram Engine: WSTP DeveloperKit only (no kernel, no activation)
       # ------------------------------------------------------------------
 
       - name: Install Wolfram Engine (Linux)
@@ -101,15 +90,24 @@ jobs:
           # Point wolfram-app-discovery straight at the installed app. wstp-sys
           # otherwise re-runs `wolframscript -code $InstallationDirectory`, which
           # can return a non-success exit code that the crate turns into a panic.
+          # No activation is involved: only the DeveloperKit files are used.
           system_files="$(find /opt/Wolfram /usr/local/Wolfram /opt/WolframEngine /opt/Mathematica -maxdepth 4 -name SystemFiles 2>/dev/null | head -1 || true)"
           if [ -z "$system_files" ]; then
             echo "::error::Unable to locate the Wolfram installation directory"
             exit 1
           fi
           app_dir="$(dirname "$system_files")"
+          sdk="$app_dir/SystemFiles/Links/WSTP/DeveloperKit/Linux-x86-64/CompilerAdditions"
+          if [ ! -d "$sdk" ]; then
+            sdk="$(find "$app_dir/SystemFiles/Links/WSTP/DeveloperKit" -type d -name CompilerAdditions 2>/dev/null | head -1)"
+          fi
+          if [ -z "$sdk" ] || [ ! -d "$sdk" ]; then
+            echo "::error::WSTP DeveloperKit not found under $app_dir"
+            exit 1
+          fi
           echo "WOLFRAM_APP_DIRECTORY=$app_dir" >> "$GITHUB_ENV"
-          echo "WOLFRAMSCRIPT_KERNELPATH=$app_dir/Executables/WolframKernel" >> "$GITHUB_ENV"
-          echo "WOLFRAM_APP_DIRECTORY=$app_dir"
+          echo "WSTP_SDK_DIR=$sdk" >> "$GITHUB_ENV"
+          echo "WSTP_SDK_DIR=$sdk"
 
       - name: Install Wolfram Engine (macOS)
         if: runner.os == 'macOS'
@@ -127,15 +125,19 @@ jobs:
             echo "::error::Wolfram Engine.app not found at $app"
             exit 1
           fi
-          echo "WOLFRAM_APP_DIRECTORY=$app" >> "$GITHUB_ENV"
-          echo "WOLFRAMSCRIPT_KERNELPATH=$app/Contents/MacOS/WolframKernel" >> "$GITHUB_ENV"
-          # The cask's wolframscript lives inside the nested Wolfram Player.app;
-          # point it at the Engine kernel explicitly instead of its own ARM one.
-          if command -v wolframscript >/dev/null 2>&1; then
-            wolframscript -config "WOLFRAMSCRIPT_KERNELPATH=$app/Contents/MacOS/WolframKernel" ||
-              echo "::warning::could not persist WOLFRAMSCRIPT_KERNELPATH config"
+          # Both macOS jobs run on Apple Silicon; the DeveloperKit ships a
+          # universal libWSTPi4.a, which wstp-sys lipos for x86_64.
+          sdk="$app/Contents/SystemFiles/Links/WSTP/DeveloperKit/MacOSX-ARM64/CompilerAdditions"
+          if [ ! -d "$sdk" ]; then
+            sdk="$(find "$app/Contents/SystemFiles/Links/WSTP/DeveloperKit" -type d -name CompilerAdditions 2>/dev/null | head -1)"
           fi
-          echo "WOLFRAM_APP_DIRECTORY=$app"
+          if [ -z "$sdk" ] || [ ! -d "$sdk" ]; then
+            echo "::error::WSTP DeveloperKit not found under $app"
+            exit 1
+          fi
+          echo "WOLFRAM_APP_DIRECTORY=$app" >> "$GITHUB_ENV"
+          echo "WSTP_SDK_DIR=$sdk" >> "$GITHUB_ENV"
+          echo "WSTP_SDK_DIR=$sdk"
 
       - name: Install Wolfram Engine (Windows)
         if: runner.os == 'Windows'
@@ -153,80 +155,21 @@ jobs:
           if (-not $app) {
             throw "Wolfram Engine installation with SystemFiles not found under $engineRoot"
           }
+          $sdk = Join-Path $app.FullName 'SystemFiles\Links\WSTP\DeveloperKit\Windows-x86-64\CompilerAdditions'
+          if (-not (Test-Path -LiteralPath $sdk)) {
+            $sdk = Get-ChildItem -LiteralPath (Join-Path $app.FullName 'SystemFiles\Links\WSTP\DeveloperKit') `
+              -Directory -Recurse -Filter 'CompilerAdditions' -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $sdk -or -not (Test-Path -LiteralPath $sdk)) {
+            throw "WSTP DeveloperKit not found under $($app.FullName)"
+          }
           Add-Content -Path $env:GITHUB_ENV -Value "WOLFRAM_APP_DIRECTORY=$($app.FullName)" -Encoding utf8
-          Add-Content -Path $env:GITHUB_ENV -Value "WOLFRAMSCRIPT_KERNELPATH=$(Join-Path $app.FullName 'WolframKernel.exe')" -Encoding utf8
-          Write-Host "WOLFRAM_APP_DIRECTORY=$($app.FullName)"
+          Add-Content -Path $env:GITHUB_ENV -Value "WSTP_SDK_DIR=$sdk" -Encoding utf8
+          Write-Host "WSTP_SDK_DIR=$sdk"
 
-      - name: Locate wolframscript
-        shell: bash
-        run: |
-          if command -v wolframscript >/dev/null 2>&1; then
-            echo "wolframscript on PATH: $(command -v wolframscript)"
-            case "${{ runner.os }}" in
-              macOS)
-                # Homebrew symlinks wolframscript into its bin directory, but
-                # wolframscript locates its runtime relative to its own real
-                # path. Prefer the binary inside the app bundle.
-                real="$(find /Applications -maxdepth 8 -type f -name wolframscript 2>/dev/null | grep -v 'Wolfram Player.app' | head -1 || true)"
-                if [ -z "$real" ]; then
-                  real="$(find /Applications -maxdepth 8 -type f -name wolframscript 2>/dev/null | head -1)"
-                fi
-                if [ -n "$real" ]; then
-                  echo "$(dirname "$real")" >> "$GITHUB_PATH"
-                  echo "using real binary: $real"
-                  exit 0
-                fi
-                ;;
-            esac
-            exit 0
-          fi
-          case "${{ runner.os }}" in
-            Linux)  probe="/opt" ;;
-            macOS)  probe="/Applications" ;;
-            Windows) probe="C:/Program Files/Wolfram Research" ;;
-          esac
-          found="$(find "$probe" -maxdepth 8 -type f -iname 'wolframscript*' 2>/dev/null | head -1)"
-          if [ -z "$found" ]; then
-            echo "::error::wolframscript not found under $probe"
-            exit 1
-          fi
-          echo "$(dirname "$found")" >> "$GITHUB_PATH"
-          echo "added to PATH: $(dirname "$found")"
-
-      - name: Verify Wolfram activation
-        shell: bash
-        run: |
-          if [ -z "${WOLFRAMSCRIPT_ENTITLEMENTID:-}" ]; then
-            echo "::error::Repository secret WOLFRAMSCRIPT_ENTITLEMENTID is not set."
-            echo "::error::Create a free entitlement in Wolfram Cloud with: ent = CreateLicenseEntitlement[]; ent[\"EntitlementID\"]"
-            exit 1
-          fi
-          echo "wolframscript: $(command -v wolframscript)"
-          ls -l "$(command -v wolframscript)" || true
-          wolframscript -version 2>&1 | head -3 || echo "::warning::wolframscript -version exited $?"
-          # Free entitlements allow only a few concurrent kernels. Retry briefly
-          # so a just-released seat from another job/session does not fail CI.
-          set +e
-          status=1
-          out=""
-          for attempt in 1 2 3 4 5; do
-            out="$(wolframscript -code 'Print[21 * 2]' 2>&1)"
-            status=$?
-            if [ "$status" -eq 0 ] && grep -q 42 <<< "$out"; then
-              break
-            fi
-            echo "::warning::activation attempt $attempt failed (exit $status): $out"
-            if [ "$attempt" -lt 5 ]; then
-              sleep 20
-            fi
-          done
-          set -e
-          echo "$out"
-          if [ "$status" -ne 0 ]; then
-            echo "::error::wolframscript exited with $status after 5 attempts (see output above)"
-            exit 1
-          fi
-          grep -q 42 <<< "$out" || { echo "::error::Wolfram Engine activation failed (see output above)"; exit 1; }
+      # No activation, no wolframscript, no entitlement: the steps below only
+      # read files from the installed Engine and link the WSTP DeveloperKit.
 
       - name: Stage WSTP SDK
         run: nu scripts/setup-wstp.nu
@@ -235,12 +178,12 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ matrix.rust-target }}" ]; then
-            nu scripts/build.nu --target ${{ matrix.rust-target }}
+            nu scripts/build.nu --pregenerated .github/pregenerated --target ${{ matrix.rust-target }}
           else
-            nu scripts/build.nu
+            nu scripts/build.nu --pregenerated .github/pregenerated
           fi
 
-      # CreatePacletArchive names every platform's archive identically
+      # Packaging names every platform's archive identically
       # (Publisher__Name-Version.paclet); suffix the platform so the
       # artifacts — and the release assets — cannot shadow each other.
       - name: Rename paclet with platform

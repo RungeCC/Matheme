@@ -12,6 +12,8 @@
 *.wl  text eol=lf
 *.m   text eol=lf
 *.md  text eol=lf
+*.tr  text eol=lf
+/.github/pregenerated/*.json text eol=lf
 
 # Binary artifacts: never apply line-ending conversion.
 *.dll binary

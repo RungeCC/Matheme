@@ -75,9 +75,10 @@ def rust-target-info [target: string] {
 
 def main [
     --sdk-dir: path # Override the WSTP DeveloperKit CompilerAdditions directory
-    --skip-pack     # Assemble output/Matheme without invoking wolframscript CreatePacletArchive
+    --skip-pack     # Assemble output/Matheme without packaging a .paclet
     --jobs (-j): int # Limit parallel Cargo build jobs (useful on memory-constrained systems)
     --target: string # Rust target triple to cross-compile (e.g. x86_64-apple-darwin); the library lands in target/<triple>/release
+    --pregenerated: path # Use checked-in completions from this directory instead of a Wolfram kernel
 ] {
     cd $ROOT
 
@@ -144,11 +145,36 @@ def main [
     # FrontEnd completions are written straight into the assembled paclet.
     # They come from the loaded package, the generated ArgumentTypes.wl, and
     # the WL-only positional data in CompletionData.wl.
-    if (which wolframscript | is-empty) {
-        print --stderr "wolframscript is required to generate specialArgFunctions.tr."
-        exit 1
+    if ($pregenerated == null) {
+        if (which wolframscript | is-empty) {
+            print --stderr "wolframscript is required to generate specialArgFunctions.tr."
+            exit 1
+        }
+        ^wolframscript -file ($ROOT | path join "scripts" "generate-completions.wl")
+    } else {
+        # CI has no activated kernel: consume the table produced locally by
+        # `nu scripts/precompile-completions.nu`, after checking it still
+        # matches the sources it was derived from.
+        let manifest_file = ($pregenerated | path join "specialArgFunctions.manifest.json")
+        let table_file = ($pregenerated | path join "specialArgFunctions.tr")
+        if not ($manifest_file | path exists) or not ($table_file | path exists) {
+            print --stderr $"missing pregenerated completions under ($pregenerated)"
+            exit 1
+        }
+        let manifest = (open $manifest_file)
+        for rel in ["Kernel/ArgumentTypes.wl" "Kernel/CompletionData.wl" "Kernel/Matheme.wl"] {
+            let recorded = ($manifest.sources | get $rel)
+            let actual = (open --raw ($ROOT | path join $rel) | hash sha256)
+            if ($recorded != $actual) {
+                print --stderr $"pregenerated completions are stale: ($rel) changed."
+                print --stderr "Regenerate with: nu scripts/precompile-completions.nu"
+                exit 1
+            }
+        }
+        let completions_dir = ($paclet_dir | path join "AutoCompletionData")
+        mkdir $completions_dir
+        cp $table_file ($completions_dir | path join "specialArgFunctions.tr")
     }
-    ^wolframscript -file ($ROOT | path join "scripts" "generate-completions.wl")
 
     cp ($ROOT | path join "PacletInfo.m") ($paclet_dir | path join "PacletInfo.m")
     for file in ["LICENSE", "NOTICE"] {
@@ -171,7 +197,11 @@ def main [
     }
 
     if (not $skip_pack) {
-        if (which wolframscript | is-not-empty) {
+        if ($pregenerated != null) {
+            # No kernel on this path: pack the directory with a plain zip.
+            let python = (if (which python3 | is-not-empty) { "python3" } else { "python" })
+            ^$python ($ROOT | path join "scripts" "pack-paclet.py") --src $paclet_dir --dst ($ROOT | path join "output")
+        } else if (which wolframscript | is-not-empty) {
             let wl_code = '
                 src = FileNameJoin[{Directory[], "output", "Matheme"}];
                 dst = FileNameJoin[{Directory[], "output"}];

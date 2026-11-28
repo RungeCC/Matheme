@@ -1,0 +1,9 @@
+{
+	"generatedBy":"scripts\/generate-completions.wl",
+	"wolframVersion":"15.0.1 for Microsoft Windows (64-bit) (July 2, 2026)",
+	"sources":{
+		"Kernel\/ArgumentTypes.wl":"aa21e66a567ecc1ee21eb7a1607774671740a6533d7b01334e4485f52a4ae3e0",
+		"Kernel\/CompletionData.wl":"d14536270c0c0186c71b1d665d91b8168e9408f90dbfe46d74d7e5965d06f171",
+		"Kernel\/Matheme.wl":"082edfed3cea3f853d3c479e77b71285aa187d7ccf952f2115195eeba2cb3700"
+	}
+}

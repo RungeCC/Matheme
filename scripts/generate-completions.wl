@@ -17,8 +17,14 @@ fail[msg_] := (Print["generate-completions: ", msg]; Quit[1]);
 typesFile = FileNameJoin[{root, "Kernel", "ArgumentTypes.wl"}];
 dataFile = FileNameJoin[{root, "Kernel", "CompletionData.wl"}];
 packageFile = FileNameJoin[{root, "Kernel", "Matheme.wl"}];
-outFile = FileNameJoin[{root, "output", "Matheme", "AutoCompletionData",
-  "specialArgFunctions.tr"}];
+
+(* CI consumes a checked-in copy of this table instead of running a kernel.
+   MATHEME_COMPLETIONS_OUT lets the local precompile step write it together
+   with the source manifest under .github/pregenerated/. *)
+outDir = If[StringQ[Environment["MATHEME_COMPLETIONS_OUT"]],
+  Environment["MATHEME_COMPLETIONS_OUT"],
+  FileNameJoin[{root, "output", "Matheme", "AutoCompletionData"}]];
+outFile = FileNameJoin[{outDir, "specialArgFunctions.tr"}];
 
 types = Block[{$argumentTypes}, Quiet[Check[Get[typesFile], $Failed]]; $argumentTypes];
 If[!AssociationQ[types], fail["missing or invalid " <> typesFile]];
@@ -81,10 +87,27 @@ merges this file into its specialArgFunctions table. Each entry is\n   \
 \"FunctionName\" -> {argSpec1, ...}, with ONE specifier per argument \
 position;\n   0 means no special completion. *)\n\n";
 
-If[!DirectoryQ[DirectoryName[outFile]],
-  CreateDirectory[DirectoryName[outFile], CreateIntermediateDirectories -> True]];
+If[!DirectoryQ[outDir],
+  CreateDirectory[outDir, CreateIntermediateDirectories -> True]];
 stream = OpenWrite[outFile, BinaryFormat -> True];
 WriteString[stream,
   header <> "{\n" <> StringRiffle[ruleText /@ selected, ",\n\n"] <> "\n}\n"];
 Close[stream];
 Print["Wrote ", outFile];
+
+(* Fingerprint the inputs so CI can reject a stale checked-in table without
+   ever starting a kernel. IntegerString gives the same lowercase hex digest
+   as Nushell's `hash sha256`. *)
+manifestFile = FileNameJoin[{outDir, "specialArgFunctions.manifest.json"}];
+hash[file_] := IntegerString[FileHash[file, "SHA256"], 16, 64];
+manifest = <|
+  "generatedBy" -> "scripts/generate-completions.wl",
+  "wolframVersion" -> $Version,
+  "sources" -> <|
+    "Kernel/ArgumentTypes.wl" -> hash[typesFile],
+    "Kernel/CompletionData.wl" -> hash[dataFile],
+    "Kernel/Matheme.wl" -> hash[packageFile]
+  |>
+|>;
+Export[manifestFile, manifest, "JSON"];
+Print["Wrote ", manifestFile];
