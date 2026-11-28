@@ -99,10 +99,12 @@ jobs:
           app_dir="$(dirname "$system_files")"
           sdk="$app_dir/SystemFiles/Links/WSTP/DeveloperKit/Linux-x86-64/CompilerAdditions"
           if [ ! -d "$sdk" ]; then
-            sdk="$(find "$app_dir/SystemFiles/Links/WSTP/DeveloperKit" -type d -name CompilerAdditions 2>/dev/null | head -1)"
+            sdk="$(find "$app_dir/SystemFiles" -type f -name 'libWSTP64i4.*' 2>/dev/null | head -1 || true)"
+            if [ -n "$sdk" ]; then sdk="$(dirname "$sdk")"; fi
           fi
           if [ -z "$sdk" ] || [ ! -d "$sdk" ]; then
             echo "::error::WSTP DeveloperKit not found under $app_dir"
+            find "$app_dir/SystemFiles" -maxdepth 8 -name 'wstp.h' 2>/dev/null | head -10 || true
             exit 1
           fi
           echo "WOLFRAM_APP_DIRECTORY=$app_dir" >> "$GITHUB_ENV"
@@ -129,12 +131,18 @@ jobs:
           # universal libWSTPi4.a, which wstp-sys lipos for x86_64.
           sdk="$app/Contents/SystemFiles/Links/WSTP/DeveloperKit/MacOSX-ARM64/CompilerAdditions"
           if [ ! -d "$sdk" ]; then
-            sdk="$(find "$app/Contents/SystemFiles/Links/WSTP/DeveloperKit" -type d -name CompilerAdditions 2>/dev/null | head -1)"
+            # The cask nests the Player (and sometimes its DeveloperKit) inside
+            # Resources/Wolfram Player.app; locate CompilerAdditions by header.
+            header="$(find "$app/Contents" -type f -name 'wstp.h' 2>/dev/null | head -1 || true)"
+            if [ -n "$header" ]; then sdk="$(dirname "$header")"; fi
           fi
           if [ -z "$sdk" ] || [ ! -d "$sdk" ]; then
             echo "::error::WSTP DeveloperKit not found under $app"
+            find "$app/Contents" -maxdepth 10 \( -name 'wstp.h' -o -name 'libWSTP*' -o -name 'libMLi4.a' \) 2>/dev/null | head -20 || true
             exit 1
           fi
+          echo "WSTP SDK directory: $sdk"
+          ls "$sdk" | head -20
           echo "WOLFRAM_APP_DIRECTORY=$app" >> "$GITHUB_ENV"
           echo "WSTP_SDK_DIR=$sdk" >> "$GITHUB_ENV"
           echo "WSTP_SDK_DIR=$sdk"
